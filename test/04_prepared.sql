@@ -4,8 +4,12 @@
 -- it is not in pg_stat_activity, and has no pid. pg_blocking_pids() reports it as 0. Without
 -- special handling its waiters end up with a blocker that resolves to nothing.
 --
--- Needs max_prepared_transactions > 0, which the pg-dev-infra compose file sets on every
--- service. Superuser needed (dblink, PREPARE TRANSACTION).
+-- Needs max_prepared_transactions > 0, which the pg-test images set in their CMD. Forgejo v16
+-- ignores a `command:` override on a service container, so a CI job cannot turn it on; where
+-- the setting is absent this file skips rather than fails, because the path is genuinely
+-- untestable there and a hard error looks like a broken extension.
+--
+-- Superuser needed (dblink, PREPARE TRANSACTION).
 \set ON_ERROR_STOP 1
 \set QUIET 1
 \o /dev/null
@@ -21,7 +25,18 @@ BEGIN
   END IF;
 END
 $ext$;
+\o
+\unset QUIET
 
+SELECT plan(5);
+
+-- decide before touching anything: PREPARE TRANSACTION raises if the setting is 0
+SELECT current_setting('max_prepared_transactions')::int > 0 AS have_ptx \gset
+
+\if :have_ptx
+
+\set QUIET 1
+\o /dev/null
 DROP TABLE IF EXISTS lock_tree_pt;
 DROP TABLE IF EXISTS lock_tree_pt_pids;
 CREATE TABLE lock_tree_pt (id int);
@@ -57,8 +72,6 @@ CREATE TEMP TABLE ptx AS
 SELECT t.* FROM lock_tree t WHERE t.root_pid = 0;
 \o
 \unset QUIET
-
-SELECT plan(5);
 
 SELECT is((SELECT count(*) FROM ptx)::int, 2,
           'the waiter and its prepared-transaction blocker both appear');
@@ -111,5 +124,12 @@ DROP TABLE lock_tree_pt_pids;
 DROP TABLE lock_tree_pt;
 \o
 \unset QUIET
+
+\else
+
+SELECT skip('max_prepared_transactions is 0 on this server, so the prepared-transaction '
+         || 'path cannot be exercised here', 5);
+
+\endif
 
 SELECT * FROM finish();
