@@ -18,7 +18,10 @@ jobs:
       postgres:
         image: 192.168.10.111:3000/apjapj/pg-test:${{ matrix.pg_version }}
         env:
-          POSTGRES_PASSWORD: test
+          # the throwaway password for a disposable test container, not a credential.
+          # detect-secrets' Secret Keyword plugin flags any PASSWORD assignment; the pragma
+          # suppresses it in place, which avoids committing a .secrets.baseline.
+          POSTGRES_PASSWORD: test # pragma: allowlist-secret
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -31,7 +34,7 @@ jobs:
     env:
       PGHOST: postgres
       PGUSER: postgres
-      PGPASSWORD: test
+      PGPASSWORD: test # pragma: allowlist-secret  # throwaway, same as POSTGRES_PASSWORD above
       PGDATABASE: postgres
     steps:
       - uses: actions/checkout@v4

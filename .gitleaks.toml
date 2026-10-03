@@ -1,0 +1,15 @@
+title = "pg_lock_tree gitleaks config"
+
+# Inherit every default rule. pg_lock_tree ships no credentials and has no vendor config,
+# so the default rule set is the whole policy — nothing to narrow.
+[extend]
+useDefault = true
+
+# No path allowlist on purpose. Allowlisting tests/, docs/ or examples/ is how real keys in
+# fixtures and documentation survive a scan; if a specific line is a genuine false positive,
+# suppress that one fingerprint in .gitleaksignore instead.
+#
+# There is no .secrets.baseline here, and that is deliberate. detect-secrets' false positives
+# are suppressed inline with `# pragma: allowlist-secret`, which needs no baseline file. A
+# committed baseline holds salted hashes that trip gitleaks' generic-api-key rule, which makes
+# the baseline itself uncommittable against a server-side pre-receive scan.
