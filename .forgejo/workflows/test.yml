@@ -13,12 +13,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: ["14", "15", "16", "17", "18", "19beta4"]
+        pg_version: ["14", "15", "16", "17", "18", "19beta4"]   # keep in step with pg-dev-infra
     services:
       postgres:
         image: 192.168.10.111:3000/apjapj/pg-test:${{ matrix.pg_version }}
         env:
           POSTGRES_PASSWORD: test
+        # test/04_prepared.sql needs PREPARE TRANSACTION, which is refused unless this is on.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        # the pg-test images set this via their entrypoint; restated here so a service
+        # definition is enough to run the prepared-transaction test.
+        command: ["postgres", "-c", "max_prepared_transactions=10"]
     env:
       PGHOST: postgres
       PGUSER: postgres
