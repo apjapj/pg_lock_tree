@@ -4,6 +4,9 @@ Readable lock-wait trees for PostgreSQL 14+. When the database "hangs", it is us
 
 Pure SQL; no C, no background worker, no `shared_preload_libraries`.
 
+PostgreSQL Licence. See [CHANGELOG.md](CHANGELOG.md) for what changed and
+[test/](test/) for how the behaviour is pinned down.
+
 ## What it looks like
 
 A nightly batch holds a row lock and idles in its transaction. An `ALTER TABLE` queues behind it, and ordinary reads queue behind the `ALTER`:
@@ -36,24 +39,31 @@ make install                      # uses the pg_config on your PATH; override wi
 psql -c 'CREATE EXTENSION pg_lock_tree;'
 ```
 
-To see other users' queries, the reading role needs `pg_read_all_stats` (or superuser):
+To read the tree, a monitoring role needs **two** grants — `pg_read_all_stats` decides which
+`pg_stat_activity` rows and query text it may see, but the role also needs `SELECT` on the view
+itself, otherwise every query fails with `permission denied for view lock_tree`:
 
 ```sql
-GRANT pg_read_all_stats TO monitoring;
+GRANT pg_read_all_stats TO monitoring;   -- see other users' queries
+GRANT SELECT ON lock_tree TO monitoring; -- and be allowed to read the view at all
 ```
+
+`lock_tree_roots()` and `lock_tree_text()` are executable by `PUBLIC` by default and become
+readable once the view is.
 
 ## Behaviour worth knowing
 
 - **Cost.** `pg_blocking_pids()` briefly takes the lock manager's shared state, so the view calls it only for sessions already waiting on a heavyweight lock. Query it on demand or every few seconds — never in a tight loop.
 - **Several blockers.** A waiter can be blocked by a lock holder *and* by requests queued ahead of it. `blocked_by` lists all of them; the tree places the session on its deepest chain, so the queue order reads top to bottom.
 - **Prepared transactions** appear as a root with pid `0` and the state `prepared transaction (see pg_prepared_xacts)`.
+- **Deadlocks.** A wait-for cycle has no head of the queue, so there is nothing to point at as "the root". Every session in the cycle is reported as its own depth-0 root, and `lock_tree_roots()` lists all of them with a cancel suggestion. `blocked_by` shows who each one is actually stuck behind. Note that PostgreSQL normally resolves a deadlock on its own after `deadlock_timeout` (1s by default), so the window in which you can see this is short unless that setting has been raised.
 - **Snapshot.** `pg_stat_activity` and `pg_locks` are read separately, so a chain that changes mid-query can show a session as `exited`. Re-run the query.
 - **Other databases.** Relations locked in a different database are shown by OID, because names only resolve in the current database.
 - **Root actions.** The suggestion is a starting point, not a decision. Terminating a session rolls back its transaction.
 
 ## Tests
 
-19 pgTAP tests build a real five-session chain with `dblink` (superuser needed) and check roots, depth, paths, multiple blockers, wait details, the root summary, the text output, and that the tree empties when the root rolls back.
+31 pgTAP tests in four files. `test/01_lock_tree.sql` builds a real five-session chain with `dblink` (superuser needed) and checks roots, depth, paths, multiple blockers, wait details, the root summary, the text output, and that the tree empties when the root rolls back. `test/02_permissions.sql` pins the grants a monitoring role needs. `test/03_deadlock.sql` builds a real two-session wait-for cycle and checks the tree does not go empty. `test/04_prepared.sql` checks a prepared transaction shows up as root pid `0`.
 
 ```bash
 make prove                        # against the server your libpq env vars point at

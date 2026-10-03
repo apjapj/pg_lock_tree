@@ -2,3 +2,9 @@
 *.so
 results/
 regression.*
+
+# pg_prove output and local build leftovers
+.prove
+*.tap
+*.log
+/tmp/

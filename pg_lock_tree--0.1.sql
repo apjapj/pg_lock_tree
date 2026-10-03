@@ -8,6 +8,9 @@
  * Only sessions waiting on a heavyweight lock (wait_event_type = 'Lock') are passed
  * to pg_blocking_pids(), because each call briefly takes the lock manager's shared
  * state. Sample this view every few seconds at most; never in a tight loop.
+ *
+ * A deadlock is reported as one depth-0 root per session in the cycle. There is no head
+ * of the queue to point at, so lock_tree_roots() lists every session involved.
  */
 
 \echo Use "CREATE EXTENSION pg_lock_tree" to load this file. \quit
@@ -44,17 +47,28 @@ edge AS (                       -- one row per (blocked, blocker) pair
   SELECT a.pid AS blocked, b AS blocker
   FROM act a, unnest(a.blocked_by) AS b
 ),
-root AS (                       -- blocks someone and is not itself blocked; pid 0 = a prepared transaction
+seed AS (                       -- every blocker can head a chain...
   SELECT DISTINCT e.blocker AS pid
   FROM edge e
-  LEFT JOIN act a ON a.pid = e.blocker
+),
+root AS (                       -- ...but only an unblocked blocker is a real head of the queue;
+  SELECT s.pid                  -- pid 0 is not in pg_stat_activity, so a prepared transaction
+  FROM seed s                   -- (which holds its locks until COMMIT PREPARED) qualifies here
+  LEFT JOIN act a ON a.pid = s.pid
   WHERE a.pid IS NULL OR cardinality(a.blocked_by) = 0
 ),
 walk AS (
-  SELECT r.pid, r.pid AS root_pid, 0 AS depth, ARRAY[r.pid] AS path
-  FROM root r
+  -- Seeding from every blocker, not just the unblocked ones, means a component with no
+  -- unblocked blocker at all (a deadlock: everybody in it waits on somebody else in it)
+  -- is still reported, as one depth-0 root per member, instead of vanishing. Rooting from
+  -- the unblocked blockers alone would drop the whole component, because the cycle has no
+  -- head. `rooted` records whether this chain descends from a real head of the queue.
+  SELECT s.pid, s.pid AS root_pid, 0 AS depth, ARRAY[s.pid] AS path,
+         (r.pid IS NOT NULL) AS rooted
+  FROM seed s
+  LEFT JOIN root r ON r.pid = s.pid
   UNION ALL
-  SELECT e.blocked, w.root_pid, w.depth + 1, w.path || e.blocked
+  SELECT e.blocked, w.root_pid, w.depth + 1, w.path || e.blocked, w.rooted
   FROM walk w
   JOIN edge e ON e.blocker = w.pid
   WHERE e.blocked <> ALL (w.path)          -- guard against transient wait-for cycles
@@ -62,7 +76,9 @@ walk AS (
 placed AS (                     -- a waiter can sit behind several blockers: keep its deepest chain
   SELECT DISTINCT ON (pid) pid, root_pid, depth, path
   FROM walk
-  ORDER BY pid, depth DESC, path
+  -- deepest chain from a real root first; otherwise the session's own seed, so that a
+  -- deadlock member stays visible at depth 0 instead of hiding inside a sibling's chain
+  ORDER BY pid, rooted DESC, (root_pid = pid) DESC, depth DESC, path
 ),
 waiting AS (                    -- a backend waits for at most one heavyweight lock at a time
   SELECT DISTINCT ON (l.pid)
