@@ -4,6 +4,170 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 0.12 (2026-10-05)
+
+Two additions, both about the same thing: turning what the extension already records into something
+an operator can act on. A real blocking-time figure instead of a sample count, and a way to find
+out that an incident is over.
+
+### `lock_tree_duration(since interval DEFAULT '7 days')`
+
+`lock_tree_history_statements()` reports **session-samples**: one unit per blocked session per
+sample. That is a count of observations, and the 0.7 documentation says so plainly. It is not a
+duration, and there is a case where being precise about that matters.
+
+The same six-second incident, sampled twice:
+
+| | session-samples | gap-summed time |
+|---|---|---|
+| 3 samples over 6s | 3 | 00:00:06 |
+| plus 6 more over the next 6s | 9 | 00:00:06 |
+
+One figure tracked elapsed time. The other tracked how often anybody looked. So ranking statements
+by it means ranking them partly by your cron entry, which is a thing you would have to notice and
+then explain to someone.
+
+`lock_tree_duration()` sums the **gaps between sample instants**. While a query was the root at both
+`t0` and `t1`, it was the root for the whole of `t0` to `t1`, and both of those are instants at which
+it demonstrably held the queue up. That is a measurement rather than an interpolation, which is the
+property the sample-count version lacks.
+
+Deliberate choices, all visible in the output:
+
+- **A gap counts only where the query was the root at both ends.** A gap whose far end has a
+  different root is discarded rather than apportioned. Nobody observed when the handover happened,
+  so any split of it would be invented. `gaps` and `gaps_excluded` report both counts.
+- **The interval after the last sample is never counted.** A chain still standing when the sampler
+  last ran contributed time nobody measured. This is a lower bound on the truth and it says so,
+  rather than presenting a figure whose provenance is unclear.
+- **`blocking_seconds` is `numeric`, not `interval`.** A duration in seconds is what a reader
+  compares across queries and against a budget, and a fractional second survives.
+- **`applications` is an array, not a name.** One query id can be seen under more than one
+  application across a week.
+
+`lock_tree_history_statements()` is unchanged and still there. It is the cheaper question, it needs
+no gap arithmetic, and for "which query blocks the most sessions" it is the right answer. Both are
+worth having; they are not substitutes.
+
+### A hazard, measured rather than only described
+
+While working this out I found that samples inside a single statement are invisible as elapsed time.
+`sampled_at` is `statement_timestamp()`, fixed for the duration of a statement, so:
+
+```sql
+DO $$ BEGIN FOR i IN 1..4 LOOP PERFORM lock_tree_sample(); PERFORM pg_sleep(1); END LOOP; END $$;
+```
+
+writes four samples' worth of rows and records **one** instant. Four seconds of incident, not
+traceable. This is not new behaviour: 0.4 fixed a related bug where `clock_timestamp()` capped
+`peak_sessions` at 1, and `statement_timestamp()` was the fix. That fix is what a cron entry
+depends on and what a `DO` loop defeats.
+
+The rows look healthy unless you count instants rather than rows, so the README now shows both
+forms and `test/16_duration_resolved.sql` pins it with the measurement: a `DO` block writes rows,
+adds fewer than four instants, and `lock_tree_duration()` does not absorb the loop. The safety
+property that matters is that four rows in one instant produce no gap and therefore no invented
+duration.
+
+### `lock_tree_notify_resolved(channel, min_blocked, min_depth, min_wait)`
+
+`lock_tree_notify()` says when something starts getting worse and then says nothing. That was
+deliberate in 0.6 and it is right for a pager. It is wrong for the person who was woken up at 03:00
+and now has no way to find out whether to go back to bed.
+
+This raises one notification per root that **had alerted** and has since left the tree, with `event`
+set to `"cleared"` in place of `"alerting"`, then forgets the stored state so the next incident
+alerts from the start rather than escalating against a high-water mark from a previous one.
+
+- **A root that never alerted produces nothing.** A resolution notice with no matching alert is
+  noise. The function reads the rows it is about to delete, so it cannot report one it did not send.
+- **It keys on the same state and the same policy string as `lock_tree_notify()`.** Pass both
+  functions the same thresholds or this will resolve alerts that were never sent, which is the one
+  way to make it actively misleading.
+- **A separate function, not a parameter.** An `alerting`/`cleared` pair on one channel is what a
+  consumer wants, but whether an incident ending is worth a message is a property of your rota
+  rather than of this extension, and someone who never wants it should not be able to switch it on
+  by accident through named notation.
+- **Backwards compatible.** A consumer written against 0.6 that ignores unknown fields is
+  unaffected.
+
+### One payload change to `lock_tree_notify()`
+
+The onset payload gains one key, `event`, set to `"alerting"`.
+
+It had none before, which was fine until there were two kinds of notification on the same channel
+and a consumer had to tell them apart. The alternative was inferring an onset from the **absence** of
+a key, which is the sort of contract that breaks silently. It was found by the first run of the
+updated [`scripts/check-alert.sh`](scripts/check-alert.sh), which asserted the first payload
+said
+`"alerting"` and was wrong, because nothing had ever put it there.
+
+The one behaviour change in 0.12. It is additive and safe: JSON consumers read by key, every
+documented key keeps its meaning, and a listener that ignores fields it does not recognise is
+unaffected. It arrives as `CREATE OR REPLACE FUNCTION`, which is permitted because the restriction
+is on changing a return type rather than on changing a body, and this function has no `OUT` list.
+In place it takes a lock on one catalog row and nothing else: no table, no view, and none of the
+alert state, which is data.
+
+### [`scripts/check-alert.sh`](scripts/check-alert.sh), restructured
+
+Proving the resolution notices meant proving that a `cleared` payload really arrives, and adding
+that turned up two things in the existing script.
+
+**The silence check was passing for the wrong reason.** It built the chain in one `psql`
+invocation and checked for silence in a later one. A `psql` session that exits takes its dblink
+backends with it, so by the time the later invocation ran, the chain was gone,
+`lock_tree_notify()`'s own sweep had already deleted the stored alert row, and "0 returned" was
+being read from a tree with nothing in it. That also left nothing for
+`lock_tree_notify_resolved()` to resolve, which is how a run reported zero cleared roots next to an
+assertion demanding one.
+
+**The listener slept through its own notifications.** `NOTIFY` is only delivered at a command
+boundary, so the listener's single `pg_sleep(8)` held everything until it returned. That happened to
+be long enough for the run and short enough to notice, and would have broken the moment the run got
+slower. It now issues one statement per second through `\gexec`.
+
+Both are fixed: one listener, and one session that holds the chain for the whole sequence. The
+payload stream is asserted as a sequence, so exactly two payloads arriving, `alerting` then
+`cleared`, is itself the silence check seen from the other end. A function that returned 0 while
+still sending something is now caught.
+
+Also fixed along the way: teardown disconnects the dblink connections rather than terminating them.
+Terminating first kills the backend, and `dblink_disconnect` on a connection whose backend has gone
+fails with `connection "ah" not available`, which aborted the script outright.
+
+### `scripts/check-deadlock.sh --deadlock-timeout=INTERVAL`
+
+The increment in `pg_stat_database.deadlocks` lands when the server breaks the cycle, which is
+`deadlock_timeout` after the wait began. `scenarios/s6_deadlock.sql` raises it to 15s so the cycle
+survives to be photographed, which put the counter and the cycle in two different places. Now the
+parameter that separates them is a parameter, so the script proves both halves in one run:
+
+```
+$ scripts/check-deadlock.sh --deadlock-timeout=15s
+  counter before the deadlock: 0
+  deadlock_timeout for the two victim sessions: 15s, wait budget 45s
+  both sessions are blocked on each other: that is a real cycle
+  the cycle is visible in pg_stat_activity and the counter is still 0
+  the counter moved, from 0 to 1
+```
+
+The middle line is the useful one. It is the state `s6` photographs, and it is the answer to the
+question that sends people to the source: *I can see a deadlock but `deadlocks` has not moved, is
+something broken?* Nothing is broken. It moves at `deadlock_timeout` and not before. Omit the
+parameter to use the server's default (1s), or pass `2s` to break it promptly. The setting is
+applied to the two victim sessions only; `postgresql.conf` is not touched.
+
+### Also
+
+- `test/16_duration_resolved.sql`, 19 assertions.
+- 292 tests total, green on PG 14, 15, 16, 17, 18 and 19beta4.
+- `scripts/lint-docs.sh` gains checks for both objects. It needed no change to its own matching:
+  it already recognised `FUNCTION`, and [`scripts/check-deadlock.sh`](scripts/check-deadlock.sh) already parsed.
+
+Nothing is removed or renamed. Both objects are new, so the update from 0.11 adds nothing and takes
+no rewrite lock: `pg_lock_tree--0.11--0.12.sql` is `CREATE FUNCTION` twice.
+
 ## 0.11 (2026-10-11)
 
 The two things that were wanted when partitioning `lock_tree_history` was proposed, because

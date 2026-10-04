@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.11** (green on PG 14 to 19beta4) |
+| Current release | **v0.12** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 273 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 292 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -262,7 +262,8 @@ rather than a slightly later one.
 ### The payload
 
 ```json
-{"channel":"lock_tree","root_pid":179,"application_name":"nightly_reconciliation",
+{"channel":"lock_tree","event":"alerting","root_pid":179,
+ "application_name":"nightly_reconciliation",
  "blocked_sessions":40,"max_depth":2,"longest_wait":"3m12s",
  "waiting_for":"AccessShareLock on ledger"}
 ```
@@ -270,9 +271,49 @@ rather than a slightly later one.
 Every key is always present, `null` excepted where there is genuinely nothing to say. The server
 enforces an 8000-byte payload limit and this is far below it.
 
+`event` is **new in 0.12**, and is the only change to this payload. It exists because 0.12 adds a
+second kind of notification on the same channel, and a consumer needs one field to branch on rather
+than inferring which kind it got from the presence or absence of some other key. It is additive:
+JSON consumers read by key, so a listener written before 0.12 that ignores fields it does not
+recognise is unaffected.
+
 `application_name` is the one to key on rather than `root_pid`. A pid identifies one session for
 as long as that session lives, which is the wrong key for correlating a page with a log or a
 dashboard across restarts and reconnects.
+
+### Knowing when it is over
+
+`lock_tree_notify()` says when something starts getting worse and then says nothing, which is
+right for a pager and wrong for the person who was woken up. `lock_tree_notify_resolved()` closes
+that gap:
+
+```sql
+SELECT lock_tree_notify_resolved('lock_tree', 10, 3, '30 seconds');
+```
+
+It raises one notification per root that **had alerted** and has since left the tree, with
+`event` set to `"cleared"`, then forgets the stored state so the same root blocking again alerts
+from the start rather than escalating against a high-water mark from a previous incident. A root
+that never alerted produces nothing, because a resolution notice with no matching alert is noise.
+
+```json
+{"event":"cleared","channel":"lock_tree","root_pid":179,"root_object":null,
+ "application_name":"nightly_reconciliation","blocked_at_most":40,"notified_count":2}
+```
+
+`blocked_at_most` and `notified_count` are there so a reader can judge what it was: a cleared root
+that had blocked forty sessions and escalated twice is a different thing from one that briefly
+blocked two.
+
+It is a separate function rather than a parameter on `lock_tree_notify()` on purpose. An
+`alerting`/`cleared` pair on the same channel is what a consumer wants, but whether an incident
+ending is worth waking someone is a property of your rota rather than of this extension, and
+someone who never wants it should not be able to switch it on by accident through named notation.
+Run it from the same cron entry as `lock_tree_notify()`, and pass **the same thresholds**, because
+the two key on the same state and a mismatch means resolving alerts that were never sent.
+
+A consumer written before 0.12 that ignores unknown fields is unaffected. One that switches on
+`event` gets the pair it needs.
 
 ### `lock_tree_alert`, and why you should not need to look at it
 
@@ -294,11 +335,16 @@ Two ways, and they check different things.
 ```
 
 That verifies the delivery path end to end, which no assertion can: `psql` prints notifications to
-stdout and a TAP test cannot see stdout, so the stream is checked by a real second client.
+stdout and a TAP test cannot see stdout, so the stream is checked by a real second client. It also
+asserts the payload **sequence**, which is how the silence check can be trusted: exactly two
+payloads arrive, `alerting` then `cleared`, so a function that returned 0 while still sending
+something would be caught.
 
 `test/11_alert.sql` verifies the decisions, which is the part worth unit-testing: onset fires once,
 an unchanged chain stays silent, escalation fires on width and on depth, age escalates only on a
 doubling, recovery then relapse fires again, thresholds behave, and all three disabled is an error.
+`test/16_duration_resolved.sql` covers the resolution notices: nothing on a quiet database, one
+per cleared root, none while the incident is still standing, and the state forgotten afterwards.
 
 ### What to do when one arrives
 
@@ -431,6 +477,77 @@ Three things to know before you rely on it:
   This was measured, not assumed; `test/10_statements.sql` pins it.
 - **A root that has never run its current statement matches nothing.** `pg_stat_statements`
   records queries as they complete, so the join follows the root's most recent statement.
+
+### Which query is costing the most time
+
+The query above tells you which statement is blocking the most sessions *right now*. Over a week
+the more useful question is which one cost the most blocking time, and that is a different
+function answering a different question.
+
+```sql
+SELECT query_id, blocking_seconds, blocked_sessions_peak, gaps, applications
+FROM lock_tree_duration() LIMIT 20;
+```
+
+`lock_tree_duration()` reports, per root query id, how long that statement was the thing holding
+the queue up. The two are not substitutes, and the difference is worth knowing before you pick:
+
+| | `lock_tree_history_statements()` | `lock_tree_duration()` |
+|---|---|---|
+| The unit | session-samples | seconds |
+| Sample twice as often | doubles | unchanged |
+| Answers | which statement blocks the most sessions | which statement costs the most blocking time |
+
+That middle row is the whole reason this exists. Measured on one six-second incident sampled at
+two different rates:
+
+```sql
+-- the same incident, three samples over 6s, then six more over the next 6s
+--                  session-samples   gap-summed time
+--  3 samples / 6s            3          00:00:06
+--  + 6 more   / 6s           9          00:00:06
+```
+
+One figure tracked elapsed time and the other tracked observations. Ranking statements by a number
+that moves when you change your cron entry is ranking them by your cron entry, which is a thing you
+would have to notice and explain to someone.
+
+Where a duration comes from, since samples record instants and instants have no length in them.
+Each row in the history is a moment. Duration lives in the **gaps between moments**: while this
+query was the root at both `t0` and `t1`, it was the root for the whole of `t0` to `t1`. Summing
+those gaps is a measurement rather than an interpolation, because both endpoints are instants at
+which the query demonstrably held the queue up. A gap whose far end has a **different** root is
+discarded rather than split: nobody observed when the handover happened, so any apportionment
+would be invented. `gaps` and `gaps_excluded` report both, so you can see how much was left out.
+
+Two things it does not claim:
+
+- **The interval after the last sample.** A chain still standing when the sampler last ran
+  contributed time nobody measured. This is a lower bound and says so.
+- **Anything at all without a sampled history.** Both functions need
+  [`lock_tree_sample()`](#choosing-an-interval) scheduled, and neither will invent figures from a
+  table that has never been written to.
+
+### One hazard worth knowing before you schedule anything
+
+The samples must be **separate statements**. `sampled_at` is `statement_timestamp()`, which is fixed
+for the duration of a statement, so a loop of samples inside a single `DO` block collapses onto one
+instant:
+
+```sql
+-- WRONG: four samples, one instant, four seconds of incident invisible to the history
+DO $$ BEGIN FOR i IN 1..4 LOOP PERFORM lock_tree_sample(); PERFORM pg_sleep(1); END LOOP; END $$;
+
+-- RIGHT: four samples, four instants, and lock_tree_duration() can sum the gaps
+SELECT lock_tree_sample(); SELECT pg_sleep(1);
+SELECT lock_tree_sample(); SELECT pg_sleep(1);
+SELECT lock_tree_sample(); SELECT pg_sleep(1);
+SELECT lock_tree_sample();
+```
+
+The rows are written either way, so the history looks healthy unless you count instants rather than
+rows. A `cron` entry has no such problem, since each run is its own statement. `test/16_duration_resolved.sql`
+pins this down with the measurement rather than only describing it.
 
 ## A blocker with no backend
 
@@ -599,9 +716,26 @@ wait began. Three separate attempts to observe that inside a single psql session
 differently. Building the deadlock from dblink connections belonging to the session that was also
 sampling made the two interfere; waiting on the counter is circular, since the counter only moves
 once the server has acted; and waiting for the cycle first only worked once the sample was a separate
-process. `scenarios/s6_deadlock.sql` builds a real deadlock too, but it raises `deadlock_timeout` to
-15s so the cycle survives long enough to be photographed, which means the increment lands long after
-that scenario has moved on. So the two live in different places.
+process.
+
+`scenarios/s6_deadlock.sql` builds a real deadlock too, but it raises `deadlock_timeout` to 15s so
+the cycle survives long enough to be photographed, which means the increment lands long after that
+scenario has moved on. So the two lived in different places, until the parameter that separates
+them became a parameter:
+
+```bash
+[scripts/check-deadlock.sh](scripts/check-deadlock.sh)                              # default 1s, waits for the move
+[scripts/check-deadlock.sh](scripts/check-deadlock.sh) --deadlock-timeout=15s        # s6's timeout, proves both halves
+[scripts/check-deadlock.sh](scripts/check-deadlock.sh) --deadlock-timeout=2s         # breaks it promptly
+```
+
+With `15s` the script builds the cycle, observes it in `pg_stat_activity`, and checks that the
+counter has **still not moved**. That is the state [`scenarios/s6_deadlock.sql`](scenarios/s6_deadlock.sql) photographs, proved rather
+than assumed, and it is the answer to the question that sends people to the source: *I can see a
+deadlock but `deadlocks` has not moved, is something broken?* Nothing is broken. The counter moves
+when the server breaks the cycle, and not before.
+
+The setting is applied to the two victim sessions only. Your `postgresql.conf` is not touched.
 
 ## After the incident has cleared
 
@@ -623,6 +757,20 @@ Then ask what happened:
 ```sql
 SELECT * FROM lock_tree_incidents() ORDER BY started_at DESC;
 ```
+
+And, once you have more than one incident's worth of history, which statement cost the most
+blocking time across all of them:
+
+```sql
+SELECT query_id, blocking_seconds, blocked_sessions_peak, applications
+FROM lock_tree_duration() LIMIT 20;
+```
+
+That is the question that gets a fix merged rather than a workaround, and it is a different
+function from [`lock_tree_statements()`](#which-query-is-doing-it), which answers it for the queue
+in front of you right now. See
+[Which query is costing the most time](#which-query-is-costing-the-most-time) for why the two
+disagree and which one to reach for.
 
 ```
  incident |          started_at          | samples | peak_sessions | depth | longest_wait |  roots  |     applications
@@ -672,10 +820,12 @@ Four things worth knowing before you turn it on:
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
 | `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Escalates on more sessions, more depth, or a longest wait that has **doubled**. Returns how many it raised, so zero is the normal result. |
+| `lock_tree_notify_resolved(channel, min_blocked, min_depth, min_wait)` | Raise one `NOTIFY` with `event: "cleared"` per root that **had alerted** and has now left the tree, then forget the stored state so the next incident alerts from the start. Same thresholds as `lock_tree_notify()`, and it reads and writes the same rows. Optional; see below. |
 | `lock_tree_deadlocks(since interval DEFAULT '7 days')` | When `pg_stat_database.deadlocks` moved: the cumulative counter, how far it moved, whether it was reset, and the window total. Names no participants; the timestamp is how you find the log entry. |
 | `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Holds three high-water marks, recorded at the last notification rather than at the last sample. Maintained by the function; you should never need to look at it. |
 | `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
-| `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking time from the sampled history, worst first. Answers "which statement costs the most blocking time", which is the question that gets a fix merged rather than a workaround. |
+| `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking from the sampled history as **session-samples**: one unit per blocked session per sample. Answers "which statement blocks the most sessions", which is the right question when the shape of the damage matters more than its cost. Does not move with the sample rate in units of time, because it is not a time; see the next row. |
+| `lock_tree_duration(since interval DEFAULT '7 days')` | Per-query blocking **TIME** from the sampled history, worst first: for each root query id, the elapsed time during which it was holding the queue up. Does not move with the sample rate, which is the whole difference. A gap counts only where the query was the root at both ends, and the interval after the last sample is never counted, so it is a lower bound rather than an estimate. |
 | `lock_tree_sampling_advice(since interval DEFAULT '7 days')` | A suggested interval for the sample cron entry, sized on the **widest queue in the window** rather than on the queue at this instant, with the reasoning and both inputs returned. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
@@ -776,13 +926,14 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 273 pgTAP tests against the server your libpq env vars point at
+make prove              # 292 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
 make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
 make check-deadlock     # prove a real deadlock moves the counter and the sample records it
+make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the counter
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
@@ -819,10 +970,10 @@ was never going to work. None is a runtime requirement: `pg_lock_tree` itself ne
 
 ## Roadmap
 
-- **Next**: per-query blocking time. `lock_tree_history` records who waited and for how long, and
-  `lock_tree_statements()` says what the blocking query is right now. Joining the two would answer
-  "which statement costs the most blocking time this month", which is the question that gets a
-  fix merged rather than a workaround. It needs `query_id` on the history rows.
+- **Done in 0.12**: per-query blocking time. `lock_tree_duration()` answers "which statement costs
+  the most blocking time", which is the question that gets a fix merged rather than a workaround.
+  It needed `query_id` on the history rows, which 0.7 recorded and 0.8 made reliable. See
+  [Which query is costing the most time](#which-query-is-costing-the-most-time).
 - **Next**: cross-database. The extension lives in each database, as all extensions do, so a queue
   on `reporting` is invisible from `production`. Deliberately **not** planned here: this is a
   per-database diagnostic, and a fan-out sampler is a separate tool wearing this one's name.
@@ -831,10 +982,11 @@ was never going to work. None is a runtime requirement: `pg_lock_tree` itself ne
   at least answer "when did deadlocks start here", and a `log_lock_waits`-style hook could name the
   pair. The hook is a bigger change than it looks, because it has to work on a server where nobody
   has installed anything.
-- **Next**: `lock_tree_history` partitioned by month, so `lock_tree_prune()` becomes a DETACH
-  rather than a DELETE. The table grows by (sessions blocked) x (samples) and is only ever pruned
-  by age, which is the shape partitioning suits. It cannot be done in place: 0.4 created the table
-  unpartitioned and the rows have to move, so it needs a migration path rather than an ALTER.
+- **Not available**: `lock_tree_history` partitioned by month, so `lock_tree_prune()` becomes a
+  DETACH rather than a DELETE. The shape suits partitioning, but PostgreSQL has no
+  `ALTER TABLE ... SET PARTITIONED BY` and the copy-and-swap cannot be done from outside the
+  extension because the table is a member. Measured, and the reason is written up in the 0.11
+  changelog. `lock_tree_history_size()` and `lock_tree_prune_batched()` are what replaced it.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether

@@ -248,13 +248,18 @@ TRUNCATE lock_tree_history;
 -- All the rows of one sample share one sampled_at. That shared instant is what lets the
 -- grouping tell "one tree, seen three times" from "three one-session trees", so the
 -- fixture has to put each sample's depths together at one timestamp.
+-- query_id is on the ROOT rows only, because a blocked query has no query_id for as long as it is
+-- blocked: the server assigns one when the statement completes. That is why the depth-1 and depth-2
+-- rows below carry NULL. 0.12 reports per-query figures off exactly this column, so a fixture
+-- without it would leave lock_tree_duration() with nothing to say.
 INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, waiting_for,
-                               wait_age, application_name, query)
+                               wait_age, application_name, query, query_id)
 SELECT v.t, 900, d, 900 + d,
        CASE WHEN d = 0 THEN 'idle in transaction' ELSE 'active' END,
        CASE WHEN d = 0 THEN NULL ELSE 'AccessExclusiveLock on demo_ledger' END,
        make_interval(secs => d * 90), 'nightly_batch',
-       'UPDATE ledger SET amount = amount WHERE id = 1'
+       'UPDATE ledger SET amount = amount WHERE id = 1',
+       CASE WHEN d = 0 THEN 8891000000000000001 ELSE NULL END
 FROM (VALUES
   (now() - interval '3 hours', 0), (now() - interval '3 hours', 1), (now() - interval '3 hours', 2),
   (now() - interval '2 hours', 0), (now() - interval '2 hours', 1),
@@ -269,6 +274,30 @@ FROM lock_tree_incidents() ORDER BY started_at DESC;
 \echo ''
 \echo ' Three incidents from samples an hour apart. That is the answer to "it was hanging'
 \echo ' earlier": when, how bad, and which application was holding the lock.'
+\echo ''
+\echo ' Per-query blocking, the two ways of asking. Both read the same three samples and'
+\echo ' they report different units, which is the reason both exist:'
+\echo ''
+SELECT h.query_id,
+       h.blocked_sessions   AS session_samples,
+       d.blocking_seconds,
+       d.gaps,
+       d.gaps_excluded,
+       d.applications
+FROM lock_tree_history_statements() h
+JOIN lock_tree_duration() d USING (query_id)
+ORDER BY h.query_id;
+
+\echo ''
+\echo ' The samples above are 3 hours, 2 hours and 20 minutes old, so the two gaps between'
+\echo ' them are 1 hour and 40 minutes, and 9600 seconds is exactly those two added up. Two'
+\echo ' things it is not doing, and both are deliberate:'
+\echo ''
+\echo '   It is not counting the last incident at all. Nothing was sampled after it, so'
+\echo '     nobody observed whether the query was still holding the lock. A lower bound.'
+\echo '   It is not apportioning the gap between the second and third incidents. Both'
+\echo '     ends have the same root here, so the whole gap counts; had the root changed'
+\echo '     mid-gap, the gap would be discarded instead, because nobody observed when.'
 \echo ''
 \echo ' And while nothing is blocked, sampling writes nothing at all:'
 \echo ''
