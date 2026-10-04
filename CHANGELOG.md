@@ -60,6 +60,9 @@ clean 0.2 install.
   `blocked_by` were all correct, with only wait age empty.
 - `.forgejo/workflows/test.yml` loads `pg_lock_tree--0.3.sql`, and its note on why there is no
   `command:` override now covers `pg_cron` as well as `max_prepared_transactions`.
+- `scripts/check-install.sh` verifies `lock_tree_command()` and `lock_tree_lines()` exist and
+  are callable, and reports whether `pg_cron` is preloaded, so a skip in `test/06_cron.sql` is
+  explained rather than mysterious.
 
 ### Not changed
 

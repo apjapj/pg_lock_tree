@@ -108,6 +108,12 @@ Two kinds of root produce no statement at all, and both are explained by `lock_t
 a prepared transaction, which has no backend to act on, and your own session. Neither gets a
 command that cannot work or that would disconnect you mid-query.
 
+On a quiet database the two halves do not look alike, which trips people up. `lock_tree_actions()`
+still returns its one header line, so you get `-- 0 root blocker(s)`; `lock_tree_command()`
+returns no rows at all. That is deliberate: the description answers "is anything blocked", and a
+header saying zero is a useful answer to that. The command function has nothing to say and no
+heading to say it with.
+
 ## Objects
 
 | Object | Use |

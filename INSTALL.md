@@ -211,7 +211,7 @@ SELECT count(*) FROM lock_tree;          -- 0, not an error
 SELECT * FROM lock_tree_roots();         -- 0 rows
 SELECT * FROM lock_tree_text();          -- 0 rows
 SELECT * FROM lock_tree_text_short();    -- 0 rows
-SELECT * FROM lock_tree_actions();       -- the "-- 0 root blocker(s)" line
+SELECT * FROM lock_tree_actions();       -- 1 row: the "-- 0 root blocker(s)" header
 SELECT * FROM lock_tree_command();       -- 0 rows: a quiet database needs no commands
 RESET ROLE;
 ```
