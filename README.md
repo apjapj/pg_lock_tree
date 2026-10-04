@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.9** (green on PG 14 to 19beta4) |
+| Current release | **v0.10** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 221 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 250 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -288,9 +288,9 @@ is worth calling from the same cron entry as the sample if you care. It is not l
 Two ways, and they check different things.
 
 ```bash
-./scripts/check-alert.sh              # builds a chain, notifies, and reads the notification back
-./scripts/check-alert.sh --explain    # the same, then explains the payload it received
-./scripts/check-alert.sh --explain '{"root_pid":0,...}'
+[`scripts/check-alert.sh`](scripts/check-alert.sh)              # builds a chain, notifies, and reads the notification back
+[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain    # the same, then explains the payload it received
+[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,...}'
 ```
 
 That verifies the delivery path end to end, which no assertion can: `psql` prints notifications to
@@ -307,7 +307,7 @@ to do. It needs **no database**, which is the point: the first thing you do at 3
 something that cannot fail because the database is the thing that is broken.
 
 ```
-$ ./scripts/check-alert.sh --explain '{"root_pid":0,
+$ [`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,
     "root_object":"AccessExclusiveLock on public.ledger","application_name":"",
     "blocked_sessions":12,"max_depth":1,"longest_wait":"9m05s",
     "waiting_for":"AccessShareLock on public.ledger"}'
@@ -346,16 +346,27 @@ argues for a wider interval:
 SELECT * FROM lock_tree_sampling_advice();
 ```
 
+It is sized on the **widest queue in the window**, not on the queue at the instant. That is the
+whole point, and getting it wrong is easy: a cron entry that runs at 3am on a quiet Sunday would
+otherwise recommend the finest interval for a database that spends every weekday morning with four
+hundred sessions waiting. The advice was not wrong about the instant; it was answering the wrong
+question.
+
 ```
- blocked_sessions | roots | suggested_every |                        reason
-------------------+-------+-----------------+-------------------------------------------------
-                0 |     0 | 00:00:05        | nothing is blocked: the table stays empty at any
-                 |       |                 | interval, so sample rarely
-               12 |     2 | 00:00:10        | a busy queue: 10 seconds catches anything that
-                 |       |                 | lasts, at a tenth the storage
-              450 |     9 | 00:00:30        | a wide queue: each sample writes a row per blocked
-                 |       |                 | session, so widen the interval
+ blocked_sessions | roots | suggested_every |             reason              | observed_peak | live_blocked
+------------------+-------+-----------------+---------------------------------+---------------+--------------
+              450 |     9 | 00:00:30        | a wide queue: each sample      |           450 |            0
+                 |       |                 | writes a row per blocked       |               |
+                 |       |                 | session, so widen the interval |               |
+                0 |     0 | 00:00:05        | nothing blocked now and        |             0 |            0
+                 |       |                 | nothing in the window: the     |               |
+                 |       |                 | table stays empty at any       |               |
+                 |       |                 | interval, so sample rarely     |               |
 ```
+
+`observed_peak` and `live_blocked` are both returned, and the figure used is the greater of the two,
+so a queue that started after the last sample is not ignored and the advice can be traced back to
+what it was based on.
 
 ### Requirements, plainly
 
@@ -483,6 +494,115 @@ would be a guess. Grouping by the object rather than by the lock mode is the hon
 See `scenarios/s7_prepared.sql`, which builds three at once and prints the 0.7 figure for the same
 incident so the comparison is measured rather than remembered.
 
+## Deadlocks
+
+A deadlock is not a queue. It is a cycle: two sessions each waiting for the other, with nobody at
+the head. `scenarios/s6_deadlock.sql` builds one and the tree reports both sessions at depth 0,
+each its own root, because there is no root in the usual sense.
+
+What the extension could not do was say anything about them afterwards.
+
+`pg_stat_database.deadlocks` is a counter, present since PostgreSQL 13 and therefore on every
+version supported here. `lock_tree_sample()` now records it, and `lock_tree_deadlocks()` reports
+when it moved.
+
+```sql
+postgres=# SELECT * FROM lock_tree_deadlocks(interval '7 days');
+```
+
+### Why the counter is sampled into its own table
+
+This is the part worth understanding, and it is not tidiness.
+
+`lock_tree_history` only has rows while something is **blocked**. PostgreSQL resolves a deadlock by
+killing one participant. So by the time your sampler runs, the cycle is over, the tree is empty,
+and there is no history row to hang a counter on. Measured, on the run in
+`scripts/check-deadlock.sh`:
+
+```
+ the counter moved, from 15 to 16
+ and nothing is blocked now, so lock_tree_history would record nothing at all
+ a sample wrote no history rows, because the tree is empty
+ and lock_tree_deadlocks() reports the move: delta = 1
+```
+
+A deadlock you did not happen to be looking at is exactly the one worth catching, and putting the
+counter on `lock_tree_history` would miss all of them. So `lock_tree_deadlock` is one row per
+sample, written whether or not anything is blocked. `lock_tree_prune()` clears it with the history,
+so there is still only one thing to remember.
+
+### What it cannot tell you
+
+**It does not name the two statements.** Nothing in SQL does. The participants exist only in the
+server log:
+
+```
+ERROR:  deadlock detected
+DETAIL:  Process 1234 waits for ShareLock on transaction 5678; blocked by process 5678.
+Process 5678 waits for ShareLock on transaction 1234; blocked by process 1234.
+```
+
+`pg_stat_database.deadlocks` is a bare number with no attribution, and this extension does not
+pretend otherwise. What it gives you is the **timestamp**, and that is the half that makes the log
+worth reading: with three deadlocks all between 09:00 and 09:15 on a Monday morning, you are looking
+at a deploy or a cron job rather than at a mystery.
+
+To get the statements, enable the log entry and correlate:
+
+```conf
+# postgresql.conf, then restart
+log_lock_waits = on
+log_min_duration_statement = 0     # optional: every statement, so the CONTEXT lines are there too
+```
+
+Deadlock messages are logged at `ERROR` and do not need `log_lock_waits`; that setting is for
+lock *waits*, which is the other half of this problem and the one `log_lock_waits` makes visible.
+
+### Counter resets
+
+`pg_stat_database.deadlocks` can go **backwards**: `pg_stat_reset_shared('db')` sets it to zero.
+A naive delta would then be negative, which is not a number of anything. So:
+
+| | |
+|---|---|
+| `delta` | never negative, because a falling counter is not negative deadlocks |
+| `counter_reset` | set when the counter fell, so the timeline admits the discontinuity |
+| `total_in_window` | sums the deltas **after** any reset, so a reset cannot silently understate it |
+
+### Sampling it
+
+```
+ -- see the whole queue right now
+ SELECT * FROM lock_tree_summary();
+
+ -- when deadlocks happened, over the last week
+ SELECT * FROM lock_tree_deadlocks();
+
+ -- prune everything older than a day, history and deadlock samples together
+ SELECT lock_tree_prune(interval '1 day');
+```
+
+`lock_tree_prune()` returns the number of **history** rows it removed, not the total across both
+tables. It has returned a history count since 0.4 and every existing caller reads that number; at a
+five second sample interval, counting the deadlock rows as well would inflate it by a factor of the
+sample rate for no benefit. The deadlock rows are still deleted.
+
+### Checking it works
+
+```bash
+[scripts/check-deadlock.sh](scripts/check-deadlock.sh)
+```
+
+A script rather than a test file, for the same reason as [`scripts/check-alert.sh`](scripts/check-alert.sh) and for a more annoying
+reason: the increment lands when the server breaks the cycle, which is `deadlock_timeout` after the
+wait began. Three separate attempts to observe that inside a single psql session all failed, each
+differently. Building the deadlock from dblink connections belonging to the session that was also
+sampling made the two interfere; waiting on the counter is circular, since the counter only moves
+once the server has acted; and waiting for the cycle first only worked once the sample was a separate
+process. `scenarios/s6_deadlock.sql` builds a real deadlock too, but it raises `deadlock_timeout` to
+15s so the cycle survives long enough to be photographed, which means the increment lands long after
+that scenario has moved on. So the two live in different places.
+
 ## After the incident has cleared
 
 Everything above describes the present. That is a real limit, and it bites at the worst moment:
@@ -542,17 +662,19 @@ Four things worth knowing before you turn it on:
 | `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
 | `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
 | `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. `query_id` on root rows only, since a blocked query has none. |
+| `lock_tree_deadlock` (table) | `pg_stat_database.deadlocks` sampled on its own beat, whether or not anything is blocked. Naming no participants: the two statements are in the server log. Pruned by `lock_tree_prune()`. |
 | `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
 | `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')` | The history grouped into incidents: when each ran, peak sessions blocked, deepest chain, longest wait, and the root pids and application names involved. |
 | `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many. The table only grows otherwise. |
 | `lock_tree_wide()` | One row per root instead of one per session: how many sessions each blocks, the deepest chain under it, the longest wait, and what they are waiting for. Use when the tree is too wide to read. |
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
-| `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Returns how many it raised, so zero is the normal result. |
+| `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Escalates on more sessions, more depth, or a longest wait that has **doubled**. Returns how many it raised, so zero is the normal result. |
+| `lock_tree_deadlocks(since interval DEFAULT '7 days')` | When `pg_stat_database.deadlocks` moved: the cumulative counter, how far it moved, whether it was reset, and the window total. Names no participants; the timestamp is how you find the log entry. |
 | `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Holds three high-water marks, recorded at the last notification rather than at the last sample. Maintained by the function; you should never need to look at it. |
 | `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
 | `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking time from the sampled history, worst first. Answers "which statement costs the most blocking time", which is the question that gets a fix merged rather than a workaround. |
-| `lock_tree_sampling_advice()` | A suggested interval for the sample cron entry, given how busy things are, and why. |
+| `lock_tree_sampling_advice(since interval DEFAULT '7 days')` | A suggested interval for the sample cron entry, sized on the **widest queue in the window** rather than on the queue at this instant, with the reasoning and both inputs returned. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
 
@@ -652,12 +774,13 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 221 pgTAP tests against the server your libpq env vars point at
+make prove              # 250 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
 make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
+make check-deadlock     # prove a real deadlock moves the counter and the sample records it
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
@@ -680,8 +803,10 @@ terminate backends rather than mocking anything:
 | `test/10_statements.sql` | `lock_tree_statements()` with and without `pg_stat_statements` loaded: the roots are reported either way, and the join is pinned where it is available |
 | `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires on width, on depth and on a doubling wait, `min_wait => NULL` suppresses age escalation entirely, recovery then relapse fires again, and all three thresholds disabled is an error |
 | `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back. `--explain` turns a payload into the queries to run, with no database |
+| `scripts/check-deadlock.sh` | that a **real** deadlock moves the counter and the sample records it. Separate process, because the increment lands on a timer and three attempts inside one psql session all failed |
 | `test/12_history_statements.sql` | per-query blocking time from written history: only root rows count, the window filter runs before the aggregation, and the figure is session-samples rather than seconds |
 | `test/13_prepared_roots.sql` | two prepared transactions are two roots, which is the 0.8 bug: the waiters attach to the right object, every aggregate counts two roots, and alerting tracks them separately |
+| `test/14_deadlocks.sql` | the deadlock counter: a sample on a quiet tree still records it, a delta is a subtraction and never negative, a reset is reported as a reset, and the sampling advice is sized on the history's peak rather than on the instant |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and

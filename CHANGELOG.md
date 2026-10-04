@@ -1,8 +1,133 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.8'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.9'`
 selects a release.
+
+## 0.10 (2026-10-04)
+
+Deadlocks, and an extension that finally reads its own history.
+
+Two features. One table, one function and one column added; one function's return value gains a side
+effect and one function's signature changes. Nothing existing is rewritten and no rewrite lock is
+taken.
+
+### Deadlocks: when, and not what
+
+The extension could watch a deadlock happen and had nothing to say about it afterwards.
+
+`pg_stat_database.deadlocks` has been there since PostgreSQL 13, so it is available on every version
+supported here. Checked rather than assumed, since the version it was added is the sort of thing
+worth being wrong about and the alternative is a function that fails at `CREATE EXTENSION` time on
+the oldest version in the matrix.
+
+`lock_tree_sample()` records the counter. `lock_tree_deadlocks()` reports when it moved: the
+cumulative value, how far it moved, and the window total.
+
+**It does not name the two statements, and nothing in SQL does.** The participants exist only in the
+server log. What this gives is the timestamp, and that is the half that makes the log worth reading:
+three deadlocks between 09:00 and 09:15 on a Monday is a deploy or a cron job, not a mystery. The
+README has the `log_lock_waits` recipe and says plainly what the counter cannot do.
+
+### Why the counter is sampled into its own table
+
+This is the part worth understanding, and it is not tidiness.
+
+`lock_tree_history` only has rows while something is **blocked**, and PostgreSQL resolves a deadlock
+by killing one participant. So by the time the sampler runs, the cycle is over, the tree is empty, and
+there is no history row to hang a counter on. Measured:
+
+```
+ the counter moved, from 15 to 16
+ and nothing is blocked now, so lock_tree_history would record nothing at all
+ a sample wrote no history rows, because the tree is empty
+ and lock_tree_deadlocks() reports the move: delta = 1
+```
+
+A deadlock you did not happen to be looking at is exactly the one worth catching, and putting the
+counter on `lock_tree_history` would miss all of them. `lock_tree_deadlock` is therefore one row per
+sample, written whether or not anything is blocked.
+
+### Counter resets
+
+The counter can go **backwards**: `pg_stat_reset_shared('db')` sets it to zero. A naive delta is then
+negative, which is not a number of anything. So `delta` is floored at zero, `counter_reset` records
+that the baseline changed, and `total_in_window` sums only the deltas **after** any reset, so a reset
+cannot quietly understate the window.
+
+### Sampling advice now reads the history
+
+`lock_tree_sampling_advice()` sized the interval from the queue at the instant it was called. A cron
+entry at 3am on a quiet Sunday therefore recommended the finest interval, for a database that spends
+every weekday morning with four hundred sessions waiting. The advice was not wrong about the
+instant. It was answering the wrong question: the question is what the table has to carry, and the
+table's size is set by the peaks.
+
+It now takes a window, reads the peak out of the history, and uses the **greater** of that and the
+live queue, so a queue that started after the last sample is not ignored. Both inputs come back as
+columns (`observed_peak`, `live_blocked`) so the advice can be traced back to what it was based on.
+
+The column is `look_back`, not `window`, because `WINDOW` is a reserved word and a column with that
+name has to be quoted at every use and in every example that reads it.
+
+### `lock_tree_prune()` clears both tables, and counts only one
+
+It now deletes from `lock_tree_deadlock` as well. Its return value still counts **only** the history
+rows, because it has returned a history count since 0.4 and every existing caller reads that number.
+At a five second sample interval, counting the deadlock rows too would inflate it by a factor of the
+sample rate, and a monitoring job that has been right for six releases should not start reporting
+four orders of magnitude more than the table it watches. One call to remember rather than two is
+worth the asymmetry. The deadlock rows are still deleted, and the decision is stated in the function
+body as well as here.
+
+### Where the end-to-end deadlock test lives, and why not in the suite
+
+`scripts/check-deadlock.sh`, not a test file.
+
+The increment lands when the server breaks the cycle, which is `deadlock_timeout` after the wait
+began. Three separate attempts to observe that inside a single psql session all failed, each
+differently and each instructive:
+
+1. The deadlock was built from dblink connections belonging to the session that was also sampling.
+   The two interfered and the deadlock was never observed at all.
+2. Waiting on the counter is circular. The counter only moves once the server has acted, and it acts
+   on a timer, so a bounded loop never sees the move and reports that nothing happened.
+3. Waiting for the **cycle** first and then for the counter works, but only when the sample is a
+   separate process.
+
+`scenarios/s6_deadlock.sql` builds a real deadlock too, and it shows the counter being sampled. But it
+raises `deadlock_timeout` to 15s so the cycle survives long enough to be photographed, which means the
+increment lands long after that scenario has moved on. So the two live in different places, and the
+scenario says so rather than showing an empty table and leaving the reader to guess.
+
+`test/14_deadlocks.sql` covers everything that can be covered deterministically: that a sample on a
+quiet tree still records the counter, that a delta is a subtraction and never negative, that a reset
+is reported as a reset, and the history-derived advice.
+
+### A fixture bug worth writing down twice
+
+The advice fixture builds a history that peaked at 450 sessions, and the first version of it used
+`clock_timestamp()` in the `INSERT ... SELECT`. That is volatile and evaluated **per row**, so all
+450 rows got a `sampled_at` a few microseconds apart. The advice groups the history by `sampled_at` to
+find the widest sample, and 450 groups of one session has a peak of 1. The fixture described a
+database with no queue at all and the test failed for a reason that had nothing to do with the code.
+
+This is the same trap that made `lock_tree_sample()` record a different `sampled_at` per row in 0.4,
+which silently capped `peak_sessions` at 1. It is recorded here a second time because it looks like a
+harmless choice of clock function and it is not: **any per-row timestamp in this table destroys the
+only thing the history is for.**
+
+### Also
+
+- `pg_lock_tree--0.9--0.10.sql` drops and recreates `lock_tree_sampling_advice()`, because
+  `CREATE OR REPLACE FUNCTION` refuses a changed OUT list and it returns a table.
+- `.forgejo/workflows/test.yml` loads `pg_lock_tree--0.10.sql`.
+
+Verified: 250 tests green on PG 14, 15, 16, 17, 18 and 19beta4; all eight scenarios; the 0.9 -> 0.10
+upgrade against a populated history and the full `0.2--0.10` chain; [`scripts/check-deadlock.sh`](scripts/check-deadlock.sh) observing a
+real deadlock move the counter with nothing blocked at the sample; demo and check-install.
+
+## 0.9 (2026-10-04)
 
 ## 0.9 (2026-10-04)
 
@@ -67,7 +192,7 @@ An alert arrives as a JSON payload with no instructions attached. The recipient 
 means and what to run, at whatever hour it arrived.
 
 ```bash
-./scripts/check-alert.sh --explain '{"root_pid":0,"root_object":"AccessExclusiveLock on public.ledger", …}'
+[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,"root_object":"AccessExclusiveLock on public.ledger", …}'
 ```
 
 prints what the payload says, what it means, and the queries to run in order. It **needs no database

@@ -49,8 +49,8 @@ Check out the version you want. Tags are releases; `main` is whatever is newest 
 ahead of the last tag:
 
 ```bash
-git tag                 # v0.1 to v0.9
-git checkout v0.9       # or: git checkout main
+git tag                 # v0.1 to v0.10
+git checkout v0.10      # or: git checkout main
 ```
 
 ## Install
@@ -93,6 +93,7 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 # pg_lock_tree--0.6--0.7.sql   the update path from 0.6
 # pg_lock_tree--0.7--0.8.sql   the update path from 0.7
 # pg_lock_tree--0.8--0.9.sql   the update path from 0.8
+# pg_lock_tree--0.9--0.10.sql  the update path from 0.9
 # pg_lock_tree--0.1.sql         release
 # pg_lock_tree--0.2.sql         release
 # pg_lock_tree--0.3.sql         release
@@ -101,7 +102,8 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 # pg_lock_tree--0.6.sql         release
 # pg_lock_tree--0.7.sql         release
 # pg_lock_tree--0.8.sql         release
-# pg_lock_tree--0.9.sql         current release
+# pg_lock_tree--0.9.sql         release
+# pg_lock_tree--0.10.sql        current release
 # pg_lock_tree.control
 ```
 
@@ -218,7 +220,7 @@ the objects are missing or the schema is wrong, and an empty result just means n
 blocked:
 
 ```sql
-SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.9
+SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.10
 SELECT count(*) FROM lock_tree;                                        -- 0
 SELECT * FROM lock_tree_text();                                        -- 0 rows
 ```
@@ -235,7 +237,8 @@ SELECT * FROM lock_tree_actions();       -- 1 row: the "-- 0 root blocker(s)" he
 SELECT * FROM lock_tree_command();       -- 0 rows: a quiet database needs no commands
 SELECT * FROM lock_tree_incidents();      -- 0 rows: history is opt-in and starts empty
 SELECT * FROM lock_tree_summary();         -- 1 row of zeros, not no rows
-SELECT * FROM lock_tree_sampling_advice(); -- an interval, and why
+SELECT * FROM lock_tree_sampling_advice(); -- an interval sized on the window's peak, and why
+SELECT * FROM lock_tree_deadlocks();      -- when pg_stat_database.deadlocks moved
 SELECT * FROM lock_tree_history_statements(); -- per-query blocking time, worst first
 RESET ROLE;
 ```
@@ -272,36 +275,38 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '0.9';     -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '0.10';    -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "0.x" to version "0.9"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.9.sql` in the
+**If you get `no update path from version "0.x" to version "0.10"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.10.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.8--0.9.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.9--0.10.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
 [Troubleshooting](#troubleshooting).
 
-**What 0.9 changes:** alerting now escalates on **age** as well as on width and depth, so an
-incident that is not getting any wider still gets reported as it ages. It escalates when the longest
-wait has **doubled** since the last notification, and only when you have set `min_wait`, because
-`min_wait => NULL` means you do not want to be paged on wait age.
+**What 0.10 changes:** adds `lock_tree_deadlock` (a table) and `lock_tree_deadlocks()`, so the
+`pg_stat_database.deadlocks` counter is sampled and you can see **when** deadlocks happened. It does
+not name the two statements involved: nothing in SQL does, and they are in the server log. See
+[Deadlocks](README.md#deadlocks).
 
-One column is added (`lock_tree_alert.max_waited_at`, metadata-only, so the upgrade applies
-instantly) and two function bodies are replaced. No signature changes, so nothing is dropped and
-there is nothing to migrate.
+`lock_tree_sampling_advice()` now takes a window and sizes the interval on the **widest queue in
+that window** rather than on the queue at this instant, because a cron entry at 3am on a quiet
+Sunday would otherwise size a weekday-morning database for Sunday. It gains three columns
+(`observed_peak`, `live_blocked`, `look_back`), so it is dropped and recreated.
 
-`scripts/check-alert.sh --explain '…'` turns a notification payload into the queries to run, and
-needs no database at all. See [Alerting](README.md#alerting).
+`lock_tree_prune()` now also prunes the deadlock samples. Its return value is **unchanged**: still
+the number of history rows removed. See [the changelog](CHANGELOG.md#010-2026-10-04) for why that
+asymmetry is deliberate.
 
-**Downgrade is not supported.** There is no `0.9--0.8` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get 0.8 behaviour back, install 0.8 in a scratch database alongside it.
+**Downgrade is not supported.** There is no `0.10--0.9` script, and `ALTER EXTENSION ... UPDATE TO`
+will not go backwards. To get 0.9 behaviour back, install 0.9 in a scratch database alongside it.
 
 **Upgrading from an earlier version chains automatically.** There is no `0.2--0.4` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the
@@ -338,7 +343,7 @@ The extension lives **inside each database**, so:
 - `pg_upgrade` carries the installed extension and its version forward automatically.
 - A dump/restore (`pg_dumpall` / `pg_restore`) carries the `CREATE EXTENSION` statement, so
   target the server with `make install` first, or the restore fails with
-  `could not access file "pg_lock_tree--0.9.sql"`.
+  `could not access file "pg_lock_tree--0.10.sql"`.
 - To install into a fresh major version, repeat [Install](#install) against the new
   `pg_config`:
   ```bash
@@ -369,7 +374,7 @@ set `PG_CONFIG=/usr/lib/postgresql/<version>/bin/pg_config`.
 **Installed to the wrong PostgreSQL version.** `pg_config` resolves to whichever version comes
 first on your `PATH`, which on a multi-version box is rarely the one you meant. Always pass
 `PG_CONFIG=` explicitly, and confirm with `pg_config --version` before creating the extension.
-PostgreSQL does not warn about this. It will happily load a 0.9 built for a different major
+PostgreSQL does not warn about this. It will happily load a 0.10 built for a different major
 version, and you will find out at runtime.
 
 **`FATAL: Peer authentication failed for user "postgres"`**, stock Debian/Ubuntu behaviour and not

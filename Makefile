@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--0.10.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
@@ -69,3 +69,10 @@ check-alert:
 # point: the first thing you do at 3am should not be something that can fail.
 explain-alert:
 	@./scripts/check-alert.sh --explain '$(PAYLOAD)'
+
+# Prove that a real deadlock moves pg_stat_database.deadlocks and that the sample records it. A
+# script rather than a test file because the increment lands when the server breaks the cycle, on a
+# timer, and three separate attempts to observe it inside a single psql session all failed. Needs a
+# server and superuser.
+check-deadlock:
+	./scripts/check-deadlock.sh

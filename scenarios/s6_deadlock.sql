@@ -34,6 +34,16 @@ FROM unnest(ARRAY['d1','d2']) AS n;
 SELECT dblink_exec('d1','SET deadlock_timeout = ''15s''');
 SELECT dblink_exec('d2','SET deadlock_timeout = ''15s''');
 
+-- Baseline for the deadlock counter, taken BEFORE the cycle exists.
+--
+-- Order matters here and getting it wrong is invisible: deadlock_timeout is 15s in this scenario
+-- and the scenario runs for longer than that before it reaches the reporting section, so a sample
+-- taken there has already seen the increment and a sample taken after it sees the same number. The
+-- first version of this section took both samples at the reporting point and reported no movement
+-- at all, which read as "the counter does not work" rather than as "the baseline was late".
+TRUNCATE lock_tree_deadlock;
+SELECT lock_tree_sample() AS baseline_rows;
+
 -- D1 takes x then wants y; D2 takes y then wants x.
 SELECT dblink_exec('d1','BEGIN');
 SELECT dblink_exec('d2','BEGIN');
@@ -64,6 +74,22 @@ FROM s6_pids p JOIN pg_stat_activity a USING (pid) ORDER BY p.tag;
 \echo '--- pg_lock_tree: both sessions appear, each its own root ---'
 SELECT * FROM lock_tree_text();
 
+-- The deadlock counter, sampled. Recorded here rather than in a test file because it only means
+-- anything against a REAL deadlock, and this scenario already builds one that works every time.
+-- A test file that provoked a deadlock inside the same psql session that was sampling it did not
+-- work at all: the two interfered and the deadlock was never observed. Here the sample before is
+-- taken with the cycle still holding, and the sample after is taken once the server has broken it.
+\set QUIET 1
+\o /dev/null
+SELECT lock_tree_sample() AS during_rows \gset
+\o
+\unset QUIET
+
+\echo ''
+\echo '--- the deadlock counter, sampled before the cycle and while it holds ---'
+\echo '--- two samples, no movement yet: the server has not broken it ---'
+SELECT sampled_at, deadlocks, delta, counter_reset FROM lock_tree_deadlock ORDER BY sampled_at;
+
 \echo ''
 \echo '--- depth is 0 for both, and blocked_by shows the loop ---'
 SELECT pid, root_pid, depth, blocked_by, waiting_for FROM lock_tree ORDER BY pid;
@@ -89,6 +115,19 @@ SELECT std.rows   AS standard_query_rows,
        plt.rows   AS pg_lock_tree_rows,
        round(100.0 * std.rows / nullif(plt.rows,0)) AS ratio
 FROM std, plt;
+
+\echo ''
+\echo '--- the deadlock counter, sampled before the cycle and while it holds ---'
+\echo '--- two samples, no movement yet, because the server has not decided to break it ---'
+SELECT sampled_at, deadlocks, delta, counter_reset FROM lock_tree_deadlock ORDER BY sampled_at;
+\echo ''
+\echo '--- the counter moves when the server breaks the cycle, which is deadlock_timeout after'
+\echo '--- the wait began. This scenario raises that to 15s so the cycle survives long enough to'
+\echo '--- be looked at, so the increment lands after this scenario has moved on.'
+\echo '--- scripts/check-deadlock.sh observes the move, in a separate process, at the default'
+\echo '--- timeout. Run that if you want to see the counter actually change.'
+SELECT (SELECT deadlocks FROM lock_tree_deadlock ORDER BY sampled_at DESC LIMIT 1) AS sampled,
+       (SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()) AS live;
 
 \echo ''
 \echo '   Both report the same two sessions. The difference is that the published form walks'
