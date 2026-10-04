@@ -35,6 +35,12 @@ prove:
 demo:
 	psql -X -f demo.sql
 
+# Verify an installation: server version, extension version, every object present, every
+# function callable, and the prepared-transaction setting. Run it as your monitoring role as
+# well as as yourself — that is how you confirm the grants rather than assuming them.
+check-install:
+	./scripts/check-install.sh
+
 # Scenario suite: seven incidents, each queried both by pg_lock_tree and by the published
 # recursive CTE, with both outputs captured. Needs a superuser.
 scenarios:

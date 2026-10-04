@@ -6,8 +6,10 @@ Readable lock-wait trees for PostgreSQL 14+. When the database "hangs", it is us
 
 Pure SQL; no C, no background worker, no `shared_preload_libraries`.
 
-PostgreSQL Licence. See [CHANGELOG.md](CHANGELOG.md) for what changed and
-[test/](test/) for how the behaviour is pinned down.
+PostgreSQL Licence. New here? Start with **[INSTALL.md](INSTALL.md)**.
+[CHANGELOG.md](CHANGELOG.md) for what changed, [test/](test/) for how the behaviour is pinned
+down, [scenarios/](scenarios/) for seven incidents compared against the usual hand-written
+query.
 
 ## What it looks like
 
@@ -40,22 +42,59 @@ postgres=# SELECT root_pid, state, application_name, blocked_sessions, suggested
 
 ## Install
 
+Full instructions, including grants, updating, uninstalling and troubleshooting, are in
+**[INSTALL.md](INSTALL.md)**. To check an install — server version, extension version, every
+object present, every function callable, and the prepared-transaction setting:
+
 ```bash
-make install                      # uses the pg_config on your PATH; override with PG_CONFIG=...
-psql -c 'CREATE EXTENSION pg_lock_tree;'
+./scripts/check-install.sh          # or: make check-install
 ```
 
-To read the tree, a monitoring role needs **two** grants — `pg_read_all_stats` decides which
-`pg_stat_activity` rows and query text it may see, but the role also needs `SELECT` on the view
-itself, otherwise every query fails with `permission denied for view lock_tree`:
+The short version of installing, on a machine where `pg_config` is already correct:
+
+```bash
+git clone <your-forgejo>/apjapj/pg_lock_tree.git && cd pg_lock_tree
+sudo make install                                    # copies the .sql and .control into place
+sudo -u postgres psql -c 'CREATE EXTENSION pg_lock_tree;'
+```
+
+Needs **PostgreSQL 14 or later** and a **superuser** to run `CREATE EXTENSION` — the control file
+sets `trusted = false`. Pure SQL: no compiler, no C, no `shared_preload_libraries`, no restart.
+
+On a multi-version box, say which version you mean — `pg_config` resolves to whichever comes
+first on your `PATH`, and PostgreSQL will not warn you if you got it wrong:
+
+```bash
+sudo make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config install
+```
+
+### Grants
+
+To use it as a superuser from a terminal, nothing more. For a monitoring role, give it **two**
+grants — `pg_read_all_stats` decides which `pg_stat_activity` rows and query text it may see,
+but the role also needs `SELECT` on the view itself, otherwise every query fails with
+`permission denied for view lock_tree`:
 
 ```sql
-GRANT pg_read_all_stats TO monitoring;   -- see other users' queries
-GRANT SELECT ON lock_tree TO monitoring; -- and be allowed to read the view at all
+CREATE ROLE monitoring LOGIN PASSWORD '...';   -- LOGIN only if something connects over TCP
+
+GRANT pg_read_all_stats TO monitoring;         -- see other users' queries
+GRANT SELECT ON lock_tree TO monitoring;       -- and be allowed to read the view at all
 ```
 
-`lock_tree_roots()` and `lock_tree_text()` are executable by `PUBLIC` by default and become
-readable once the view is.
+`lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()` and the
+three formatting helpers are executable by `PUBLIC` by default and become usable once the view
+is readable.
+
+### Updating
+
+```bash
+git pull && sudo make install                    # safe to do before upgrading
+sudo -u postgres psql -c 'ALTER EXTENSION pg_lock_tree UPDATE;'
+```
+
+Per database, since that is where the extension lives. `v0.1` → `v0.2` changes rendering only;
+the view's columns and values are unchanged. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Behaviour worth knowing
 
