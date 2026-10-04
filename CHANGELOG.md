@@ -1,8 +1,104 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.9'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
+
+## 0.11 (2026-10-11)
+
+The two things that were wanted when partitioning `lock_tree_history` was proposed, because
+partitioning turned out not to be available.
+
+### Why it is not available, measured rather than assumed
+
+PostgreSQL has no `ALTER TABLE ... SET PARTITIONED BY`. Converting a table means creating a new
+partitioned table, copying the rows, and swapping. The swap cannot be done from outside the
+extension, because the table is a member:
+
+```
+DROP TABLE lock_tree_history
+ERROR:  cannot drop table lock_tree_history because extension pg_lock_tree requires it
+```
+
+The same restriction that applies to the view. The only place `DROP TABLE` is permitted is **inside
+an extension update script**, so the copy would happen unattended during
+`ALTER EXTENSION ... UPDATE`, on however many rows the user happens to have, holding whatever locks
+that takes, with no way to stop it half way. That is not a change to make on someone's behalf in a
+script they did not write, so it is not offered. The README says what to do instead.
+
+### What replaces it
+
+The problem partitioning was meant to solve is real: `lock_tree_prune()` is one `DELETE`, which on a
+large table takes a long time, holds its locks for all of it, and leaves the free space behind for
+`VACUUM` to find.
+
+**`lock_tree_history_size()`** answers the question partitioning was proposed to answer, without it.
+"Is this table going to fill the disk" is a question about a rate, and a rate needs two samples and
+the interval between them. It reports rows, samples, `pg_total_relation_size`, the oldest and newest
+sample, the observed interval, bytes per day, and `days_to_1gb`, which is the number to alert on.
+
+Three details it does not get wrong:
+
+`pg_total_relation_size` rather than a hand-rolled sum of `pg_relation_size`, because the sum misses
+TOAST and the free space map, and the total is what the disk is charged.
+
+The observed interval is `(span) / (gaps)`, not the average of the intervals. Averaging weights a
+long gap the same as a short one; dividing the span is the thing that actually has to be divided.
+
+An unsampled database gets `NULL` for every rate column, not a large number invented from no data.
+The test asserts all three.
+
+**`lock_tree_prune_batched()`** is a **procedure**, and that is the entire reason it works: only a
+procedure can `COMMIT`, and a batched prune that cannot commit between batches still holds
+everything. Rows are selected by primary key rather than by `OFFSET`, because `OFFSET` is
+`O(rows skipped)` and the tenth batch would walk past everything already deleted.
+
+```sql
+CALL lock_tree_prune_batched(interval '7 days', 20000);   -- fine
+BEGIN; CALL lock_tree_prune_batched(interval '7 days'); END;   -- ERROR
+```
+
+It checks for a transaction block **before deleting anything**, so wrapped in one it fails having
+removed nothing, rather than part way through with half the table gone. That ordering is the useful
+part; the error PostgreSQL raises is `invalid transaction termination`, which does not say why, so
+the `COMMENT ON` and the README both explain it.
+
+`lock_tree_prune()` is unchanged and still there. A batched prune you cannot interrupt is worse than
+an unbatched one in some situations, so the procedure is opt-in.
+
+### Two things that could not be done the obvious way
+
+**Checking for a transaction block cannot be wrapped in an exception handler.** The first version
+raised `COMMIT` inside a plpgsql block with an `EXCEPTION` clause, to turn the failure into a
+readable message. A block with an `EXCEPTION` clause runs in a **subtransaction**, and `COMMIT` is
+never permitted in one, so the check failed every time rather than only inside a transaction block.
+It refused to work outside a transaction block too. The check is a plain `COMMIT` now, and the error
+is explained in prose rather than caught.
+
+**`throws_ok` inside pgTAP reports `0A000`, not `2D000`.** `throws_ok` runs the statement in a
+subtransaction, and there the refusal is "EXECUTE of transaction commands is not implemented".
+Called inside a real `BEGIN` block at the top level it is `2D000` "invalid transaction
+termination". Same refusal, different wording, because a subtransaction and a transaction block are
+different things to PostgreSQL. The test asserts the one it actually observes and says why.
+
+### A test bug that was an arithmetic bug
+
+`test/15_history_size.sql` asserts nothing was deleted when the `CALL` is refused. The first version
+compared against a hardcoded row count, and was wrong twice: once by forgetting the 60 rows left by
+the fixture above it, and once by forgetting a row the setup had already used. The assertions are
+now relative to the table at the moment of the check, which is the thing this file is about, so the
+test should measure it the same way.
+
+A stray `BEGIN;` with no `COMMIT` in the middle of the file put the whole rest of the psql script
+into a transaction block, and the later `CALL` then failed with "invalid transaction termination" for
+a reason that had nothing to do with what was being tested. `throws_ok` runs the statement inside its
+own subtransaction, which is the right way to check it.
+
+Verified: 273 tests green on PG 14, 15, 16, 17, 18 and 19beta4; all eight scenarios; the 0.10 ->
+0.11 upgrade against a populated history and the full `0.2--0.11` chain; the batched prune removing
+rows in 6 batches of 7 out of 40 aged rows; demo, check-install, check-alert and check-deadlock.
+
+## 0.10 (2026-10-04)
 
 ## 0.10 (2026-10-04)
 

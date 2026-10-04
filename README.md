@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.10** (green on PG 14 to 19beta4) |
+| Current release | **v0.11** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 250 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 273 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -665,7 +665,9 @@ Four things worth knowing before you turn it on:
 | `lock_tree_deadlock` (table) | `pg_stat_database.deadlocks` sampled on its own beat, whether or not anything is blocked. Naming no participants: the two statements are in the server log. Pruned by `lock_tree_prune()`. |
 | `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
 | `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')` | The history grouped into incidents: when each ran, peak sessions blocked, deepest chain, longest wait, and the root pids and application names involved. |
-| `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many. The table only grows otherwise. |
+| `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many **history** rows went, which is what it has always returned. The table only grows otherwise. |
+| `lock_tree_history_size()` | What the history costs now and what it will cost at the rate it is already being written: rows, samples, total bytes, the observed sample interval, bytes per day, and days until it reaches a gigabyte. |
+| `lock_tree_prune_batched(older_than interval, batch_size integer)` | A **procedure**, not a function. The same prune in committed batches, so no single lock is held for the whole of it. Cannot be called inside a transaction block, and checks for one before deleting anything. |
 | `lock_tree_wide()` | One row per root instead of one per session: how many sessions each blocks, the deepest chain under it, the longest wait, and what they are waiting for. Use when the tree is too wide to read. |
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
@@ -774,7 +776,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 250 pgTAP tests against the server your libpq env vars point at
+make prove              # 273 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -807,6 +809,7 @@ terminate backends rather than mocking anything:
 | `test/12_history_statements.sql` | per-query blocking time from written history: only root rows count, the window filter runs before the aggregation, and the figure is session-samples rather than seconds |
 | `test/13_prepared_roots.sql` | two prepared transactions are two roots, which is the 0.8 bug: the waiters attach to the right object, every aggregate counts two roots, and alerting tracks them separately |
 | `test/14_deadlocks.sql` | the deadlock counter: a sample on a quiet tree still records it, a delta is a subtraction and never negative, a reset is reported as a reset, and the sampling advice is sized on the history's peak rather than on the instant |
+| `test/15_history_size.sql` | the sizing report (zeros and NULLs on an unsampled database, a real rate when there is one), and that a `CALL` inside a transaction block is refused **having deleted nothing** |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
