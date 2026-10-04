@@ -9,6 +9,13 @@
 -- Safe to re-run: everything it creates is terminated and dropped at the end.
 -- Mechanical output (connecting, BEGIN, UPDATE 1) is suppressed — only the
 -- interesting results are shown.
+--
+-- ON THE PIDs. They change on every run. Each invocation opens fresh dblink backends and
+-- PostgreSQL hands out the next available pid, so one run may show 165 and the next 180.
+-- Within a single run every section agrees: the roster in section 2, the root line in
+-- section 3, and root_pid in section 5 are always the same number. If you are comparing
+-- two runs, match on application_name, not on pid — a pid identifies one session for as long
+-- as that session lives, and a re-run is a different set of sessions.
 
 \set ON_ERROR_STOP 1
 \pset border 2

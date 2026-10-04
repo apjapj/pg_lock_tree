@@ -1,4 +1,4 @@
-# .forgejo/workflows/test.yml v0.1 — pg_lock_tree logic tests on PG 14–19.
+# .forgejo/workflows/test.yml — pg_lock_tree logic tests on PG 14–19.
 # CI loads the SQL file directly (no make install: the database runs in a separate service
 # container). Packaging and CREATE EXTENSION are covered locally by scripts/matrix.sh.
 name: test matrix
@@ -46,7 +46,7 @@ jobs:
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
         run: |
-          sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' pg_lock_tree--0.1.sql \
+          sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' pg_lock_tree--0.2.sql \
             | psql -qX -v ON_ERROR_STOP=1
       - name: pgTAP
         run: pg_prove --dbname postgres test/*.sql

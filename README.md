@@ -1,4 +1,6 @@
-# pg_lock_tree v0.1
+# pg_lock_tree
+
+Current release: **v0.2**. (`v0.1` is the first release; `ALTER EXTENSION pg_lock_tree UPDATE` moves between them.)
 
 Readable lock-wait trees for PostgreSQL 14+. When the database "hangs", it is usually one session at the front of a lock queue with everything else waiting politely behind it. This extension shows that queue as a tree, names the root blocker, and suggests what to do about it.
 
@@ -30,7 +32,11 @@ postgres=# SELECT root_pid, state, application_name, blocked_sessions, suggested
 |---|---|
 | `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `depth` (0 = root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, plus user, database, application and client. Ordered root first. |
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
-| `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. |
+| `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
+| `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
+| `lock_tree_actions()` | One copy-and-paste command per root blocker, ordered by how many sessions each unblocks, with its blast radius on the same line. Kept separate from the tree on purpose. |
+| `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
+| `lock_tree_mode_short(text)` / `lock_tree_state_short(text)` | `AccessExclusiveLock` → `AX`, `idle in transaction` → `idle-in-tx`. Unknown values pass through unchanged. |
 
 ## Install
 
@@ -63,12 +69,49 @@ readable once the view is.
 
 ## Tests
 
-31 pgTAP tests in four files. `test/01_lock_tree.sql` builds a real five-session chain with `dblink` (superuser needed) and checks roots, depth, paths, multiple blockers, wait details, the root summary, the text output, and that the tree empties when the root rolls back. `test/02_permissions.sql` pins the grants a monitoring role needs. `test/03_deadlock.sql` builds a real two-session wait-for cycle and checks the tree does not go empty. `test/04_prepared.sql` checks a prepared transaction shows up as root pid `0`.
+52 pgTAP tests in five files. `test/01_lock_tree.sql` builds a real five-session chain with `dblink` (superuser needed) and checks roots, depth, paths, multiple blockers, wait details, the root summary, the text output, and that the tree empties when the root rolls back. `test/02_permissions.sql` pins the grants a monitoring role needs. `test/03_deadlock.sql` builds a real two-session wait-for cycle and checks the tree does not go empty. `test/04_prepared.sql` checks a prepared transaction shows up as root pid `0`. `test/05_formatting.sql` pins the exact output of the 0.2 rendering helpers.
 
 ```bash
 make prove                        # against the server your libpq env vars point at
 scripts/matrix.sh                 # make install + CREATE EXTENSION + tests on PG 14–19 in the docker test matrix
 ```
+
+## Scenario suite
+
+`scenarios/` builds seven incidents for real and queries each one two ways — by this extension
+and by the published recursive `pg_blocking_pids()` CTE — capturing both so they can be
+compared side by side.
+
+```bash
+make scenarios                      # all seven
+./scenarios/run.sh s7               # just the interesting one
+```
+
+```
+  scenario            waiting      std     tree   verdict
+  s1_nightly_batch          4        4        4   tie
+  s2_three_chains           4        4        4   tie
+  s3_row_locks              2        2        2   tie
+  s4_wide_queue            60       60       60   tie
+  s5_mixed_locks            2        2        2   tie
+  s6_deadlock               2        2        2   tie
+  s7_prepared               2        0        2   pg_lock_tree +2
+```
+
+On plain coverage the two tie almost everywhere, and the suite says so rather than
+overclaiming. What differs:
+
+- **`s7_prepared` is the one that matters.** A prepared transaction has no backend and no
+  `pg_locks.pid`. The published query finds **nothing** — its waiters appear with no blocker at
+  all. This extension attributes them to pid 0 and names the state.
+- **`s1`/`s4`: the published form times out.** Run verbatim it never returns; it omits
+  `blocking_locks.granted`, so the row count grows geometrically with chain depth. The suite
+  compares against the version with that one line added.
+- **`s6`: 40 rows versus 2.** Both find the two deadlocked sessions, but the published
+  recursion has no cycle guard and walks the loop to the depth cap.
+
+See [`scenarios/README.md`](scenarios/README.md) for the full write-up and the reasoning
+behind the coverage metric.
 
 ## Seeing it work
 

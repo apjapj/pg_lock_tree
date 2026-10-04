@@ -111,8 +111,12 @@ SELECT matches((SELECT suggested_action FROM roots),
                'pg_terminate_backend\(' || (SELECT pid FROM lock_tree_pids WHERE name = 'a') || '\)',
                'idle-in-transaction root gets a terminate suggestion naming its pid');
 
+-- 0.2 changed the text layout: the root line is "pid  state  age  app  query" with no
+-- bracket, and the age is compact ("0s", not "00:00:00"). Match the current format, and match
+-- on the pid *and* the state so the assertion cannot pass on a waiter line.
 SELECT ok((SELECT count(*) FROM txt
-           WHERE line LIKE (SELECT pid FROM lock_tree_pids WHERE name = 'a') || '  [%') = 1,
+           WHERE line LIKE (SELECT pid FROM lock_tree_pids WHERE name = 'a')
+                            || '  idle in transaction%') = 1,
           'text output has a root line for A');
 
 -- release the chain and confirm the tree empties

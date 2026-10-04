@@ -1,5 +1,5 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '0.1'
+default_version = '0.2'
 relocatable = false
 trusted = false
