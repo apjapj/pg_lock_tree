@@ -20,11 +20,13 @@ Everything needed to get `pg_lock_tree` running, move it between versions, and u
 
 | | |
 |---|---|
-| PostgreSQL | **14 or later.** 0.1 and 0.2 need `pg_locks.waitstart`, added in 14. Tested on 14, 15, 16, 17, 18 and 19beta4. |
+| PostgreSQL | **14 or later.** Every version needs `pg_locks.waitstart`, added in 14. Tested on 14, 15, 16, 17, 18 and 19beta4. On 13 and earlier the extension refuses to install, and says why in the error. |
+| Upcoming | PostgreSQL 14 reaches end of life on **12 November 2026**. The extension itself has nothing to change, but that is the floor of the tested matrix, so 14 will stop being tested when it stops being supported. |
 | Language | SQL only. No C, no compiler, no `shared_preload_libraries`, no restart. |
 | Superuser | **Required to `CREATE EXTENSION`.** The control file sets `trusted = false`, so PostgreSQL will not let an ordinary role install it. |
 | To run the tests, demo or scenarios | the `dblink` contrib module, plus superuser (they open sessions and terminate backends) |
 | To exercise prepared transactions | `max_prepared_transactions > 0` |
+| One setting you can turn off | `SET lock_tree.actions = off` suppresses `lock_tree_actions()` for the session, for anyone who prefers the columns in `lock_tree_roots()`. Not needed by the extension; it is a display preference. |
 
 That last row catches people. `max_prepared_transactions` defaults to **0**, and with it at 0
 `PREPARE TRANSACTION` is refused. It does not affect normal use of the extension. Only the
@@ -44,8 +46,8 @@ Check out the version you want. Tags are releases; `main` is whatever is newest 
 ahead of the last tag:
 
 ```bash
-git tag                 # v0.1, v0.2
-git checkout v0.2       # or: git checkout main
+git tag                 # v0.1, v0.2, v0.3
+git checkout v0.3       # or: git checkout main
 ```
 
 ## Install
@@ -80,9 +82,11 @@ Check what it landed on before continuing:
 
 ```bash
 ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
-# pg_lock_tree--0.1--0.2.sql   the update path
-# pg_lock_tree--0.1.sql         previous release
-# pg_lock_tree--0.2.sql         current release
+# pg_lock_tree--0.1--0.2.sql   the update path from 0.1
+# pg_lock_tree--0.2--0.3.sql   the update path from 0.2
+# pg_lock_tree--0.1.sql         release
+# pg_lock_tree--0.2.sql         release
+# pg_lock_tree--0.3.sql         current release
 # pg_lock_tree.control
 ```
 
@@ -168,8 +172,8 @@ second grant every query fails with:
 ERROR:  permission denied for view lock_tree
 ```
 
-`lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()` and the
-three formatting helpers are executable by `PUBLIC` by default and become usable once the view
+`lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()`,
+`lock_tree_command()` and the three formatting helpers are executable by `PUBLIC` by default and become usable once the view
 is readable. If you install into a non-public schema, grant against that schema instead:
 
 ```sql
@@ -194,7 +198,7 @@ the objects are missing or the schema is wrong, and an empty result just means n
 blocked:
 
 ```sql
-SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.2
+SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.3
 SELECT count(*) FROM lock_tree;                                        -- 0
 SELECT * FROM lock_tree_text();                                        -- 0 rows
 ```
@@ -208,6 +212,7 @@ SELECT * FROM lock_tree_roots();         -- 0 rows
 SELECT * FROM lock_tree_text();          -- 0 rows
 SELECT * FROM lock_tree_text_short();    -- 0 rows
 SELECT * FROM lock_tree_actions();       -- the "-- 0 root blocker(s)" line
+SELECT * FROM lock_tree_command();       -- 0 rows: a quiet database needs no commands
 RESET ROLE;
 ```
 
@@ -243,30 +248,32 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '0.2';     -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '0.3';     -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "0.1" to version "0.2"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.1--0.2.sql` in the
+**If you get `no update path from version "0.x" to version "0.3"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.3.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.1--0.2.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.2--0.3.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
 [Troubleshooting](#troubleshooting).
 
-**What 0.2 changes:** rendering only. The `lock_tree` view's columns, values and semantics are
-unchanged and still carry full unabbreviated names, so nothing selecting from the view breaks.
-Three functions are added and `lock_tree_text()`'s line layout changes. See
-[CHANGELOG.md](CHANGELOG.md).
+**What 0.3 changes:** the action block only. The `lock_tree` view's columns, values and semantics
+are unchanged and still carry full unabbreviated names, so nothing selecting from the view breaks.
+`lock_tree_actions()` keeps its signature but now returns prose instead of commands inside
+comments, and `lock_tree_command()` is new. If you were parsing `lock_tree_actions()` output, or
+grepping it for `pg_terminate_backend`, read the 0.3 section of
+[CHANGELOG.md](CHANGELOG.md) first: the text it emits has changed deliberately, because the old
+text promised a runnable command and was not one.
 
-**Downgrade is not supported.** There is no `0.2--0.1` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get back to 0.1 behaviour, install 0.1 in a scratch database and use
-its `lock_tree_text()`.
+**Downgrade is not supported.** There is no `0.3--0.2` script, and `ALTER EXTENSION ... UPDATE TO`
+will not go backwards. To get 0.2 behaviour back, install 0.2 in a scratch database alongside it.
 
 ## Uninstalling
 
@@ -295,7 +302,7 @@ The extension lives **inside each database**, so:
 - `pg_upgrade` carries the installed extension and its version forward automatically.
 - A dump/restore (`pg_dumpall` / `pg_restore`) carries the `CREATE EXTENSION` statement, so
   target the server with `make install` first, or the restore fails with
-  `could not access file "pg_lock_tree--0.2.sql"`.
+  `could not access file "pg_lock_tree--0.3.sql"`.
 - To install into a fresh major version, repeat [Install](#install) against the new
   `pg_config`:
   ```bash
@@ -326,7 +333,7 @@ set `PG_CONFIG=/usr/lib/postgresql/<version>/bin/pg_config`.
 **Installed to the wrong PostgreSQL version.** `pg_config` resolves to whichever version comes
 first on your `PATH`, which on a multi-version box is rarely the one you meant. Always pass
 `PG_CONFIG=` explicitly, and confirm with `pg_config --version` before creating the extension.
-PostgreSQL does not warn about this. It will happily load a 0.2 built for a different major
+PostgreSQL does not warn about this. It will happily load a 0.3 built for a different major
 version, and you will find out at runtime.
 
 **`FATAL: Peer authentication failed for user "postgres"`**, stock Debian/Ubuntu behaviour and not

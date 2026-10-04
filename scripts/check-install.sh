@@ -62,7 +62,8 @@ echo "  schema: $schema"
 # rows, so head -1 always saw the pg_class count (0 for a function) and reported every
 # function as missing.
 for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree_actions \
-         lock_tree_age lock_tree_mode_short lock_tree_state_short; do
+         lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
+         lock_tree_state_short; do
     found=$(psql -X -tAc "
         SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                  WHERE n.nspname='$schema' AND c.relname='$f')
@@ -76,7 +77,8 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_roots()" \
          "SELECT count(*) FROM $schema.lock_tree_text()" \
          "SELECT count(*) FROM $schema.lock_tree_text_short()" \
-         "SELECT count(*) FROM $schema.lock_tree_actions()"; do
+         "SELECT count(*) FROM $schema.lock_tree_actions()" \
+         "SELECT count(*) FROM $schema.lock_tree_command()"; do
     out=$(psql -X -tAc "$q" 2>&1)
     if [ $? -eq 0 ]; then ok "$q  -> ${out:-0}"; else bad "$q  -> $out"; fi
 done
@@ -88,6 +90,18 @@ if [ "${mpt:-0}" -gt 0 ] 2>/dev/null; then
 else
     echo "  note: max_prepared_transactions=0, so test/04_prepared.sql will SKIP."
     echo "        Normal use of the extension is unaffected."
+fi
+
+# Neither of the next two is a requirement. Reported so that a SKIP in the test suite is
+# explainable rather than mysterious, and because pg_cron being preloaded is easy to mistake
+# for this extension needing it.
+spl=$(psql -X -tAc 'SHOW shared_preload_libraries' 2>/dev/null)
+case "$spl" in
+    *pg_cron*) ok "pg_cron preloaded (test/06_cron.sql will run, not skip)" ;;
+    *)         echo "  note: pg_cron not preloaded, so test/06_cron.sql will SKIP." ;;
+esac
+if [ -z "$spl" ]; then
+    echo "        Normal use of the extension is unaffected: it needs no shared_preload_libraries."
 fi
 
 step "result"

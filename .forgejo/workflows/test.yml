@@ -27,10 +27,16 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
-        # No `command:` override here on purpose. Forgejo v16 ignores it on a service, so
-        # test/04_prepared.sql would still see max_prepared_transactions=0 and fail. The
-        # setting lives in the pg-test image's own CMD instead, and that test skips itself
-        # when it is absent, so this workflow passes on any image.
+        # No `command:` override here on purpose. Forgejo v16 ignores it on a service, so two
+        # things this suite needs could not be set here: max_prepared_transactions, without
+        # which test/04_prepared.sql has nothing to test, and shared_preload_libraries=pg_cron,
+        # without which pg_cron refuses to create jobs and test/06_cron.sql has nothing to
+        # schedule. Both live in the pg-test image's own CMD instead, and both tests skip
+        # themselves when the setting is absent, so this workflow still passes on an image
+        # that predates them.
+        #
+        # pg_cron is a dependency of the harness, not of pg_lock_tree: the extension needs no
+        # shared_preload_libraries and is fully exercised by the other five files without one.
     env:
       PGHOST: postgres
       PGUSER: postgres
@@ -46,7 +52,7 @@ jobs:
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
         run: |
-          sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' pg_lock_tree--0.2.sql \
+          sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' pg_lock_tree--0.3.sql \
             | psql -qX -v ON_ERROR_STOP=1
       - name: pgTAP
         run: pg_prove --dbname postgres test/*.sql

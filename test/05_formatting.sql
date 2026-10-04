@@ -1,7 +1,9 @@
--- test/05_formatting.sql: the 0.2 rendering and action helpers.
+-- test/05_formatting.sql: the rendering helpers.
 --
 -- These are pure functions over known inputs, so no dblink and no blocked sessions: the point
--- is to pin the exact output, because the scenario suite measures widths from it.
+-- is to pin the exact output, because the scenario suite measures widths from it. The action
+-- helpers are not here, because they read the live tree: they are pinned in 01_lock_tree.sql
+-- and 04_prepared.sql, where there is a real chain for them to describe.
 --
 -- Superuser not needed for this file beyond the usual extension setup, but the suite as a
 -- whole assumes it.

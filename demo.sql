@@ -124,8 +124,25 @@ FROM lock_tree_roots() ORDER BY blocked_sessions DESC, root_pid;
 
 \echo ''
 \echo '##############################################################################'
-\echo '# 6. Act on it: terminate the idle batch'
+\echo '# 6. What the operator reads, and what they run'
 \echo '##############################################################################'
+\echo ' Two functions, because they answer different questions. Read the first: it is prose.'
+\echo ''
+SELECT * FROM lock_tree_actions();
+
+\echo ''
+\echo ' Then run the second. It is statements and nothing else, so it pastes cleanly:'
+\echo ''
+SELECT command FROM lock_tree_command();
+
+\echo ''
+\echo ' Or hand the whole set to psql in one keystroke. It executes every row, so only do this'
+\echo ' once you have read the list above:'
+\echo ''
+\echo '     SELECT command FROM lock_tree_command() \\gexec'
+\echo ''
+\echo ' (not run here, for the obvious reason)'
+\echo ''
 \set QUIET 1
 \o /dev/null
 SELECT pg_terminate_backend(root_pid)

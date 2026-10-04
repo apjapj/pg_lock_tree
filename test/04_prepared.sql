@@ -28,7 +28,7 @@ $ext$;
 \o
 \unset QUIET
 
-SELECT plan(5);
+SELECT plan(9);
 
 -- decide before touching anything: PREPARE TRANSACTION raises if the setting is 0
 SELECT current_setting('max_prepared_transactions')::int > 0 AS have_ptx \gset
@@ -70,6 +70,12 @@ $wait$;
 
 CREATE TEMP TABLE ptx AS
 SELECT t.* FROM lock_tree t WHERE t.root_pid = 0;
+
+CREATE TEMP TABLE ptx_roots AS
+SELECT root_pid, suggested_action FROM lock_tree_roots() WHERE root_pid = 0;
+
+CREATE TEMP TABLE ptx_cmds AS
+SELECT command FROM lock_tree_command();
 \o
 \unset QUIET
 
@@ -88,6 +94,28 @@ SELECT is((SELECT depth FROM ptx WHERE pid <> 0), 1,
 
 SELECT is((SELECT count(*) FROM lock_tree_roots() WHERE root_pid = 0), 1::bigint,
           'lock_tree_roots() reports the prepared transaction as a root to act on');
+
+-- 0.3: 0.2 gave this root the generic "try SELECT pg_cancel_backend(0)" advice, which returns
+-- false and warns that PID 0 is not a PostgreSQL backend process. That is the one case where
+-- the queue is genuinely stuck and the operator has no other signal, so handing back a command
+-- that cannot work is worse than handing back none.
+SELECT matches((SELECT suggested_action FROM ptx_roots),
+               'ROLLBACK PREPARED',
+               'the pid-0 root is told to ROLLBACK PREPARED, the only thing that clears it');
+
+SELECT ok((SELECT position('pg_prepared_xacts' in suggested_action) > 0 FROM ptx_roots),
+          'and is pointed at the catalog holding the gid, since lock_tree cannot see it');
+
+SELECT ok((SELECT suggested_action NOT LIKE '%pg_cancel_backend(0)%'
+                      AND suggested_action NOT LIKE '%pg_terminate_backend(0)%'
+           FROM ptx_roots),
+          'the pid-0 root is never told to cancel or terminate a backend that does not exist');
+
+-- lock_tree_command() returns statements only. There is no statement for a prepared transaction,
+-- because the one that would work needs a gid this extension cannot reach, so it returns nothing
+-- rather than something that looks like a fix.
+SELECT is((SELECT count(*) FROM ptx_cmds)::int, 0,
+          'lock_tree_command() offers no statement for a prepared transaction');
 
 -- release: ROLLBACK PREPARED frees the prepared transaction's locks, which lets I finish.
 -- I's backend is then terminated rather than unwound: it has an unconsumed result from the
@@ -128,7 +156,7 @@ DROP TABLE lock_tree_pt;
 \else
 
 SELECT skip('max_prepared_transactions is 0 on this server, so the prepared-transaction '
-         || 'path cannot be exercised here', 5);
+         || 'path cannot be exercised here', 9);
 
 \endif
 

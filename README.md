@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.2** (tagged, green on PG 14 to 19beta4) |
+| Current release | **v0.3** (tagged, green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: seven incidents, compared against the usual hand-written query
-- **[test/](test/)**: 52 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 73 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -68,13 +68,45 @@ postgres=# SELECT root_pid, application_name, blocked_sessions FROM lock_tree_ro
 
 postgres=# SELECT * FROM lock_tree_actions();
 -- 1 root blocker(s). Most sessions unblocked first.
--- 1. idle in an open transaction; pg_terminate_backend(166);  blocks 4 session(s), chain depth 2, longest wait 0s
+-- 1. nightly_batch: idle in transaction, blocks 4 session(s), chain depth 2, longest wait 0s
+-- Descriptions, not commands. Every line here is a comment. For statements you can run: SELECT command FROM lock_tree_command().
 -- Terminating a session rolls back its transaction. Re-run the tree afterwards.
+
+postgres=# SELECT command FROM lock_tree_command();
+                 command
+---------------------------------------
+ SELECT pg_terminate_backend(166);
 ```
 
 The three reads sit under the `ALTER TABLE`, not under the batch. A flat `pg_stat_activity`
 listing, or a hand-pasted recursive query, shows five blocked sessions and no structure. This
 shows one culprit and four symptoms, then hands you the command.
+
+### Reading it, then running it
+
+Those last two functions are separate on purpose, because they answer different questions and
+0.2 tried to do both in one block and got it wrong in both directions. It printed
+`pg_terminate_backend(166);` inside a SQL comment, so pasting that line did nothing at all and
+still exited 0, while pasting only the fragment was a syntax error. A trailing semicolon
+announcing a command that was inert.
+
+- **`lock_tree_actions()`** describes. Prose only, no semicolons, every line a comment. It is
+  for reading, and `SET lock_tree.actions = off` turns it off entirely if you would rather have
+  the roots as the columns they already are in `lock_tree_roots()`.
+- **`lock_tree_command()`** runs. One complete statement per row and nothing else, so it pastes
+  cleanly, or runs all at once with psql's `\gexec`:
+
+  ```sql
+  SELECT command FROM lock_tree_command() \gexec
+  ```
+
+It always gives you the least destructive step that can work: `pg_terminate_backend()` for an
+idle-in-transaction blocker, since cancelling one cannot achieve anything, and
+`pg_cancel_backend()` for anything else, leaving the decision to escalate to a terminate with you.
+
+Two kinds of root produce no statement at all, and both are explained by `lock_tree_roots()`:
+a prepared transaction, which has no backend to act on, and your own session. Neither gets a
+command that cannot work or that would disconnect you mid-query.
 
 ## Objects
 
@@ -84,7 +116,8 @@ shows one culprit and four symptoms, then hands you the command.
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
 | `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
-| `lock_tree_actions()` | One copy-and-paste command per root blocker, ordered by how many sessions each unblocks, with its blast radius on the same line. Separate from the tree on purpose: with sixty sessions stuck the tree is already a wall of text. |
+| `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
+| `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
 
@@ -176,7 +209,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 52 pgTAP tests against the server your libpq env vars point at
+make prove              # 73 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all seven scenarios, both tools, output captured
@@ -189,18 +222,25 @@ terminate backends rather than mocking anything:
 
 | file | covers |
 |---|---|
-| `test/01_lock_tree.sql` | a real five-session chain: roots, depth, paths, multiple blockers, wait details, the root summary, text output, and that the tree empties when the root rolls back |
+| `test/01_lock_tree.sql` | a real five-session chain: roots, depth, paths, multiple blockers, wait details, the root summary, text output, that the tree empties when the root rolls back, and that the description and command halves of the action block stay apart |
 | `test/02_permissions.sql` | the grants a monitoring role needs, including that `pg_read_all_stats` alone is not enough |
 | `test/03_deadlock.sql` | a real two-session wait-for cycle, and that the tree does not go empty |
-| `test/04_prepared.sql` | a prepared transaction as root pid 0. Skips itself when `max_prepared_transactions` is 0 |
-| `test/05_formatting.sql` | the exact output of the 0.2 rendering helpers, since the width measurements depend on them |
+| `test/04_prepared.sql` | a prepared transaction as root pid 0, including that its advice is `ROLLBACK PREPARED` rather than a cancel against a backend that does not exist. Skips itself when `max_prepared_transactions` is 0 |
+| `test/05_formatting.sql` | the exact output of the rendering helpers, since the width measurements depend on them |
+| `test/06_cron.sql` | a live chain sampled by a `pg_cron` job, proving the rows outlive the incident. Skips itself when `pg_cron` is not preloaded |
 
-CI runs the same suite on all six versions.
+CI runs the same suite on all six versions. The last two files each need a server setting the
+matrix images provide (`max_prepared_transactions`, `shared_preload_libraries=pg_cron`) and skip
+themselves where it is absent, rather than failing a build that was never going to work. Neither
+is a runtime requirement: `pg_lock_tree` itself needs no `shared_preload_libraries`.
 
 ## Roadmap
 
-- **0.3**: `lock_tree_history`, sampled by `pg_cron`, so an incident can be inspected after it
-  cleared. With a `NOTIFY` when a chain passes a depth or age threshold.
+- **Next**: `lock_tree_history`, so an incident can be inspected after it has cleared. The hard
+  part is now settled rather than assumed: `test/06_cron.sql` proves a `pg_cron` job can read
+  `lock_tree`, land the result somewhere durable, and have it outlive the incident. What remains is
+  the part that is a policy question, not a technical one: retention, and whether to `NOTIFY` when
+  a chain passes a depth or age threshold.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether

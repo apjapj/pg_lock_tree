@@ -73,6 +73,17 @@ FROM lock_tree ORDER BY root_pid, path;
 SELECT root_pid, state, blocked_sessions, suggested_action FROM lock_tree_roots();
 
 \echo ''
+\echo '--- lock_tree_actions(): the written description names ROLLBACK PREPARED, not a cancel ---'
+SELECT * FROM lock_tree_actions();
+
+\echo ''
+\echo '--- lock_tree_command(): no statement at all, because pid 0 is not a backend ---'
+\echo '     (zero rows is the correct answer here, and the reason is worth stating:'
+\echo '      pg_cancel_backend(0) returns false and warns "PID 0 is not a PostgreSQL backend'
+\echo '      process", so 0.2 emitted a suggestion that could never have worked.)'
+SELECT count(*) AS statements_offered FROM lock_tree_command();
+
+\echo ''
 \echo '--- standard query: can it see a blocker that has no pg_locks pid? ---'
 \i 01_standard_query.sql
 

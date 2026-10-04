@@ -67,9 +67,26 @@ WHERE r.root_pid = (SELECT pid FROM lock_tree_pids WHERE name = 'a');
 CREATE TEMP TABLE txt AS
 SELECT line FROM lock_tree_text() AS line;
 
+-- 0.3: the action block was split in two, so both halves get captured here while the chain is
+-- live. 0.2 put a command fragment inside a SQL comment, which read like something you could
+-- paste and was not, so these assert the split holds: the description imitates no code, and the
+-- command function returns nothing but complete statements.
+CREATE TEMP TABLE acts AS
+SELECT line FROM lock_tree_actions() AS line;
+
+CREATE TEMP TABLE cmds AS
+SELECT command FROM lock_tree_command();
+
+SET lock_tree.actions = off;
+CREATE TEMP TABLE acts_off AS
+SELECT count(*) AS n FROM lock_tree_actions();
+RESET lock_tree.actions;
+CREATE TEMP TABLE acts_back AS
+SELECT count(*) AS n FROM lock_tree_actions();
+
 \o
 \unset QUIET
-SELECT plan(19);
+SELECT plan(27);
 
 SELECT has_view('lock_tree', 'lock_tree view exists');
 SELECT has_function('lock_tree_roots', 'lock_tree_roots() exists');
@@ -118,6 +135,44 @@ SELECT ok((SELECT count(*) FROM txt
            WHERE line LIKE (SELECT pid FROM lock_tree_pids WHERE name = 'a')
                             || '  idle in transaction%') = 1,
           'text output has a root line for A');
+
+-- ------------------------------------------- 0.3: description and command, kept apart
+
+-- A is the only root here, so there is exactly one statement to hand back.
+SELECT is((SELECT count(*) FROM cmds)::int, 1,
+          'lock_tree_command() returns one statement, for the one root in the chain');
+
+-- A is idle in transaction, so cancelling it could not achieve anything and terminate is the
+-- real remedy. The idle-in-transaction root is the headline case in the README, so it is the one
+-- that most needs to be right.
+SELECT is((SELECT command FROM cmds),
+          format('SELECT pg_terminate_backend(%s);',
+                 (SELECT pid FROM lock_tree_pids WHERE name = 'a')),
+          'an idle-in-transaction root gets a terminate statement naming its pid');
+
+-- What 0.2 got wrong, pinned: the description carried "pg_terminate_backend(388);" inside a
+-- comment, so the line looked runnable and was inert. The description must now contain no
+-- complete statement at all, which is what makes it safe to read without it being a command.
+SELECT is((SELECT count(*) FROM acts WHERE line LIKE 'SELECT %;'), 0::bigint,
+          'no line of lock_tree_actions() is a runnable statement');
+
+SELECT ok((SELECT bool_and(line LIKE '--%') FROM acts),
+          'every line of lock_tree_actions() is a SQL comment');
+
+SELECT ok((SELECT bool_and(position('pg_terminate_backend(' || (SELECT pid FROM lock_tree_pids WHERE name = 'a')
+                                       || ');' in line) = 0)
+          FROM acts),
+          'lock_tree_actions() no longer contains the command fragment 0.2 printed');
+
+SELECT ok((SELECT bool_and(line LIKE '%lock_tree_command%') FROM acts
+          WHERE line LIKE '%Descriptions, not commands%'),
+          'the description points at lock_tree_command() for something you can run');
+
+-- The switch a user reaches for who wants the roots as columns instead of prose.
+SELECT is((SELECT n FROM acts_off), 0::bigint,
+          'SET lock_tree.actions = off suppresses lock_tree_actions() entirely');
+SELECT ok((SELECT n FROM acts_back) > 0,
+          'and it comes straight back on RESET, so it is a display preference, not a state change');
 
 -- release the chain and confirm the tree empties
 \set QUIET 1
