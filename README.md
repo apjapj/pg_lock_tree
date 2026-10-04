@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.8** (green on PG 14 to 19beta4) |
+| Current release | **v0.9** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 203 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 221 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -149,7 +149,9 @@ So the function keeps state in `lock_tree_alert` and notifies only on:
 | | when it notifies |
 |---|---|
 | **Onset** | a root becomes notable and has not been notable before on this channel |
-| **Escalation** | a root already known is now blocking *more* sessions than it ever has, or is *deeper* than it ever has |
+| **Escalation: wider** | a root already known is now blocking *more* sessions than it ever has |
+| **Escalation: deeper** | it is *deeper* than it ever has |
+| **Escalation: older** | its longest wait has *doubled* since the last notification |
 
 and stays quiet while a chain sits at the same severity. A queue wobbling between 40 and 12
 sessions notifies once, not twice a minute.
@@ -160,6 +162,35 @@ better and must not re-notify.
 
 When a root stops being notable its state is forgotten, so the same chain returning later alerts
 again. That is what makes a *second* incident visible rather than suppressed as already-seen.
+
+### Why the wait escalates by doubling and not by growing
+
+Wider and deeper are **edges**: something happened, and the comparison says so. A wait is not an
+edge, it is a slope. It grows every second, so asking "is the longest wait longer than last time?"
+is true on every single sample, and the function would notify sixty times an hour. That is the
+exact failure `lock_tree_alert` exists to prevent, reached by a different route.
+
+So the age comparison is against **the wait recorded at the last notification**, and it fires only
+once the wait has doubled. A chain that never gets wider or deeper, and simply ages, produces:
+
+```
+ 30s    1m    2m    4m    8m    16m   32m
+  |     |     |     |     |      |      |
+  +-----+-----+-----+-----+------+------+
+```
+
+Seven notifications for a thirty-two minute incident, each one saying it is roughly twice as bad as
+the last. Seven is the point: few enough that nobody learns to filter the channel, many enough
+that a thirty-minute queue does not sit at the same reported severity for half an hour.
+
+**Age escalation only applies when `min_wait` is set.** If you pass `min_wait => NULL` you have
+said you do not want to be paged on wait age, and that switch is honoured even when the wait is
+enormous. A second page about a slow queue you did not ask about is how a channel stops being read.
+
+One detail that matters if you read the code: the doubling falls back to `min_wait` when no wait
+has been recorded yet, because the view truncates `wait_age` to whole seconds and a wait under a
+second reads as zero. Comparing against twice zero is true forever. That was a real bug, found by
+the assertion that nothing is recorded when `min_wait` is off.
 
 ### Choosing thresholds
 
@@ -257,15 +288,53 @@ is worth calling from the same cron entry as the sample if you care. It is not l
 Two ways, and they check different things.
 
 ```bash
-./scripts/check-alert.sh     # builds a chain, notifies, and reads the notification back
+./scripts/check-alert.sh              # builds a chain, notifies, and reads the notification back
+./scripts/check-alert.sh --explain    # the same, then explains the payload it received
+./scripts/check-alert.sh --explain '{"root_pid":0,...}'
 ```
 
 That verifies the delivery path end to end, which no assertion can: `psql` prints notifications to
 stdout and a TAP test cannot see stdout, so the stream is checked by a real second client.
 
 `test/11_alert.sql` verifies the decisions, which is the part worth unit-testing: onset fires once,
-an unchanged chain stays silent, escalation fires, recovery then relapse fires again, thresholds
-behave, and all three disabled is an error.
+an unchanged chain stays silent, escalation fires on width and on depth, age escalates only on a
+doubling, recovery then relapse fires again, thresholds behave, and all three disabled is an error.
+
+### What to do when one arrives
+
+`--explain` takes the payload and prints what it means, the queries to run in order, and what not
+to do. It needs **no database**, which is the point: the first thing you do at 3am should be
+something that cannot fail because the database is the thing that is broken.
+
+```
+$ ./scripts/check-alert.sh --explain '{"root_pid":0,
+    "root_object":"AccessExclusiveLock on public.ledger","application_name":"",
+    "blocked_sessions":12,"max_depth":1,"longest_wait":"9m05s",
+    "waiting_for":"AccessShareLock on public.ledger"}'
+
+  What it means
+  -------------
+  The blocker is a PREPARED TRANSACTION. It has no backend, no session and no
+  application_name, which is why the root pid is 0 and the name is empty.
+  Nothing you can do to a session will clear this. pg_cancel_backend(0) returns
+  false and warns that pid 0 is not a backend; pg_terminate_backend(0) likewise.
+  The only remedy is ROLLBACK PREPARED, and you need the gid.
+
+  Run these, in this order
+  ------------------------
+  SELECT gid, prepared, owner FROM pg_prepared_xacts;
+    -- pick the gid whose prepared time is close to the incident, then:
+  ROLLBACK PREPARED '<gid>';
+  -- the lock it holds is: AccessExclusiveLock on public.ledger
+```
+
+It branches on `root_pid` rather than on the message text, so a session root gets
+`pg_terminate_backend` steps and a prepared root gets `ROLLBACK PREPARED` steps. That branch is
+worth being careful about: the two failures look identical on a dashboard and need opposite
+remedies.
+
+`make explain-alert PAYLOAD='…'` is the same thing if you prefer make. A payload that is not JSON,
+or is JSON from something else on the same channel, is reported as such rather than guessed at.
 
 ### Choosing an interval
 
@@ -480,7 +549,7 @@ Four things worth knowing before you turn it on:
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
 | `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Returns how many it raised, so zero is the normal result. |
-| `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Maintained by the function; you should never need to look at it. |
+| `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Holds three high-water marks, recorded at the last notification rather than at the last sample. Maintained by the function; you should never need to look at it. |
 | `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
 | `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking time from the sampled history, worst first. Answers "which statement costs the most blocking time", which is the question that gets a fix merged rather than a workaround. |
 | `lock_tree_sampling_advice()` | A suggested interval for the sample cron entry, given how busy things are, and why. |
@@ -583,12 +652,13 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 203 pgTAP tests against the server your libpq env vars point at
+make prove              # 221 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
 make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
+make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
 ```
@@ -608,8 +678,8 @@ terminate backends rather than mocking anything:
 | `test/08_wide.sql` | a 57-row, two-root queue, checked against `lock_tree` row by row: every count in the wide form must be derivable from the tree, since a summary that disagrees with the tree is worse than none |
 | `test/09_cost.sql` | the cost claim the README and the SQL header both make, measured as a ratio against a plain `pg_stat_activity` read rather than a wall-clock ceiling, which is noise on a shared runner |
 | `test/10_statements.sql` | `lock_tree_statements()` with and without `pg_stat_statements` loaded: the roots are reported either way, and the join is pinned where it is available |
-| `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires, recovery then relapse fires again, and all three thresholds disabled is an error |
-| `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back |
+| `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires on width, on depth and on a doubling wait, `min_wait => NULL` suppresses age escalation entirely, recovery then relapse fires again, and all three thresholds disabled is an error |
+| `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back. `--explain` turns a payload into the queries to run, with no database |
 | `test/12_history_statements.sql` | per-query blocking time from written history: only root rows count, the window filter runs before the aggregation, and the figure is session-samples rather than seconds |
 | `test/13_prepared_roots.sql` | two prepared transactions are two roots, which is the 0.8 bug: the waiters attach to the right object, every aggregate counts two roots, and alerting tracks them separately |
 

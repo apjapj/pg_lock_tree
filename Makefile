@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
@@ -58,8 +58,14 @@ lint-docs:
 check: lint-docs
 	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
 
-# Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read. A script rather
-# than a pgTAP file because psql prints notifications to stdout and a TAP assertion cannot see
-# stdout, so the delivery path needs a real second client. Needs a server and superuser.
+# Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read, and explain what
+# one means. A script rather than a pgTAP file because psql prints notifications to stdout and a
+# TAP assertion cannot see stdout, so the delivery path needs a real second client. Needs a server
+# and superuser.
 check-alert:
 	./scripts/check-alert.sh
+
+# Just the explanation, from a payload you paste. No database and no superuser needed, which is the
+# point: the first thing you do at 3am should not be something that can fail.
+explain-alert:
+	@./scripts/check-alert.sh --explain '$(PAYLOAD)'

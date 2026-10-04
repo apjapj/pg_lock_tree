@@ -98,7 +98,7 @@ ORDER BY w.blocked_sessions DESC LIMIT 1;
 \o
 \unset QUIET
 
-SELECT plan(30);
+SELECT plan(48);
 
 SELECT has_table('lock_tree_alert', 'lock_tree_alert table exists');
 SELECT has_function('lock_tree_notify',
@@ -314,29 +314,180 @@ SELECT is(:after_recovery::int, 0, 'and nothing fires on a quiet database');
 SELECT is(:relapse::int, 2,
           'the same two roots blocking again IS a new incident, and notifies again');
 
+-- ------------------------------------------------------------------ phase 6: escalation by age
+
+-- Everything above escalates on WIDTH or DEPTH. Neither moves here: one root, one waiter, and it
+-- stays that way. The only thing that changes is how long the waiter has been waiting, so every
+-- notification after the onset can only have come from the age rule. That isolation is the point:
+-- a test where the queue is also growing proves nothing about which rule fired.
+--
+-- The waits here are real and measured in whole seconds, because the view truncates wait_age to
+-- date_trunc('second', ...). A sub-second wait reads as 0, and that case caught a bug in this
+-- function on the first run; see the greatest() in the escalation comparison.
+\set QUIET 1
+\o /dev/null
+-- Clear the phase 5 chain first, or its root is still notable and would escalate on age during the
+-- sleeps below, and every count would be about two incidents rather than one.
+SELECT dblink_exec('r1', 'ROLLBACK');
+SELECT dblink_exec('r2', 'ROLLBACK');
+DO $clear$
+BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_al_pids));
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END
+$clear$;
+
+DROP TABLE IF EXISTS lock_tree_al_steady;
+CREATE TABLE lock_tree_al_steady (id int);
+SELECT dblink_connect(n, format('dbname=%s user=%s', current_database(), current_user))
+FROM unnest(ARRAY['sa_h','sa_w']) n;
+CREATE TEMP TABLE sa_pids AS
+SELECT s.n, (SELECT p FROM dblink(s.n, 'SELECT pg_backend_pid()') AS t(p int)) AS pid
+FROM unnest(ARRAY['sa_h','sa_w']) AS s(n);
+SELECT dblink_exec('sa_h', 'BEGIN');
+SELECT dblink_exec('sa_h', 'SET application_name = ''steady_batch''');
+SELECT dblink_exec('sa_h', 'LOCK TABLE lock_tree_al_steady IN ACCESS EXCLUSIVE MODE');
+SELECT dblink_send_query('sa_w',
+                         'SET application_name = ''api_waiter''; SELECT count(*) FROM lock_tree_al_steady');
+DO $swait$
+BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_stat_activity a JOIN sa_pids USING (pid)
+               WHERE a.wait_event_type = 'Lock') = 1;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END
+$swait$;
+-- Long enough that wait_age is at least a second.
+SELECT pg_sleep(1.5);
+-- One second rather than the default thirty: this file has to finish, and what is under test is the
+-- shape of the escalation rather than the particular interval.
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => interval '1 second') AS age_onset \gset
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => interval '1 second') AS age_unchanged \gset
+SELECT pg_sleep(1.5);
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => interval '1 second') AS age_doubled \gset
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => interval '1 second') AS age_again \gset
+\o
+\set QUIET 0
+
+-- Establish that width and depth did not move, or the assertions below prove nothing.
+SELECT is((SELECT blocked_sessions FROM lock_tree_wide()), 1::bigint,
+          'the steady chain blocks exactly one session, unchanged throughout');
+
+SELECT is((SELECT max_depth FROM lock_tree_wide()), 1,
+          'and is one deep, unchanged throughout');
+
+SELECT ok((SELECT longest_wait >= interval '1 second' FROM lock_tree_wide()),
+          'so the only thing that can have escalated this is the wait, which has grown past a second');
+
+SELECT is(:age_onset::int, 1, 'the onset still fires exactly once');
+
+SELECT is(:age_unchanged::int, 0,
+          'and a second call with nothing changed is still 0: age alone is not enough, it has to '
+          || 'have doubled');
+
+SELECT is(:age_doubled::int, 1,
+          'once the wait has doubled the function fires again, which is the whole point of 0.9');
+
+SELECT is(:age_again::int, 0,
+          'and then falls silent again, rather than firing once per sample for the rest of the '
+          || 'incident');
+
+-- Scoped to this chain's root: lock_tree_notify() sweeps only the policy it was called with, and
+-- that is deliberate, so the table still holds the default-policy rows from phases 1 to 5.
+SELECT is((SELECT notify_count FROM lock_tree_alert a
+           WHERE a.root_pid = (SELECT root_pid FROM lock_tree WHERE depth = 0)), 2,
+          'two notifications in total: the onset and the one escalation');
+
+-- The three high-water marks are recorded independently, which is what lets an incident that grows
+-- in only one dimension escalate on that dimension alone.
+SELECT is((SELECT max_blocked_at FROM lock_tree_alert a
+           WHERE a.root_pid = (SELECT root_pid FROM lock_tree WHERE depth = 0)), 1::bigint,
+          'the blocked high-water mark never moved, since the queue never grew');
+
+SELECT is((SELECT max_depth_at FROM lock_tree_alert a
+           WHERE a.root_pid = (SELECT root_pid FROM lock_tree WHERE depth = 0)), 1,
+          'nor did the depth mark');
+
+SELECT ok((SELECT max_waited_at >= interval '1 second' FROM lock_tree_alert a
+            WHERE a.root_pid = (SELECT root_pid FROM lock_tree WHERE depth = 0)),
+          'while the wait mark did, and is stored rather than recomputed on every sample');
+
+-- The gate. min_wait => NULL means "do not page me on wait age", and this is the case that stopped
+-- the first attempt from being a bare parameter: honouring the switch is what keeps the channel
+-- worth reading.
+\set QUIET 1
+\o /dev/null
+TRUNCATE lock_tree_alert;
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL) AS gate1 \gset
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL) AS gate2 \gset
+SELECT pg_sleep(1.5);
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL) AS gate3 \gset
+SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL) AS gate4 \gset
+\o
+\set QUIET 0
+
+SELECT is(:gate1::int, 1, 'with min_wait off the onset still fires, because it is notable by width');
+
+SELECT is(:gate2::int, 0, 'and a repeat is silent');
+
+SELECT ok((SELECT longest_wait >= interval '2 seconds' FROM lock_tree_wide()),
+          'the wait has grown well past any threshold that would otherwise have applied');
+
+SELECT is(:gate3::int, 0,
+          'yet it still does not fire: an operator who passed min_wait => NULL asked not to be '
+          || 'paged on wait age');
+
+SELECT is(:gate4::int, 0, 'and stays silent however much longer the wait goes on');
+
+SELECT is((SELECT max_waited_at FROM lock_tree_alert a
+           WHERE a.root_pid = (SELECT root_pid FROM lock_tree WHERE depth = 0)), interval '0',
+          'with no wait recorded, because there was no wait criterion to escalate against');
+
 -- ------------------------------------------------------------------ prune and sampling advice
 
 \set QUIET 1
 \o /dev/null
 SELECT lock_tree_prune_alerts(interval '0 seconds') AS pruned \gset
 SELECT blocked_sessions AS advice_blocked,
-       (suggested_every = interval '10 seconds')::text AS advice_is_10s,
+       roots AS advice_roots,
+       (suggested_every = interval '5 seconds')::text AS advice_is_5s,
        (length(reason) > 20)::text AS advice_has_reason
 FROM lock_tree_sampling_advice() \gset
 \o
 \unset QUIET
 
-SELECT is(:pruned::int, 2,
-          'lock_tree_prune_alerts() removes rows last notified more than the given age ago');
+SELECT is(:pruned::int, 1,
+          'lock_tree_prune_alerts() removes rows last notified more than the given age ago, which '
+          || 'is the single row phase 6 left: the gate section truncated the table');
 
-SELECT is(:advice_blocked::bigint, 12::bigint,
-          'lock_tree_sampling_advice() reports the blocked sessions it based its advice on');
+SELECT is(:advice_blocked::bigint, 1::bigint,
+          'lock_tree_sampling_advice() reports the blocked sessions it based its advice on, which '
+          || 'here is the one steady-chain waiter still standing');
 
-SELECT is(:advice_is_10s, 'true',
-          'and suggests a 10 second interval for a queue of that size');
+SELECT is(:advice_roots::bigint, 1::bigint,
+          'and the root count beside it, so the advice can be traced back to what it saw');
+
+SELECT is(:advice_is_5s, 'true',
+          'a queue of one session falls in the under-10 band and gets a 5 second interval');
 
 SELECT is(:advice_has_reason, 'true',
           'with a reason, since a bare number is not something anyone can argue with');
+
+\set QUIET 1
+\o /dev/null
+SELECT pg_terminate_backend(pid) FROM sa_pids;
+DO $sab$ DECLARE c text; BEGIN
+  FOR c IN SELECT n FROM (VALUES ('sa_h'), ('sa_w')) AS t(n) LOOP
+    BEGIN PERFORM dblink_disconnect(c); EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+END
+$sab$;
+DROP TABLE lock_tree_al_steady;
+\o
+\set QUIET 0
 
 SELECT * FROM finish();
 

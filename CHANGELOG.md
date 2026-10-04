@@ -1,8 +1,108 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.7'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.8'`
 selects a release.
+
+## 0.9 (2026-10-04)
+
+Alerting learns to escalate on age, and a payload learns to explain itself.
+
+Two changes, both in the alerting added in 0.6 and 0.7. No signature changes anywhere, so nothing is
+dropped and the update path is one `ALTER TABLE` plus two `CREATE OR REPLACE FUNCTION`.
+
+### Escalation watched width and depth but not age
+
+Through 0.8 `lock_tree_notify()` escalated on two things: a root blocking more sessions than it
+ever had, and a root deeper than it ever had. It did not escalate on **how long anyone had been
+waiting**. So a chain that sat at forty blocked sessions while the longest wait went from five
+minutes to thirty never notified again.
+
+That is not an edge case, it is the ordinary shape of an incident that is getting worse. Nothing
+about it is sudden, so nothing triggers an edge-triggered rule.
+
+### Why the wait escalates by doubling and not by growing
+
+A wait is not an edge, it is a slope. It grows every second, so the obvious comparison, "is the
+longest wait longer than it was last time?", is **true on every sample**, and the function would
+notify sixty times an hour. That is the exact noise `lock_tree_alert` was introduced to prevent,
+reached by a different route.
+
+So the comparison is against **the wait recorded at the last notification**, and fires only once
+that wait has doubled:
+
+```
+ 30s    1m    2m    4m    8m    16m   32m
+  |     |     |     |     |      |      |
+  +-----+-----+-----+-----+------+------+
+```
+
+Seven notifications for a thirty-two minute incident, each saying it is roughly twice as bad as
+the last. Seven is deliberate: few enough that nobody learns to filter the channel, many enough
+that a thirty-minute queue does not sit at the same reported severity for half an hour. It is the
+same reasoning as exponential backoff, applied to whether to wake someone.
+
+**It only applies when `min_wait` is set.** An operator who passes `min_wait => NULL` has said they
+do not want to be paged on wait age, and that is honoured even when the wait is enormous. A second
+page about a slow queue you did not ask about is how a channel stops being read.
+
+### The bug the test found, twice
+
+**Doubling zero is zero.** `max_waited_at` starts at zero, so `longest_wait >= max_waited_at * 2`
+is `longest_wait >= 0`, which is always true. The first measurement of this feature notified on
+every single sample: the precise failure mode it was written to prevent. The fix is
+`greatest(max_waited_at * 2, min_wait)`, so with nothing recorded the first escalation is the
+operator's own threshold.
+
+**`greatest()` ignores NULLs.** PostgreSQL's `greatest` returns the largest *non-null* argument
+rather than propagating NULL, so `greatest(longest_wait, want_wait)` with `want_wait` NULL
+returned the wait: with `min_wait` switched off, the row quietly recorded a wait for a criterion
+that did not exist. It needs a `CASE`, not a NULL-tolerant aggregate. The assertion that found it
+was "with `min_wait` off, nothing is recorded", which is the sort of test that looks pedantic until
+it is the one that matters.
+
+### [`--explain`](scripts/check-alert.sh), and why it needs no database
+
+An alert arrives as a JSON payload with no instructions attached. The recipient has to know what it
+means and what to run, at whatever hour it arrived.
+
+```bash
+./scripts/check-alert.sh --explain '{"root_pid":0,"root_object":"AccessExclusiveLock on public.ledger", …}'
+```
+
+prints what the payload says, what it means, and the queries to run in order. It **needs no database
+and no superuser**, which is the point: the first thing you do at 3am should not be something that
+can fail because the database is the thing that is broken. `make explain-alert PAYLOAD='…'` is the
+same thing.
+
+It branches on `root_pid` rather than on the message text. A session root gets
+`pg_terminate_backend` steps; a prepared root gets `ROLLBACK PREPARED` steps and an explicit
+statement that `pg_cancel_backend(0)` returns false and warns that pid 0 is not a backend. That
+branch is worth being careful about, because the two failures look identical on a dashboard and
+need opposite remedies.
+
+It also refuses to guess. A payload that is not JSON is reported as not JSON. JSON without a
+`root_pid` is reported as probably not from this extension, which is the right answer for a
+listener serving several kinds of message on one channel.
+
+### Tests
+
+`test/11_alert.sql` grows from 30 assertions to 48. The new phase builds a chain that **never gets
+wider or deeper** and only ages, which is the isolation that makes the result mean something: with
+a queue that is also growing, any notification could have come from any of the three rules. It
+asserts onset once, silence, one notification at the doubling, silence again, that the two
+high-water marks did not move, and that `min_wait => NULL` suppresses age escalation for as long as
+you care to wait.
+
+Two earlier assertions had to be re-scoped rather than fixed: `lock_tree_notify()` sweeps only the
+policy it was called with, which is deliberate, so the alert table still holds the default-policy
+rows from earlier phases. They now scope by root.
+
+Verified: 221 tests green on PG 14, 15, 16, 17, 18 and 19beta4; [`scripts/check-alert.sh`](scripts/check-alert.sh) in both modes and
+`--explain` against a session payload, a prepared payload, non-JSON, and JSON from elsewhere;
+demo, scenarios and check-install.
+
+## 0.8 (2026-10-04)
 
 ## 0.8 (2026-10-04)
 
