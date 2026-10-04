@@ -1,8 +1,131 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.6'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.7'`
 selects a release.
+
+## 0.8 (2026-10-04)
+
+Two bug fixes, no features. Both were found while measuring something else, and one of them is in
+the view rather than in anything built on top of it.
+
+### Two prepared transactions were one root
+
+`pg_blocking_pids()` reports the blocker as `0` for every prepared transaction, because a prepared
+transaction has no backend. So every prepared root had `root_pid` 0, and every place that grouped
+on the pid merged them:
+
+```
+ 0.7                                     0.8
+ root_pid | blocked_sessions             root_pid | root_object                | blocked_sessions
+        0 |                  4                   0 | AccessExclusiveLock on ledger  |                2
+                                    versus         0 | AccessExclusiveLock on orders  |                2
+```
+
+Measured on PG 18 with three prepared transactions and four waiters. The left column is what 0.7
+reported: **one root claiming four blocked sessions, held by nothing that exists**. `roots` was 1.
+The right side is three roots with their own blast radii.
+
+That is the number an operator acts on, and it was wrong in the one case this extension exists to
+be better than the published recursive CTE at, since that CTE reports a prepared transaction as
+nothing at all. Being right about a case rather than merely covering it is the whole argument, so
+getting it right matters more than the count of features shipped.
+
+**The fix is a new column, `root_object`.** It is what a prepared-transaction root is holding, and
+it is `NULL` for a session root because `root_pid` already identifies that one. `root_pid` plus
+`root_object` is the root's identity everywhere it matters: the view's walk, `lock_tree_roots()`,
+`lock_tree_wide()`, `lock_tree_statements()`, `lock_tree_history`, and `lock_tree_alert`'s primary
+key. On the functions it sits immediately after `root_pid` rather than at the end, because the two
+are one identity and separating them by eight columns is how a reader ends up believing the pid is
+enough.
+
+The column is **always schema-qualified**, which is longer than necessary and deliberate.
+`relation::regclass::text` qualifies only when the schema is not in the `search_path`, so the same
+lock renders as `z1` in one session and `public.z1` in another. Measured: through the view it was
+`z1`, and through `lock_tree_sample()`, which is `SECURITY DEFINER` and so runs with the owner's
+`search_path`, it was `public.z1`. A value in a primary key cannot change with the `search_path`,
+or an alert fires again for an incident it already reported. `waiting_for` still uses `regclass` and
+is still path dependent, which is cosmetic there because nothing keys on it.
+
+**Where the bug actually was, which is not where it looked.** The walk and the aggregates were
+correct as written. The merge was in one line of `placed`, which used `SELECT DISTINCT ON (pid)`.
+Both prepared roots have `pid` 0, so `DISTINCT ON (pid)` collapsed whichever sorted first, and the
+survivor's identity was then used for the whole chain. It is now a `row_number()` partition with
+pid 0 exempted, since pid 0 is a placeholder rather than a session.
+
+Also worth stating plainly: **two prepared transactions holding compatible locks on the same
+relation are still one root.** PostgreSQL cannot tell them apart either, `pg_blocking_pids()` gives
+one `0` for both, so attributing a waiter to one of them would be a guess. Grouping by the object
+rather than by the mode is the honest boundary.
+
+### lock_tree_statements() could return two rows for one root
+
+`pg_stat_statements` is not unique on `queryid` in practice. Measured on PG 18: a statement that
+had run six times sat in **two** rows, with `calls` of 1 and 5, and the row-for-row join produced
+two output rows for one root. Since the function is documented as one row per root, and its purpose
+is grouping incidents by statement, a duplicate row is a duplicate incident.
+
+It now aggregates that side in a `LATERAL` subquery: `sum(calls)`, `sum(total_exec_time)`, and the
+mean recomputed from the sum rather than an unweighted average of means, which is wrong whenever
+the buckets have different call counts, which is the entire reason they are separate.
+
+This one was found because a container's `pg_stat_statements` had accumulated duplicate buckets.
+It would have been found by a user sooner or later, and on a real system rather than a test one.
+
+### Tests
+
+`test/13_prepared_roots.sql`, 22 assertions: three prepared transactions, three roots, each waiter
+under the root for the object it actually wants, `lock_tree_summary()` counting three where 0.7
+counted one, `lock_tree_wide()` reporting one blocked session per root where 0.7 reported the
+merged figure, history recording the objects, and alerting firing once per root and then staying
+silent. Separate from `test/04_prepared.sql` rather than folded into it, because one prepared
+transaction has always worked and the two case is a different failure.
+
+`scenarios/s7_prepared.sql` now builds two more prepared transactions on fresh tables and
+deliberately does **not** roll back the first, so all three are prepared at once. It prints the 0.7
+figure computed from the same incident rather than quoted from memory.
+
+### Three mechanical facts, all measured rather than assumed
+
+`CREATE OR REPLACE VIEW` **can** append columns, but not drop or reorder them. That is why
+`root_object` goes last on the view and second on every function. The view's seventeen existing
+columns keep their names, types and positions.
+
+`CREATE OR REPLACE FUNCTION` **cannot** change an OUT list at all: `cannot change return type of
+existing function`. So the four functions that gained a column are dropped and recreated.
+`DROP FUNCTION` of an extension member inside an update script is allowed, and the replacement is
+re-added as a member automatically, so no `ALTER EXTENSION ... DROP` is needed. Both forms were
+tried on a throwaway extension before being relied on.
+
+`ALTER TABLE ... ADD COLUMN` with a non-volatile default is metadata-only at 11 and later, so both
+new columns apply instantly whatever the size of the table. `lock_tree_history.root_object` has no
+default and existing rows stay `NULL`, which is correct: a sample taken before the upgrade has no
+recorded object. `lock_tree_alert.root_object` has `DEFAULT ''` because it joins a `NOT NULL`
+primary key, and an empty string is the honest answer, since the value was never captured and every
+existing row is a session root whose pid identifies it.
+
+### A note on debugging this, since it cost real time
+
+Four things went wrong in the harness and all four produced silence rather than an error, which is
+the worst kind of failure:
+
+- A shell loop over `$(docker exec psql -tA -c ...)` processed only the **first** prepared gid
+  however it was written, so leftovers accumulated. `\gexec` in one psql session generates and runs
+  every command server-side and cannot drop one.
+- A fixture that took `BEGIN; PREPARE TRANSACTION` without a `LOCK TABLE` first holds no locks and
+  blocks nobody, so the tree was silently empty.
+- A scenario section that had `s7_stranded` holding `s7_t` then had a second prepared transaction
+  try to lock `s7_t`, which waits forever with no error and no output. It hung rather than failed.
+- A test run interrupted midway left a live `psql` that kept re-creating the state being cleaned
+  up, so each cleanup appeared not to work.
+
+The last three are all "no lock means no contention means nothing to see", which is the same failure
+mode as the original bug: a test that measures nothing passes.
+
+Verified: 203 tests green on PG 14, 15, 16, 17, 18 and 19beta4; all eight scenarios with `s7` now
+showing three prepared roots against the published CTE's zero; the 0.7 -> 0.8 upgrade against
+populated `lock_tree_history` and `lock_tree_alert` tables, and the full `0.2--0.8` chain; demo,
+check-install and check-alert.
 
 ## 0.7 (2026-10-04)
 

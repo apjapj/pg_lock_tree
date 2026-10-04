@@ -29,7 +29,7 @@ these could have produced flattering nonsense.
 | 4 | `s4_wide_queue` | 60 sessions behind one culprit | whether the answer is readable at scale |
 | 5 | `s5_mixed_locks` | two advisory locks, no relation | waits with nothing to name |
 | 6 | `s6_deadlock` | two sessions blocked by each other | a cycle, which is not a queue |
-| 7 | `s7_prepared` | a prepared transaction holding locks | a blocker that is **not a session** |
+| 7 | `s7_prepared` | one prepared transaction, then **three at once** | a blocker that is **not a session**, and two or three of them are two or three roots |
 | 8 | `s8_many_roots` | five idle transactions, 30/18/10/5/3 waiters | a queue that is wide **and** has several heads |
 
 ## Results

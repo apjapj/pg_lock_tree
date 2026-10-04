@@ -65,7 +65,8 @@ for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
          lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune \
          lock_tree_wide lock_tree_summary lock_tree_statements \
-         lock_tree_notify lock_tree_prune_alerts lock_tree_sampling_advice; do
+         lock_tree_notify lock_tree_prune_alerts lock_tree_sampling_advice \
+         lock_tree_history_statements; do
     found=$(psql -X -tAc "
         SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                  WHERE n.nspname='$schema' AND c.relname='$f')
@@ -83,10 +84,26 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_command()" \
          "SELECT count(*) FROM $schema.lock_tree_incidents()" \
          "SELECT count(*) FROM $schema.lock_tree_summary()" \
-         "SELECT count(*) FROM $schema.lock_tree_sampling_advice()"; do
+         "SELECT count(*) FROM $schema.lock_tree_sampling_advice()" \
+         "SELECT count(*) FROM $schema.lock_tree_history_statements()"; do
     out=$(psql -X -tAc "$q" 2>&1)
     if [ $? -eq 0 ]; then ok "$q  -> ${out:-0}"; else bad "$q  -> $out"; fi
 done
+
+step "prepared-transaction roots"
+# root_object is the column 0.8 added, and it is the one that makes two prepared transactions two
+# roots rather than one. Checking that it exists is a cheap proxy for "this installation is 0.8 or
+# later" that does not depend on reading extversion.
+if psql -X -tAc "SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = '$schema' AND table_name = 'lock_tree'
+                    AND column_name = 'root_object'" >/dev/null 2>&1; then
+    ok "lock_tree has root_object, so prepared roots are distinguishable (0.8 or later)"
+    n=$(psql -X -tAc "SELECT count(*) FROM $schema.lock_tree WHERE root_object IS NOT NULL" 2>/dev/null)
+    echo "        ${n:-0} prepared-transaction root(s) right now"
+    echo "        Without it, two prepared transactions report as one root with their wait counts added."
+else
+    bad "lock_tree has no root_object: this is 0.7 or earlier, where prepared roots merge"
+fi
 
 step "alerting"
 if psql -X -tAc "SELECT count(*) FROM $schema.lock_tree_alert" >/dev/null 2>&1; then

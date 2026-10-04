@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.7** (green on PG 14 to 19beta4) |
+| Current release | **v0.8** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 181 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 203 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -352,6 +352,68 @@ Three things to know before you rely on it:
 - **A root that has never run its current statement matches nothing.** `pg_stat_statements`
   records queries as they complete, so the join follows the root's most recent statement.
 
+## A blocker with no backend
+
+A prepared transaction holds its locks until `COMMIT PREPARED` or `ROLLBACK PREPARED`, and it has
+no session for the whole of that time. `pg_stat_activity` has no row for it, and `pg_locks.pid` is
+`NULL` for every lock it holds.
+
+```sql
+postgres=# SELECT gid, prepared, owner FROM pg_prepared_xacts;
+```
+
+This is the one thing the usual recursive query cannot do at all, because it walks
+`pg_blocking_pids()` and there is no pid to walk to. `pg_lock_tree` reports it as root pid 0, and
+its suggested action is `ROLLBACK PREPARED` rather than a `pg_cancel_backend(0)` that could never
+have worked.
+
+### Two of them are two roots, which took until 0.8 to get right
+
+`pg_blocking_pids()` reports the blocker as `0` for **every** prepared transaction. So through 0.7
+every prepared root had pid 0, and everything that grouped on the pid merged them:
+
+```
+ 0.7, three prepared transactions and four waiters
+
+ root_pid | blocked_sessions
+        0 |                 4        <- one row, and nothing holds four sessions
+```
+
+`lock_tree_summary()` reported `roots` as 1. The number an operator acts on was wrong, in the one
+case this extension exists to be better than the usual query at.
+
+```
+ 0.8, the same incident
+
+ root_pid | root_object                         | blocked_sessions
+        0 | AccessExclusiveLock on ledger       |                2
+        0 | AccessExclusiveLock on orders       |                2
+```
+
+**`root_object` is what a prepared-transaction root is holding.** It is `NULL` for a session root,
+because `root_pid` already identifies that one, so the two columns together are the root's
+identity. It appears:
+
+- on `lock_tree`, as the last column
+- on `lock_tree_roots()`, `lock_tree_wide()` and `lock_tree_statements()`, immediately after
+  `root_pid`
+- on `lock_tree_incidents()`, as `root_objects`, an array, since one incident can involve several
+- on `lock_tree_history`, recorded by `lock_tree_sample()`
+- in the `NOTIFY` payload from `lock_tree_notify()`
+- in `lock_tree_alert`, where it is part of the primary key
+
+It is **always schema-qualified**, so `public.ledger` rather than `ledger`. That is longer than
+necessary and deliberate: `regclass` qualifies only when the schema is not in the `search_path`, so
+the shorter form would render the same lock two different ways depending on who asked. A value in a
+primary key cannot do that.
+
+One limit worth stating: **two prepared transactions holding compatible locks on the same relation
+are one root.** PostgreSQL cannot tell them apart either, so attributing a waiter to one of them
+would be a guess. Grouping by the object rather than by the lock mode is the honest boundary.
+
+See `scenarios/s7_prepared.sql`, which builds three at once and prints the 0.7 figure for the same
+incident so the comparison is measured rather than remembered.
+
 ## After the incident has cleared
 
 Everything above describes the present. That is a real limit, and it bites at the worst moment:
@@ -404,7 +466,7 @@ Four things worth knowing before you turn it on:
 
 | Object | Use |
 |---|---|
-| `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `depth` (0 is the root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, plus user, database, application and client. Ordered root first. |
+| `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `root_object`, `depth` (0 is the root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, plus user, database, application and client. Ordered root first. `root_object` is what a prepared-transaction root holds, since `root_pid` is 0 for all of them. |
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
 | `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
@@ -521,7 +583,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 181 pgTAP tests against the server your libpq env vars point at
+make prove              # 203 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -549,6 +611,7 @@ terminate backends rather than mocking anything:
 | `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires, recovery then relapse fires again, and all three thresholds disabled is an error |
 | `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back |
 | `test/12_history_statements.sql` | per-query blocking time from written history: only root rows count, the window filter runs before the aggregation, and the figure is session-samples rather than seconds |
+| `test/13_prepared_roots.sql` | two prepared transactions are two roots, which is the 0.8 bug: the waiters attach to the right object, every aggregate counts two roots, and alerting tracks them separately |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
@@ -565,6 +628,15 @@ was never going to work. None is a runtime requirement: `pg_lock_tree` itself ne
 - **Next**: cross-database. The extension lives in each database, as all extensions do, so a queue
   on `reporting` is invisible from `production`. Deliberately **not** planned here: this is a
   per-database diagnostic, and a fan-out sampler is a separate tool wearing this one's name.
+- **Next**: deadlocks in the history. `pg_stat_database.deadlocks` is a counter with no attribution,
+  so the log is the only place the two statements are named. Recording the counter per sample would
+  at least answer "when did deadlocks start here", and a `log_lock_waits`-style hook could name the
+  pair. The hook is a bigger change than it looks, because it has to work on a server where nobody
+  has installed anything.
+- **Next**: `lock_tree_history` partitioned by month, so `lock_tree_prune()` becomes a DETACH
+  rather than a DELETE. The table grows by (sessions blocked) x (samples) and is only ever pruned
+  by age, which is the shape partitioning suits. It cannot be done in place: 0.4 created the table
+  unpartitioned and the rows have to move, so it needs a migration path rather than an ALTER.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether
