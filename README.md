@@ -70,6 +70,24 @@ make prove                        # against the server your libpq env vars point
 scripts/matrix.sh                 # make install + CREATE EXTENSION + tests on PG 14–19 in the docker test matrix
 ```
 
+## Seeing it work
+
+`demo.sql` rebuilds the nightly-batch incident from the introduction with `dblink`, then walks
+through `lock_tree_text()`, `lock_tree`, `lock_tree_roots()` and back to an empty tree after you
+terminate the culprit. It finishes with a two-session deadlock, to show a cycle that has no head
+of the queue. Everything it creates is cleaned up, so it is safe to re-run.
+
+```bash
+psql -X -f demo.sql              # superuser; needs the dblink contrib module
+```
+
+The one-line version, for when something is already stuck and you want the answer now:
+
+```sql
+SELECT * FROM lock_tree_text();
+SELECT root_pid, application_name, blocked_sessions, suggested_action FROM lock_tree_roots();
+```
+
 CI (`.forgejo/workflows/test.yml`) runs the same suite on all six versions by loading the SQL file directly.
 
 ## Roadmap
