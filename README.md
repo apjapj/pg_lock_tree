@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.4** (tagged, green on PG 14 to 19beta4) |
+| Current release | **v0.5** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: seven incidents, compared against the usual hand-written query
-- **[test/](test/)**: 97 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 134 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -114,6 +114,55 @@ returns no rows at all. That is deliberate: the description answers "is anything
 header saying zero is a useful answer to that. The command function has nothing to say and no
 heading to say it with.
 
+## When the queue is too wide to read
+
+A tree is one row per session, which is the right shape for one incident and the wrong shape for
+a database having six at once. `lock_tree_text_short()` helps by abbreviating, and stops helping
+at several hundred lines. `lock_tree_wide()` aggregates instead:
+
+```sql
+SELECT * FROM lock_tree_wide();
+```
+
+```
+ root_pid |    application_name    |        state        | blocked_sessions | max_depth | longest_wait |      wait_events      |   first_waiting_for
+----------+------------------------+---------------------+------------------+-----------+--------------+-----------------------+------------------------
+      179 | nightly_reconciliation | idle in transaction |               40 |         1 | 3m12s        | {ClientRead,relation} | AccessShareLock on ledger
+      180 | reporting_rollup       | idle in transaction |               15 |         1 | 3m12s        | {ClientRead,relation} | AccessShareLock on ledger_daily
+```
+
+Two rows instead of fifty-seven. `lock_tree_summary()` collapses it to one, which is the shape a
+dashboard cell or an alert condition wants, and returns zeros on a quiet database rather than no
+rows:
+
+```sql
+SELECT * FROM lock_tree_summary();   -- blocked_sessions, roots, max_depth, longest_wait, oldest_xact_age
+```
+
+### Which query is doing it
+
+`lock_tree_statements()` joins each root to `pg_stat_statements`, which turns "pid 4821 is
+holding a lock" into "this statement has run 40,000 times at 180ms mean, and it is what is
+blocking you". Two incidents at 09:00 and 14:00 have different pids and the same `queryid`, and
+that is what makes them recognisable as one problem:
+
+```sql
+SELECT application_name, statement, calls, mean_exec_time, blocked_sessions
+FROM lock_tree_statements() WHERE calls IS NOT NULL ORDER BY mean_exec_time DESC;
+```
+
+Three things to know before you rely on it:
+
+- **It needs `pg_stat_statements` in `shared_preload_libraries`.** Without it the function still
+  works and still reports which roots exist and how much each blocks, with the statement columns
+  empty. It never raises, so a dashboard querying it does not need two code paths.
+- **It cannot enrich the waiters.** A query blocked on a lock has a `NULL` `query_id` for as long
+  as it is blocked, and only gains one when it completes, so the waiter side of the join is empty
+  during exactly the moment you would want it. The root is the opposite and always has one.
+  This was measured, not assumed; `test/10_statements.sql` pins it.
+- **A root that has never run its current statement matches nothing.** `pg_stat_statements`
+  records queries as they complete, so the join follows the root's most recent statement.
+
 ## After the incident has cleared
 
 Everything above describes the present. That is a real limit, and it bites at the worst moment:
@@ -176,6 +225,9 @@ Four things worth knowing before you turn it on:
 | `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
 | `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')` | The history grouped into incidents: when each ran, peak sessions blocked, deepest chain, longest wait, and the root pids and application names involved. |
 | `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many. The table only grows otherwise. |
+| `lock_tree_wide()` | One row per root instead of one per session: how many sessions each blocks, the deepest chain under it, the longest wait, and what they are waiting for. Use when the tree is too wide to read. |
+| `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
+| `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
 
@@ -267,7 +319,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 97 pgTAP tests against the server your libpq env vars point at
+make prove              # 134 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all seven scenarios, both tools, output captured
@@ -288,18 +340,28 @@ terminate backends rather than mocking anything:
 | `test/05_formatting.sql` | the exact output of the rendering helpers, since the width measurements depend on them |
 | `test/06_cron.sql` | a live chain sampled by a `pg_cron` job, proving the rows outlive the incident. Skips itself when `pg_cron` is not preloaded |
 | `test/07_history.sql` | a live chain sampled into `lock_tree_history`, the rows surviving the incident, the history segmented into incidents, and pruning at both extremes. No `pg_cron` needed |
+| `test/08_wide.sql` | a 57-row, two-root queue, checked against `lock_tree` row by row: every count in the wide form must be derivable from the tree, since a summary that disagrees with the tree is worse than none |
+| `test/09_cost.sql` | the cost claim the README and the SQL header both make, measured as a ratio against a plain `pg_stat_activity` read rather than a wall-clock ceiling, which is noise on a shared runner |
+| `test/10_statements.sql` | `lock_tree_statements()` with and without `pg_stat_statements` loaded: the roots are reported either way, and the join is pinned where it is available |
 
-CI runs the same suite on all six versions. Two files each need a server setting the matrix
-images provide (`max_prepared_transactions`, `shared_preload_libraries=pg_cron`) and skip
-themselves where it is absent, rather than failing a build that was never going to work. Neither
-is a runtime requirement: `pg_lock_tree` itself needs no `shared_preload_libraries`.
+CI runs the same suite on all six versions. Three files each need a server setting the matrix
+images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
+`pg_stat_statements`) and skip themselves where it is absent, rather than failing a build that
+was never going to work. None is a runtime requirement: `pg_lock_tree` itself needs no
+`shared_preload_libraries`, and its other seven files run without them.
 
 ## Roadmap
 
-- **Next**: alerting. History records what happened; it does not tell anyone. A `NOTIFY` when a
-  chain passes a depth or wait-age threshold, so an incident can page someone rather than wait to
-  be noticed. Deliberately not in 0.4: a threshold is a policy choice and a false alarm from a
-  diagnostic tool is worse than no alarm, so the numbers should be chosen by whoever is on call.
+- **Next**: alerting. History records what happened and `lock_tree_summary()` says whether
+  anything is happening now, but neither tells anyone. A `NOTIFY` when a chain passes a depth or
+  wait-age threshold would let an incident page someone rather than wait to be noticed.
+  Deliberately not in 0.5: a threshold is a policy choice, and a false alarm from a diagnostic
+  tool is worse than no alarm, so the numbers should be chosen by whoever is on call. Cheap to
+  add once they are, which is the argument for doing history first.
+- **Next**: cross-database. The extension lives in each database, as all extensions do, so a
+  queue on `reporting` is invisible from `production`. A sampler that takes `dblink`
+  connections to a list of databases would cover it, at the cost of making `lock_tree_history`
+  a fan-out rather than a table.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether

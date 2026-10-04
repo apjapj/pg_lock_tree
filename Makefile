@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config

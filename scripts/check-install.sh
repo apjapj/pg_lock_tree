@@ -63,7 +63,8 @@ echo "  schema: $schema"
 # function as missing.
 for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree_actions \
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
-         lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune; do
+         lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune \
+         lock_tree_wide lock_tree_summary lock_tree_statements; do
     found=$(psql -X -tAc "
         SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                  WHERE n.nspname='$schema' AND c.relname='$f')
@@ -79,10 +80,20 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_text_short()" \
          "SELECT count(*) FROM $schema.lock_tree_actions()" \
          "SELECT count(*) FROM $schema.lock_tree_command()" \
-         "SELECT count(*) FROM $schema.lock_tree_incidents()"; do
+         "SELECT count(*) FROM $schema.lock_tree_incidents()" \
+         "SELECT count(*) FROM $schema.lock_tree_summary()"; do
     out=$(psql -X -tAc "$q" 2>&1)
     if [ $? -eq 0 ]; then ok "$q  -> ${out:-0}"; else bad "$q  -> $out"; fi
 done
+
+step "pg_stat_statements (optional)"
+if psql -X -tAc "SELECT count(*) FROM pg_stat_statements" >/dev/null 2>&1; then
+    ok "pg_stat_statements is loaded, so lock_tree_statements() can report query costs"
+else
+    echo "  note: pg_stat_statements not loaded, so lock_tree_statements() returns the roots"
+    echo "        with empty statement columns. Needs shared_preload_libraries = pg_stat_statements"
+    echo "        and CREATE EXTENSION pg_stat_statements. Entirely optional."
+fi
 
 step "history (optional, off by default)"
 hrows=$(psql -X -tAc "SELECT count(*) FROM $schema.lock_tree_history" 2>&1)

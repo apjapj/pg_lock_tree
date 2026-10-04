@@ -276,38 +276,44 @@ for t in test/*.sql; do
     plan=$(sed -n 's/^SELECT plan(\([0-9]*\));.*/\1/p' "$t" | head -1)
     [ -z "$plan" ] && continue
 
-    # Only the real path: everything between plan() and the first \else, or to
-    # finish() in a file with no branch.
+    # Only the real path: everything between plan() and the first \else, or to finish() in a
+    # file with no branch. Counting the whole file would count the skip() branch too.
     path=$(sed -n '/^SELECT plan(/,$p' "$t" | sed -n '1,/^\\else$/p')
     n=$(printf '%s\n' "$path" | grep -cE "^[[:space:]]*SELECT ($assertions)\(")
 
     if [ "$n" -eq "$plan" ]; then
         ok "$(basename "$t"): plan($plan), $n assertion(s) on the running path"
+    elif [ "$n" -lt "$plan" ] && grep -qE '^\\else' "$t"; then
+        # A partially conditional file: the plan covers both branches, so it legitimately
+        # exceeds the running path's count. Checked below instead of here.
+        ok "$(basename "$t"): plan($plan), $n assertion(s) run, remainder conditional"
     else
         bad "$(basename "$t"): plan($plan) but counted $n assertion(s) on the running path"
     fi
 
-    # A conditional file must also pass N to skip(), or the skipping path has a
-    # plan that disagrees with what it emits.
-    if grep -qE '^\\else' "$t"; then
-        # skip() is called with a concatenated string, so the count sits on a later
-        # line than the call. tr newlines to spaces first, then take the number just
-        # before the closing paren. A single-line grep for the whole call matched
-        # nothing and reported both conditional files as having no skip at all.
+    # A conditional file must account for its skipped assertions, and the arithmetic depends on
+    # where the \if sits. pgTAP's skip(reason, N) emits N skipped results and the plan is a
+    # promise about the file's total output, so:
+    #   \if wraps the whole file  -> skip(N) == plan, the else branch replaces everything
+    #   \if wraps part of it      -> skip(N) == plan minus the unconditional assertions
+    # Counting "the running path" as everything before \else is wrong for the second shape,
+    # because that count already includes the assertions inside \if.
+    if grep -qE '^\\if' "$t"; then
+        unconditional=$(sed -n '/^SELECT plan(/,$p' "$t" \
+                       | sed -n '1,/^\\if/p' \
+                       | grep -cE "^[[:space:]]*SELECT ($assertions)\(")
         skipn=$(tr '\n' ' ' < "$t" \
                 | grep -oE "SELECT skip\(.*?, *([0-9]+) *\);" \
                 | grep -oE '[0-9]+ *\);$' | tr -dc '0-9')
-        if [ -n "$skipn" ]; then
-            [ "$skipn" = "$plan" ] \
-              && ok "$(basename "$t"): skip(..., $skipn) agrees with plan($plan)" \
-              || bad "$(basename "$t"): skip(..., $skipn) disagrees with plan($plan)"
+        if [ -z "$skipn" ]; then
+            bad "$(basename "$t"): has a conditional branch but no skip(..., N) with a literal count"
+        elif [ "$skipn" -eq $((plan - unconditional)) ]; then
+            ok "$(basename "$t"): skip(..., $skipn) replaces the $((plan - unconditional)) conditional assertion(s)"
         else
-            bad "$(basename "$t"): has an \\else branch but no skip(..., N) with a literal count"
+            bad "$(basename "$t"): skip(..., $skipn) but $((plan - unconditional)) conditional assertion(s) expected"
         fi
     fi
 done
-
-# ---------------------------------------------------------------- house style
 
 step "house style"
 # Neither character can appear literally in this file, or the check below would always

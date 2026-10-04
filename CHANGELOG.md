@@ -4,6 +4,110 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.3'`
 selects a release.
 
+## 0.5 (2026-10-04)
+
+The wide case, and the cost of the blocking query. Everything from 0.4 is unchanged, columns and
+all. The update path is additive, so there is nothing to migrate; PostgreSQL chains
+`0.2--0.3--0.4--0.5` itself and `pg_extension_update_paths` confirms it.
+
+### Added
+
+- `lock_tree_wide()`: one row per root rather than one per session, with how many sessions each
+  root blocks, the deepest chain under it, the longest wait, the distinct wait events, and what
+  they are waiting for. On a 57-row two-root queue that is two rows instead of fifty-seven.
+  `lock_tree_text_short()` made a wide queue narrower by abbreviating; that helps at sixty
+  sessions and stops helping at six hundred, because the questions an operator actually has
+  (which root is worst, how many sessions does it hold up, is anything a chain rather than a flat
+  queue) need every line read to be answered.
+- `lock_tree_summary()`: one row for the whole queue, for a dashboard cell or an alert
+  condition. Returns zeros on a quiet database rather than no rows, so it can be used directly
+  without a special case for "nothing is wrong".
+- `lock_tree_statements()`: per root, what `pg_stat_statements` already knows about the query
+  holding the lock. Normalised text, calls, mean and total time. This is the join that turns
+  "pid 4821 holds a lock" into "this statement has run 40,000 times at 180ms mean", and the
+  reason two incidents at 09:00 and 14:00 with different pids are recognisable as one problem.
+- `test/08_wide.sql` (20 assertions): a 57-row two-root queue, with every number in the wide form
+  checked against `lock_tree`. A summary that disagrees with the tree it summarises is worse than
+  none, because it looks authoritative.
+- `test/09_cost.sql` (6 assertions): the cost claim the README and the SQL header both make, now
+  actually tested.
+- `test/10_statements.sql` (11 assertions): `lock_tree_statements()` with and without
+  `pg_stat_statements` loaded.
+
+### The cost claim, pinned
+
+`pg_blocking_pids()` briefly takes the lock manager's shared state, so the view calls it only
+for sessions already waiting on a heavyweight lock. That was asserted in two places and checked
+in none, and a refactor dropping the `wait_event_type = 'Lock'` guard would have looked identical
+in every other test while getting roughly ten times more expensive on a busy server.
+
+The test measures a **ratio**, not a wall-clock ceiling: a view scan against a plain
+`pg_stat_activity` read of comparable size, both timed inside one `DO` block. Absolute timings on
+a shared CI runner are noise. Measured five times on an idle container a single view scan varied
+between 133 and 174 microseconds, which would make any fixed threshold either flaky or so
+generous it caught nothing. The ratio sat between 4.6 and 6.4 across those runs, so the ceiling is
+50: loose enough for a loaded machine, tight enough to catch the regression it exists for.
+
+The same file checks the guard's correctness consequence directly, which does not depend on timing
+at all: a session is only reported as blocked if it is genuinely waiting on a lock, and a root is
+never itself waiting.
+
+### `lock_tree_statements()`: optional in both directions
+
+`pg_stat_statements` needs to be in `shared_preload_libraries` to be readable at all, and its
+failure mode is nasty: `CREATE EXTENSION` succeeds and then every read of the view raises
+`pg_stat_statements must be loaded via "shared_preload_libraries"`.
+
+A SQL function naming `pg_stat_statements` directly therefore fails at `CREATE EXTENSION` time on
+a server without it, which would make an optional feature mandatory. This one is `plpgsql`, with
+the join built as text and run through `EXECUTE` behind a `to_regclass` check. Without the
+module it still reports every root and how much each blocks, with the statement columns empty, so
+a dashboard querying it needs only one code path.
+
+**It cannot enrich the waiters, and this was measured rather than assumed.** A query blocked on
+a lock has a `NULL` `query_id` for as long as it is blocked and only gains one when it completes,
+so the waiter side of the join is empty during exactly the moment anybody would want it. The root
+is the opposite and carries a `query_id` throughout. That is fortunate rather than lucky, since
+the root is the session anyone acts on. `test/10_statements.sql` asserts the limitation so it
+cannot quietly become a claim the function cannot keep.
+
+### Test harness
+
+`pg_stat_statements` is now preloaded in the matrix images alongside `pg_cron`, so
+`test/10_statements.sql` runs rather than skips on all six versions. Neither module is a runtime
+dependency of the extension: it needs no `shared_preload_libraries`, and seven of the ten test
+files run without either.
+
+### Fixed
+
+Nine bugs, all found by running things. Six in the new tests, two in the linter, one in the
+demo:
+
+- `test/08_wide.sql` compared an aggregate inside `WHERE`, which SQL forbids. Moved to `HAVING`.
+- `sum()` over `bigint` returns `numeric`, and pgTAP's `is()` has no numeric/bigint overload.
+- The wide test's teardown waited for the tree to empty without rolling the roots back first.
+  The waiters were blocked on locks the roots held, so the wait simply timed out after ten
+  seconds and the "quiet database" assertions measured a queue that was still stuck.
+- A loop variable named `n` shadowed the `n` column of the dblink name table.
+- `test/10_statements.sql` interpolated a `\gset` boolean into a dollar-quoted `DO` body. psql
+  does not interpolate inside dollar quotes, so the block was a syntax error.
+- The new images preload `pg_stat_statements` but do not create the extension, since it is
+  per-database. The test skipped on all six versions and reported success. It now creates it when
+  the library is loaded, and gates on `to_regclass` afterwards, which is the state a user who
+  followed the documentation is in.
+- `scripts/lint-docs.sh` rejected a correct conditional test file: it compared `skip(N)` against
+  `plan(N)`, which only holds when `\if` wraps the whole file. When `\if` wraps part of it the
+  arithmetic is `skip(N) == plan - unconditional`. Four further bugs in that same fix: an `\if`
+  anchor that never matched because psql meta-commands carry arguments, an over-escaped grep
+  pattern, an `if`/`fi` imbalance that made the whole script unparseable, and a check that ended
+  up comparing against nothing at all.
+- The demo's new history section sampled while the deadlock section's cycle was still running, so
+  "nothing is blocked" reported two rows and contradicted itself.
+
+Verified: 134 tests green on PG 14, 15, 16, 17, 18 and 19beta4 from cold-pulled registry images;
+the 0.4 -> 0.5 upgrade and the 0.2 -> 0.3 -> 0.4 -> 0.5 chain; demo, all seven scenarios and
+check-install.
+
 ## 0.4 (2026-10-04)
 
 Adds history. Everything from 0.3 is unchanged: the view's columns and every function's

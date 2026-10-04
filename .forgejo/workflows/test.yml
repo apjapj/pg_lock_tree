@@ -54,7 +54,7 @@ jobs:
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
         run: |
-          sed -e "/^\\echo Use/d" -e "s/@extschema@/public/g" pg_lock_tree--0.4.sql \
+          sed -e "/^\\echo Use/d" -e "s/@extschema@/public/g" pg_lock_tree--0.5.sql \
             | psql -qX -v ON_ERROR_STOP=1
       - name: pgTAP
         run: pg_prove --dbname postgres test/*.sql
