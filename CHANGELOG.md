@@ -63,6 +63,13 @@ clean 0.2 install.
 - `scripts/check-install.sh` verifies `lock_tree_command()` and `lock_tree_lines()` exist and
   are callable, and reports whether `pg_cron` is preloaded, so a skip in `test/06_cron.sql` is
   explained rather than mysterious.
+- `scripts/lint-docs.sh` (`make lint-docs`, `make check`) and `.forgejo/workflows/lint.yml`:
+  checks the documentation's factual claims against the code, since docs rot silently and
+  nothing else would notice. Version agreement across `pg_lock_tree.control`, `README.md` and
+  `CHANGELOG.md`; every object the docs name is defined in the release SQL; every SQL file is
+  installed by the Makefile; every file and test the docs link to exists; each test's `plan()`
+  matches its assertions and each `skip()` agrees with its plan; no em-dashes or en-dashes.
+  Needs no database, so it runs as its own CI job rather than inside the test matrix.
 
 ### Not changed
 

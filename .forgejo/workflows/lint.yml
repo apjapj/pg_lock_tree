@@ -1,0 +1,23 @@
+# .forgejo/workflows/lint.yml: check the documentation against the code.
+#
+# Separate from the test matrix because it needs no database at all, so it runs in seconds
+# and fails for a completely different reason. Keeping it here rather than as a step inside
+# test.yml means a docs failure is legible on its own instead of buried in a six-job matrix
+# where it would also have to wait for the slowest job to report.
+#
+# This is the check that catches a release shipping with a stale README, a renamed function
+# still documented under its old name, or a test file whose plan drifted from its assertions.
+# Documentation is not compiled, so nothing else would ever say so.
+name: lint docs
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Documentation and style checks
+        run: ./scripts/lint-docs.sh

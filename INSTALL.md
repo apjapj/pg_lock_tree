@@ -27,6 +27,7 @@ Everything needed to get `pg_lock_tree` running, move it between versions, and u
 | To run the tests, demo or scenarios | the `dblink` contrib module, plus superuser (they open sessions and terminate backends) |
 | To exercise prepared transactions | `max_prepared_transactions > 0` |
 | One setting you can turn off | `SET lock_tree.actions = off` suppresses `lock_tree_actions()` for the session, for anyone who prefers the columns in `lock_tree_roots()`. Not needed by the extension; it is a display preference. |
+| To check the docs against the code | `./scripts/lint-docs.sh`, or `make lint-docs`. Pure text and git: no database, no superuser. Verifies the version agrees across `pg_lock_tree.control`, `README.md` and `CHANGELOG.md`, that every object and file the docs name exists, that each test file's `plan()` matches its assertions, and that there are no em-dashes or en-dashes. |
 
 That last row catches people. `max_prepared_transactions` defaults to **0**, and with it at 0
 `PREPARE TRANSACTION` is refused. It does not affect normal use of the extension. Only the

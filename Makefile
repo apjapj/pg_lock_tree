@@ -45,3 +45,15 @@ check-install:
 # recursive CTE, with both outputs captured. Needs a superuser.
 scenarios:
 	./scenarios/run.sh
+
+# Check that the documentation's factual claims still hold: the version agrees across
+# control/README/CHANGELOG, every object and file the docs name exists, every test plan
+# matches its assertions, and the house style rules hold. Pure text, no database, so it
+# is cheap enough to run before every commit.
+lint-docs:
+	./scripts/lint-docs.sh
+
+# The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
+# since they need a live PostgreSQL with the extension installed.
+check: lint-docs
+	@echo "run 'make prove' and 'make scenarios' against a server for the rest"

@@ -219,6 +219,7 @@ make prove              # 73 pgTAP tests against the server your libpq env vars 
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all seven scenarios, both tools, output captured
+make lint-docs          # the docs still match the code
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
 ```
