@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.5** (green on PG 14 to 19beta4) |
+| Current release | **v0.6** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: seven incidents, compared against the usual hand-written query
-- **[test/](test/)**: 134 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 164 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -114,6 +114,195 @@ returns no rows at all. That is deliberate: the description answers "is anything
 header saying zero is a useful answer to that. The command function has nothing to say and no
 heading to say it with.
 
+## Alerting
+
+Everything above is for someone who is already looking. This is for when nobody is.
+
+`lock_tree_notify()` raises a `NOTIFY` when a lock chain is bad enough to be worth waking
+someone for. It does **not** page anyone, and understanding why is the first thing worth
+understanding about it.
+
+### What this does and does not do
+
+It raises a `NOTIFY` on a PostgreSQL channel. That is all. Turning that channel into a page is
+the deployment's job, and the reason is that paging is a policy decision: what pages you, where
+it goes, who gets woken at 3am, and what happens when the pager is down are all choices that
+belong to whoever runs the system. The payload is JSON so that whatever you connect can parse it
+without knowing anything about this extension.
+
+The usual way to connect it is `LISTEN` from a script, or a `LISTEN`/`NOTIFY` bridge shipped with
+PostgreSQL that forwards to another channel. There is no opinion here about which.
+
+### Why it does not notify on every sample
+
+This is the design decision that matters, and getting it wrong makes alerting worse than not
+having it.
+
+If you call `lock_tree_notify()` on every sample and it notifies whenever anything is blocked,
+then a two-minute incident with a ten-second sample produces twelve notifications. Everyone
+learns within a week that the `lock_tree` channel is noise, and the one alert that mattered gets
+filtered along with the rest. **A diagnostic tool that cries wolf is worse than a silent one**,
+because it costs you the one thing the tool was for.
+
+So the function keeps state in `lock_tree_alert` and notifies only on:
+
+| | when it notifies |
+|---|---|
+| **Onset** | a root becomes notable and has not been notable before on this channel |
+| **Escalation** | a root already known is now blocking *more* sessions than it ever has, or is *deeper* than it ever has |
+
+and stays quiet while a chain sits at the same severity. A queue wobbling between 40 and 12
+sessions notifies once, not twice a minute.
+
+State is compared against high-water marks, not the previous sample, which is what makes
+"escalation" and "recovery" distinguishable. A root dropping from 40 to 12 sessions is getting
+better and must not re-notify.
+
+When a root stops being notable its state is forgotten, so the same chain returning later alerts
+again. That is what makes a *second* incident visible rather than suppressed as already-seen.
+
+### Choosing thresholds
+
+This is the part people get wrong, so the thresholds are arguments rather than settings and there
+are no meaningful defaults. A default nobody reads is a default nobody trusts.
+
+```sql
+lock_tree_notify(
+  channel      text     DEFAULT 'lock_tree',
+  min_blocked  integer  DEFAULT 1,        -- NULL or 0 switches this off
+  min_depth    integer  DEFAULT 2,        -- NULL or 0 switches this off
+  min_wait     interval DEFAULT '30 seconds'  -- NULL switches this off
+) RETURNS bigint
+```
+
+**A root alerts if it meets AT LEAST ONE criterion that is switched on.** With all three at their
+defaults, a chain alerts if it blocks one session, **or** is two deep, **or** has someone waiting
+30 seconds.
+
+That is deliberate. A queue can be bad in ways that have nothing to do with each other: a hundred
+sessions waiting one second is not an incident, and two sessions waiting an hour is. An operator
+paging on "deep **or** slow" will not miss the incident that is both, and an operator paging on
+"deep **and** slow" will sit through both of the others.
+
+At least one criterion must be on. All three off means "alert on every root", which is rejected
+with an error rather than quietly given a plausible default.
+
+What the defaults are *for*: they are a starting point for a database you have not watched yet,
+and they will be wrong for any specific database within a week. The intended sequence is:
+
+1. Leave the defaults and schedule it. Read what it reports.
+2. Note which criteria actually fired. Most databases will only ever trip `min_depth`.
+3. Set the other two to NULL and raise the one that matters.
+
+```sql
+-- only care about long waits, on a busy server where shallow queues are normal
+SELECT lock_tree_notify('lock_tree', min_blocked => NULL, min_depth => NULL,
+                        min_wait => interval '2 minutes');
+```
+
+`NULL` means "do not consider this". `0` is the same thing for the two integer criteria, since
+"at least 0 sessions blocked" is every root.
+
+### What the return value is for
+
+It returns how many notifications it raised. **Zero is the normal, healthy result**, and it is the
+value worth watching. A sampler that logs it will show you exactly when your alerting is doing
+something:
+
+```sql
+SELECT now(), lock_tree_notify() AS alerts;
+```
+
+If that column is zero forever, either nothing is wrong or your thresholds are too high to ever
+fire. Both are worth knowing, and neither is visible from a silent channel alone.
+
+### Scheduling it
+
+The natural home is the same cron entry as the sample, because both need to run on the same beat:
+
+```sql
+SELECT cron.schedule('lock_tree_sample', '10 seconds',
+                     $$SELECT lock_tree_sample(); SELECT lock_tree_notify();$$);
+```
+
+One statement can do both, which also means the alert reflects the instant the sample was taken
+rather than a slightly later one.
+
+### The payload
+
+```json
+{"channel":"lock_tree","root_pid":179,"application_name":"nightly_reconciliation",
+ "blocked_sessions":40,"max_depth":2,"longest_wait":"3m12s",
+ "waiting_for":"AccessShareLock on ledger"}
+```
+
+Every key is always present, `null` excepted where there is genuinely nothing to say. The server
+enforces an 8000-byte payload limit and this is far below it.
+
+`application_name` is the one to key on rather than `root_pid`. A pid identifies one session for
+as long as that session lives, which is the wrong key for correlating a page with a log or a
+dashboard across restarts and reconnects.
+
+### `lock_tree_alert`, and why you should not need to look at it
+
+One row per notable root per channel per threshold set, holding the high-water marks. It is the
+size of the current queue, not of its history, and `lock_tree_notify()` maintains it. You should
+never need to touch it.
+
+`lock_tree_prune_alerts()` exists for state orphaned by a restart or a retired channel name, and
+is worth calling from the same cron entry as the sample if you care. It is not load-bearing.
+
+### Checking it works
+
+Two ways, and they check different things.
+
+```bash
+./scripts/check-alert.sh     # builds a chain, notifies, and reads the notification back
+```
+
+That verifies the delivery path end to end, which no assertion can: `psql` prints notifications to
+stdout and a TAP test cannot see stdout, so the stream is checked by a real second client.
+
+`test/11_alert.sql` verifies the decisions, which is the part worth unit-testing: onset fires once,
+an unchanged chain stays silent, escalation fires, recovery then relapse fires again, thresholds
+behave, and all three disabled is an error.
+
+### Choosing an interval
+
+`lock_tree_sampling_advice()` answers "how often should I be sampling", which is a question about
+cost rather than taste. The cost of a sample is one row per blocked session, so a wide queue
+argues for a wider interval:
+
+```sql
+SELECT * FROM lock_tree_sampling_advice();
+```
+
+```
+ blocked_sessions | roots | suggested_every |                        reason
+------------------+-------+-----------------+-------------------------------------------------
+                0 |     0 | 00:00:05        | nothing is blocked: the table stays empty at any
+                 |       |                 | interval, so sample rarely
+               12 |     2 | 00:00:10        | a busy queue: 10 seconds catches anything that
+                 |       |                 | lasts, at a tenth the storage
+              450 |     9 | 00:00:30        | a wide queue: each sample writes a row per blocked
+                 |       |                 | session, so widen the interval
+```
+
+### Requirements, plainly
+
+- **`NOTIFY` needs nothing.** No extension, no `shared_preload_libraries`, no restart. If
+  `lock_tree_notify()` works at all, `NOTIFY` works at all.
+- **Something has to be listening** or the notification is delivered to nobody. PostgreSQL does
+  not queue notifications for absent listeners, so a `NOTIFY` raised while nothing is listening is
+  simply discarded. This matters for the sampler: if your listener is down, you get no alerts and
+  no record that you got none.
+- **`lock_tree_alert` must be writable by whoever runs the sampler.** The function is not
+  `SECURITY DEFINER`, deliberately: it is a decision about what is important enough to tell
+  someone, and a role that can set thresholds is a role that can page people.
+- **The sampler needs to run as often as you want to know.** Alerting inherits the sample
+  interval. Sampling every minute means learning about a minute-long queue a minute late, which is
+  usually fine, and sampling every ten seconds means learning in ten seconds at ten times the
+  write cost.
 ## When the queue is too wide to read
 
 A tree is one row per session, which is the right shape for one incident and the wrong shape for
@@ -228,6 +417,10 @@ Four things worth knowing before you turn it on:
 | `lock_tree_wide()` | One row per root instead of one per session: how many sessions each blocks, the deepest chain under it, the longest wait, and what they are waiting for. Use when the tree is too wide to read. |
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
+| `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Returns how many it raised, so zero is the normal result. |
+| `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Maintained by the function; you should never need to look at it. |
+| `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
+| `lock_tree_sampling_advice()` | A suggested interval for the sample cron entry, given how busy things are, and why. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
 
@@ -319,11 +512,12 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 134 pgTAP tests against the server your libpq env vars point at
+make prove              # 164 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all seven scenarios, both tools, output captured
 make lint-docs          # the docs still match the code
+make check-alert        # prove a real NOTIFY reaches a real listening client
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
 ```
@@ -343,6 +537,8 @@ terminate backends rather than mocking anything:
 | `test/08_wide.sql` | a 57-row, two-root queue, checked against `lock_tree` row by row: every count in the wide form must be derivable from the tree, since a summary that disagrees with the tree is worse than none |
 | `test/09_cost.sql` | the cost claim the README and the SQL header both make, measured as a ratio against a plain `pg_stat_activity` read rather than a wall-clock ceiling, which is noise on a shared runner |
 | `test/10_statements.sql` | `lock_tree_statements()` with and without `pg_stat_statements` loaded: the roots are reported either way, and the join is pinned where it is available |
+| `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires, recovery then relapse fires again, and all three thresholds disabled is an error |
+| `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
@@ -352,16 +548,13 @@ was never going to work. None is a runtime requirement: `pg_lock_tree` itself ne
 
 ## Roadmap
 
-- **Next**: alerting. History records what happened and `lock_tree_summary()` says whether
-  anything is happening now, but neither tells anyone. A `NOTIFY` when a chain passes a depth or
-  wait-age threshold would let an incident page someone rather than wait to be noticed.
-  Deliberately not in 0.5: a threshold is a policy choice, and a false alarm from a diagnostic
-  tool is worse than no alarm, so the numbers should be chosen by whoever is on call. Cheap to
-  add once they are, which is the argument for doing history first.
-- **Next**: cross-database. The extension lives in each database, as all extensions do, so a
-  queue on `reporting` is invisible from `production`. A sampler that takes `dblink`
-  connections to a list of databases would cover it, at the cost of making `lock_tree_history`
-  a fan-out rather than a table.
+- **Next**: per-query blocking time. `lock_tree_history` records who waited and for how long, and
+  `lock_tree_statements()` says what the blocking query is right now. Joining the two would answer
+  "which statement costs the most blocking time this month", which is the question that gets a
+  fix merged rather than a workaround. It needs `query_id` on the history rows.
+- **Next**: cross-database. The extension lives in each database, as all extensions do, so a queue
+  on `reporting` is invisible from `production`. Deliberately **not** planned here: this is a
+  per-database diagnostic, and a fan-out sampler is a separate tool wearing this one's name.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether

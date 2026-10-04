@@ -64,7 +64,8 @@ echo "  schema: $schema"
 for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree_actions \
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
          lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune \
-         lock_tree_wide lock_tree_summary lock_tree_statements; do
+         lock_tree_wide lock_tree_summary lock_tree_statements \
+         lock_tree_notify lock_tree_prune_alerts lock_tree_sampling_advice; do
     found=$(psql -X -tAc "
         SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                  WHERE n.nspname='$schema' AND c.relname='$f')
@@ -81,10 +82,20 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_actions()" \
          "SELECT count(*) FROM $schema.lock_tree_command()" \
          "SELECT count(*) FROM $schema.lock_tree_incidents()" \
-         "SELECT count(*) FROM $schema.lock_tree_summary()"; do
+         "SELECT count(*) FROM $schema.lock_tree_summary()" \
+         "SELECT count(*) FROM $schema.lock_tree_sampling_advice()"; do
     out=$(psql -X -tAc "$q" 2>&1)
     if [ $? -eq 0 ]; then ok "$q  -> ${out:-0}"; else bad "$q  -> $out"; fi
 done
+
+step "alerting"
+if psql -X -tAc "SELECT count(*) FROM $schema.lock_tree_alert" >/dev/null 2>&1; then
+    n=$(psql -X -tAc "SELECT count(*) FROM $schema.lock_tree_alert" 2>/dev/null)
+    ok "lock_tree_alert is readable, ${n:-0} row(s) of state"
+    echo "        Nothing runs by itself: schedule lock_tree_notify() yourself. See README.md."
+else
+    bad "lock_tree_alert not usable"
+fi
 
 step "pg_stat_statements (optional)"
 if psql -X -tAc "SELECT count(*) FROM pg_stat_statements" >/dev/null 2>&1; then

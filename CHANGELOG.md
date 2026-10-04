@@ -4,6 +4,94 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.3'`
 selects a release.
 
+## 0.6 (2026-10-04)
+
+Alerting. Everything from 0.5 is unchanged, columns and all. The update path is additive: a table
+and three functions, nothing altered, replaced or dropped.
+
+History records what happened and `lock_tree_summary()` says whether anything is happening now.
+Neither tells anyone. `lock_tree_notify()` closes that gap by raising a `NOTIFY` when a chain is
+bad enough to be worth waking someone for.
+
+Deliberately not included: anything that pages. Wiring a channel to a pager is a policy decision
+that belongs to whoever runs the system, and the payload is JSON so that whatever you connect can
+parse it without knowing anything about this extension.
+
+### Added
+
+- `lock_tree_notify(channel, min_blocked, min_depth, min_wait)`: raises a `NOTIFY` per notable
+  root and returns how many it raised. **Zero is the normal, healthy result**, and it is the value
+  worth watching.
+- `lock_tree_alert`, a table of what has been alerted on: per channel, per threshold set, per
+  root, with high-water marks. This is what makes the function notify once per incident instead of
+  once per sample.
+- `lock_tree_prune_alerts(older_than interval)`: forgets state orphaned by a restart or a retired
+  channel. Not load-bearing; `lock_tree_notify()` maintains the table otherwise.
+- `lock_tree_sampling_advice()`: a suggested interval for the sample cron entry, given how many
+  sessions are blocked, with the reasoning. The cost of a sample is one row per blocked session,
+  so a wide queue argues for a wider interval.
+- `test/11_alert.sql`, 30 assertions: onset, silence, escalation, recovery, relapse, thresholds,
+  and the refusal. Most of them assert a return of zero, which is the part worth testing.
+- [`scripts/check-alert.sh`](scripts/check-alert.sh) and `make check-alert`: builds a chain, notifies, and reads the
+  notification back from a **separate listening client**. A script rather than a test file because
+  psql prints notifications to stdout and a TAP assertion cannot see stdout, so the delivery path
+  needs a real second client.
+
+### The design decision worth knowing about
+
+It does not notify on every sample. A job that did would turn a two-minute incident into twelve
+notifications, and everyone would learn within a week that the channel is noise, at which point
+the one alert that mattered gets filtered along with the rest. A diagnostic tool that cries wolf
+is worse than a silent one, because it costs you the thing the tool was for.
+
+So it notifies on **onset** and on **escalation**, and stays quiet while a chain sits at the same
+severity. Escalation is measured against high-water marks rather than the previous sample, so a
+queue wobbling between 40 and 12 sessions notifies once rather than twice a minute, and a queue
+dropping from 40 to 12 is recognised as getting better rather than re-alerting.
+
+Thresholds are arguments, not settings, and there are no meaningful defaults. At least one must be
+on, and all three off is refused with an error rather than quietly given a plausible value. A root
+alerts if it meets **at least one** criterion that is switched on, because a queue can be bad in
+ways unrelated to each other: a hundred sessions waiting one second is not an incident, and two
+sessions waiting an hour is.
+
+### Two design bugs the tests found
+
+**Alert state was keyed by channel and root alone**, so two different alerting policies sharing a
+channel cleared each other's state and each re-alerted on every alternate sample. A test that
+alternated thresholds saw both roots fire twice when only one had actually got worse. The state is
+now keyed by channel, threshold set and root.
+
+**State was never cleaned up for a root that left the tree.** The per-root loop iterates over
+`lock_tree_wide()`, and a root whose waiters have all gone has no edges and therefore no row
+there: it simply vanishes. So the loop never saw it, never deleted its row, and the table grew
+one row per root ever seen, all of them pids that will never be reused. There is now a sweep after
+the loop. A test asserting the table empties on recovery is what caught it.
+
+### Requirements, since most people will not know these
+
+Documented at length in the README, because they are the things that make alerting not work:
+
+- `NOTIFY` needs nothing at all. No extension, no `shared_preload_libraries`, no restart.
+- **Something has to be listening, or the notification goes nowhere.** PostgreSQL does not queue
+  notifications for absent listeners, so a `NOTIFY` raised with no listener is discarded. If your
+  listener is down you get no alerts and no record that you got none.
+- `lock_tree_alert` must be writable by whoever runs the sampler, and `lock_tree_notify()` is
+  deliberately **not** granted to `PUBLIC`: it decides what is important enough to page someone,
+  which is not a decision an arbitrary role should make.
+- Alerting inherits the sample interval. Alerting every 10 seconds learns in 10 seconds at ten
+  times the write cost.
+
+### Also
+
+- `.forgejo/workflows/test.yml` loads `pg_lock_tree--0.6.sql`.
+- `scripts/check-install.sh` verifies the three new functions and reports whether
+  `lock_tree_alert` is reachable.
+
+Verified: 164 tests green on PG 14, 15, 16, 17, 18 and 19beta4; the 0.5 -> 0.6 upgrade and the
+full chain; demo, seven scenarios, check-install, and `scripts/check-alert.sh` delivering a JSON payload to
+a real listener.
+
 ## 0.5 (2026-10-04)
 
 The wide case, and the cost of the blocking query. Everything from 0.4 is unchanged, columns and

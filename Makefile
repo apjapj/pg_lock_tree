@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
@@ -57,3 +57,9 @@ lint-docs:
 # since they need a live PostgreSQL with the extension installed.
 check: lint-docs
 	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
+
+# Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read. A script rather
+# than a pgTAP file because psql prints notifications to stdout and a TAP assertion cannot see
+# stdout, so the delivery path needs a real second client. Needs a server and superuser.
+check-alert:
+	./scripts/check-alert.sh

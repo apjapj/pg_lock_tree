@@ -49,8 +49,8 @@ Check out the version you want. Tags are releases; `main` is whatever is newest 
 ahead of the last tag:
 
 ```bash
-git tag                 # v0.1, v0.2, v0.3, v0.4, v0.5
-git checkout v0.5       # or: git checkout main
+git tag                 # v0.1, v0.2, v0.3, v0.4, v0.5, v0.6
+git checkout v0.6       # or: git checkout main
 ```
 
 ## Install
@@ -89,11 +89,13 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 # pg_lock_tree--0.2--0.3.sql   the update path from 0.2
 # pg_lock_tree--0.3--0.4.sql   the update path from 0.3
 # pg_lock_tree--0.4--0.5.sql   the update path from 0.4
+# pg_lock_tree--0.5--0.6.sql   the update path from 0.5
 # pg_lock_tree--0.1.sql         release
 # pg_lock_tree--0.2.sql         release
 # pg_lock_tree--0.3.sql         release
 # pg_lock_tree--0.4.sql         release
-# pg_lock_tree--0.5.sql         current release
+# pg_lock_tree--0.5.sql         release
+# pg_lock_tree--0.6.sql         current release
 # pg_lock_tree.control
 ```
 
@@ -181,8 +183,10 @@ ERROR:  permission denied for view lock_tree
 
 `lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()`,
 `lock_tree_command()`, `lock_tree_sample()`, `lock_tree_incidents()`, `lock_tree_prune()`,
-`lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_statements()` and the three formatting
-helpers are executable by `PUBLIC` by default and become usable once the view
+`lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_statements()`,
+`lock_tree_sampling_advice()`, `lock_tree_prune_alerts()` and the three formatting helpers are
+executable by `PUBLIC` by default. `lock_tree_notify()` is **not** granted to `PUBLIC`: it decides
+what is important enough to page someone, which is not a decision an arbitrary role should make. and become usable once the view
 is readable. If you install into a non-public schema, grant against that schema instead:
 
 ```sql
@@ -207,7 +211,7 @@ the objects are missing or the schema is wrong, and an empty result just means n
 blocked:
 
 ```sql
-SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.5
+SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.6
 SELECT count(*) FROM lock_tree;                                        -- 0
 SELECT * FROM lock_tree_text();                                        -- 0 rows
 ```
@@ -224,6 +228,7 @@ SELECT * FROM lock_tree_actions();       -- 1 row: the "-- 0 root blocker(s)" he
 SELECT * FROM lock_tree_command();       -- 0 rows: a quiet database needs no commands
 SELECT * FROM lock_tree_incidents();      -- 0 rows: history is opt-in and starts empty
 SELECT * FROM lock_tree_summary();         -- 1 row of zeros, not no rows
+SELECT * FROM lock_tree_sampling_advice(); -- an interval, and why
 RESET ROLE;
 ```
 
@@ -259,29 +264,29 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '0.5';     -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '0.6';     -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "0.x" to version "0.5"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.5.sql` in the
+**If you get `no update path from version "0.x" to version "0.6"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.6.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.4--0.5.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.5--0.6.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
 [Troubleshooting](#troubleshooting).
 
-**What 0.5 changes:** adds `lock_tree_wide()`, `lock_tree_summary()` and
-`lock_tree_statements()`. Nothing existing is altered, so there is nothing to migrate. The
-optional `pg_stat_statements` join is described under
-[When the queue is too wide to read](README.md#when-the-queue-is-too-wide-to-read).
+**What 0.6 changes:** adds `lock_tree_notify()`, `lock_tree_alert`,
+`lock_tree_prune_alerts()` and `lock_tree_sampling_advice()`. Nothing existing is altered, so there
+is nothing to migrate. None of it runs by itself; see
+[Alerting](README.md#alerting).
 
-**Downgrade is not supported.** There is no `0.5--0.4` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get 0.4 behaviour back, install 0.4 in a scratch database alongside it.
+**Downgrade is not supported.** There is no `0.6--0.5` script, and `ALTER EXTENSION ... UPDATE TO`
+will not go backwards. To get 0.5 behaviour back, install 0.5 in a scratch database alongside it.
 
 **Upgrading from an earlier version chains automatically.** There is no `0.2--0.4` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the
@@ -318,7 +323,7 @@ The extension lives **inside each database**, so:
 - `pg_upgrade` carries the installed extension and its version forward automatically.
 - A dump/restore (`pg_dumpall` / `pg_restore`) carries the `CREATE EXTENSION` statement, so
   target the server with `make install` first, or the restore fails with
-  `could not access file "pg_lock_tree--0.5.sql"`.
+  `could not access file "pg_lock_tree--0.6.sql"`.
 - To install into a fresh major version, repeat [Install](#install) against the new
   `pg_config`:
   ```bash
@@ -349,7 +354,7 @@ set `PG_CONFIG=/usr/lib/postgresql/<version>/bin/pg_config`.
 **Installed to the wrong PostgreSQL version.** `pg_config` resolves to whichever version comes
 first on your `PATH`, which on a multi-version box is rarely the one you meant. Always pass
 `PG_CONFIG=` explicitly, and confirm with `pg_config --version` before creating the extension.
-PostgreSQL does not warn about this. It will happily load a 0.5 built for a different major
+PostgreSQL does not warn about this. It will happily load a 0.6 built for a different major
 version, and you will find out at runtime.
 
 **`FATAL: Peer authentication failed for user "postgres"`**, stock Debian/Ubuntu behaviour and not
