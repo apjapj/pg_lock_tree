@@ -1,4 +1,4 @@
--- s7_prepared.sql — the blocker is not a session at all.
+-- s7_prepared.sql: the blocker is not a session at all.
 --
 -- A prepared transaction holds its locks until COMMIT PREPARED or ROLLBACK PREPARED. It has
 -- no backend, so it is not in pg_stat_activity, and no PID, so it has no pg_locks row keyed

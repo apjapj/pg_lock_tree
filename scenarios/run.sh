@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scenarios/run.sh — build each scenario, then query the same incident two ways and capture
+# scenarios/run.sh: build each scenario, then query the same incident two ways and capture
 # both outputs.
 #
 #   ./scenarios/run.sh            run all seven
@@ -52,7 +52,7 @@ WANTED=${*:-$ALL}
 
 for s in $WANTED; do
     case $s in
-        s1_nightly_batch) title="one culprit, four waiters — the reference case" ;;
+        s1_nightly_batch) title="one culprit, four waiters, the reference case" ;;
         s2_three_chains)   title="three unrelated incidents at once" ;;
         s3_row_locks)      title="row-lock contention: no relation in pg_locks" ;;
         s4_wide_queue)     title="60 sessions behind one idle transaction" ;;
@@ -66,7 +66,7 @@ for s in $WANTED; do
     # -v ON_ERROR_STOP=1 would abort the file on the deliberate statement_timeout in the
     # published query, which is part of what we are demonstrating.
     if ! (cd "$HERE" && psql -X -q -d "$DATABASE" -f "$s.sql" >"$OUT/$s.txt" 2>&1); then
-        echo "    !! psql exited non-zero — see $OUT/$s.txt" >&2
+        echo "    !! psql exited non-zero, see $OUT/$s.txt" >&2
     fi
 done
 

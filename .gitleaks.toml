@@ -1,7 +1,7 @@
 title = "pg_lock_tree gitleaks config"
 
 # Inherit every default rule. pg_lock_tree ships no credentials and has no vendor config,
-# so the default rule set is the whole policy — nothing to narrow.
+# so the default rule set is the whole policy, nothing to narrow.
 [extend]
 useDefault = true
 

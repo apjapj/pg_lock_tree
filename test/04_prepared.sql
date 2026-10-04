@@ -1,4 +1,4 @@
--- test/04_prepared.sql — pg_lock_tree v0.1: a prepared transaction as the root.
+-- test/04_prepared.sql: pg_lock_tree v0.1: a prepared transaction as the root.
 --
 -- A prepared transaction keeps its locks until COMMIT/ROLLBACK PREPARED, has no backend, so
 -- it is not in pg_stat_activity, and has no pid. pg_blocking_pids() reports it as 0. Without

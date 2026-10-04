@@ -1,4 +1,4 @@
--- test/02_permissions.sql — pg_lock_tree v0.1: the grants a monitoring role needs.
+-- test/02_permissions.sql: pg_lock_tree v0.1: the grants a monitoring role needs.
 --
 -- The README's install snippet used to say GRANT pg_read_all_stats was enough. It is not:
 -- without SELECT on the view the role gets "permission denied for view lock_tree", because

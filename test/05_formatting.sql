@@ -1,4 +1,4 @@
--- test/05_formatting.sql — the 0.2 rendering and action helpers.
+-- test/05_formatting.sql: the 0.2 rendering and action helpers.
 --
 -- These are pure functions over known inputs, so no dblink and no blocked sessions: the point
 -- is to pin the exact output, because the scenario suite measures widths from it.

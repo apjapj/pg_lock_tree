@@ -1,4 +1,4 @@
--- s6_deadlock.sql — a wait-for cycle. Nobody is the blocker.
+-- s6_deadlock.sql: a wait-for cycle. Nobody is the blocker.
 --
 -- The case where the published recursive CTE cannot give a straight answer, and where a
 -- tool that returns nothing is worse than useless: an operator staring at an empty result
@@ -93,7 +93,7 @@ FROM std, plt;
 \echo ''
 \echo '   Both report the same two sessions. The difference is that the published form walks'
 \echo '   the cycle round and round until the depth cap stops it, so the same pair of pids'
-\echo '   appears at depths 1..20 in both directions — 40 rows describing a 2-session'
+\echo '   appears at depths 1..20 in both directions, 40 rows describing a 2-session'
 \echo '   incident. There is no row that says "these two are each other''s blocker", because'
 \echo '   that is not a shape the recursion can express.'
 

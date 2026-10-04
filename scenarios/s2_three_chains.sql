@@ -1,8 +1,8 @@
--- s2_three_chains.sql — three unrelated incidents, at once.
+-- s2_three_chains.sql: three unrelated incidents, at once.
 --
 -- This is what a real incident looks like: not one queue, but several that happen to
 -- overlap. A batch job idle on orders, a migration holding a lock on users, and a
--- reporting replica behind a stuck ANALYZE — all in the same ten seconds.
+-- reporting replica behind a stuck ANALYZE, all in the same ten seconds.
 --
 -- The trap for a flat query is not that it is wrong, it is that it interleaves the three
 -- into one undifferentiated pile of "waiting" rows. Separating them is most of the work.
@@ -37,7 +37,7 @@ FROM unnest(ARRAY['o1','o2','o2b','u1','u2','r1','r2']) AS n;
 -- Chain 1: a batch rewrite holding ACCESS EXCLUSIVE on orders, two API reads behind it.
 --
 -- The lock mode matters and is easy to get wrong. A plain UPDATE takes only RowExclusiveLock,
--- which does NOT conflict with the AccessShareLock a SELECT needs — so the reads sail straight
+-- which does NOT conflict with the AccessShareLock a SELECT needs, so the reads sail straight
 -- past and no chain forms. You need ACCESS EXCLUSIVE (a rewrite, TRUNCATE, or most DDL) to
 -- block readers. This is the single most common reason a "blocking chain" demo quietly fails.
 --

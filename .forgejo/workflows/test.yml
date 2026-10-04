@@ -1,4 +1,4 @@
-# .forgejo/workflows/test.yml — pg_lock_tree logic tests on PG 14–19.
+# .forgejo/workflows/test.yml: pg_lock_tree logic tests on PG 14-19.
 # CI loads the SQL file directly (no make install: the database runs in a separate service
 # container). Packaging and CREATE EXTENSION are covered locally by scripts/matrix.sh.
 name: test matrix

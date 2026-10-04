@@ -1,4 +1,4 @@
--- test/03_deadlock.sql — pg_lock_tree v0.1: a wait-for cycle with no head of the queue.
+-- test/03_deadlock.sql: pg_lock_tree v0.1: a wait-for cycle with no head of the queue.
 --
 -- Root finding used to require a blocker that is not itself blocked. In a deadlock every
 -- session in the cycle is blocked, so the whole component matched nothing and lock_tree

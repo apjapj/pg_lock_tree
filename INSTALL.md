@@ -27,9 +27,9 @@ Everything needed to get `pg_lock_tree` running, move it between versions, and u
 | To exercise prepared transactions | `max_prepared_transactions > 0` |
 
 That last row catches people. `max_prepared_transactions` defaults to **0**, and with it at 0
-`PREPARE TRANSACTION` is refused. It does not affect normal use of the extension — only the
-prepared-transaction test — but if you want to see that path work, set it before starting the
-server.
+`PREPARE TRANSACTION` is refused. It does not affect normal use of the extension. Only the
+prepared-transaction test needs it, but if you want to see that path work, set it before starting
+the server.
 
 ## Where to get it
 
@@ -87,7 +87,7 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 ```
 
 If `pg-test:14` is missing while the others are present, `make` did not pick up the update
-script. That is a Makefile bug, not something you did wrong — report it.
+script. That is a Makefile bug, not something you did wrong. Report it.
 
 **2. Create the extension in each database where you want it.**
 
@@ -105,7 +105,7 @@ CREATE SCHEMA monitoring;
 CREATE EXTENSION pg_lock_tree SCHEMA monitoring;
 ```
 
-Then reference it as `monitoring.lock_tree`. Verified working — the view and all five functions
+Then reference it as `monitoring.lock_tree`. Verified working: the view and all five functions
 resolve their own schema correctly.
 
 **3. Grant access to whatever reads it.** See [Grants](#grants).
@@ -131,8 +131,8 @@ EXT_SRC=$PWD COMPOSE_FILE=~/dev/pg-dev-infra/docker-compose.test.yml scripts/mat
 
 ### C. On RDS, Aurora, or another managed instance
 
-You cannot run `make install` on a managed instance, so this path is untested — stated plainly
-because the README has claimed it before without evidence.
+You cannot run `make install` on a managed instance, so this path is untested. Stated plainly, because the README
+has claimed it before without evidence.
 
 The extension is pure SQL, which is what makes it plausible: AWS's `pg_tle` (Trusted Language
 Extensions) loads SQL extensions without filesystem access.
@@ -143,8 +143,8 @@ SELECT pg_tle.create_extension('pg_lock_tree', 'pg_tle');
 ```
 
 That is the shape of it. **Treat it as unverified** until someone has run it, and check
-particularly whether `pg_blocking_pids()` is reachable under `pg_tle` — it is the one dependency
-that might not be.
+particularly whether `pg_blocking_pids()` is reachable under `pg_tle`, which is the one
+dependency that might not be.
 
 ## Grants
 
@@ -186,10 +186,10 @@ real failure:
 ./scripts/check-install.sh          # or: PGHOST=... PGUSER=monitoring ./scripts/check-install.sh
 ```
 
-Exits non-zero on failure. Run it as your monitoring role too — that is how you confirm the
-grants, rather than assuming them.
+Exits non-zero on failure. Run it as your monitoring role too, since that is how you confirm the
+grants rather than assuming them.
 
-By hand, three queries. The first two should return **zero rows**, not an error — an error means
+By hand, three queries. The first two should return **zero rows**, not an error. An error means
 the objects are missing or the schema is wrong, and an empty result just means nothing is
 blocked:
 
@@ -232,7 +232,7 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';
 grep default_version "$(pg_config --sharedir)"/extension/pg_lock_tree.control
 ```
 
-**2. Copy the new files in** — same as installing, and it is safe to do before upgrading. An
+**2. Copy the new files in.** Same as installing, and safe to do before upgrading. An
 installed `.control` and unused `.sql` files do nothing on their own:
 
 ```bash
@@ -270,7 +270,7 @@ its `lock_tree_text()`.
 
 ## Uninstalling
 
-**From the database** — takes the view and all functions with it:
+**From the database.** Takes the view and all functions with it:
 
 ```sql
 DROP EXTENSION pg_lock_tree;          -- add CASCADE only if something depends on the view
@@ -278,7 +278,7 @@ DROP EXTENSION pg_lock_tree;          -- add CASCADE only if something depends o
 
 Verified: nothing is left behind in `pg_class` or `pg_proc`.
 
-**From the filesystem** — optional. Dropping the extension first and leaving the files is
+**From the filesystem** (optional). Dropping the extension first and leaving the files is
 harmless; PostgreSQL ignores extension files for extensions that are not installed.
 
 ```bash
@@ -294,7 +294,7 @@ The extension lives **inside each database**, so:
 
 - `pg_upgrade` carries the installed extension and its version forward automatically.
 - A dump/restore (`pg_dumpall` / `pg_restore`) carries the `CREATE EXTENSION` statement, so
-  target the server with `make install` first — otherwise the restore fails with
+  target the server with `make install` first, or the restore fails with
   `could not access file "pg_lock_tree--0.2.sql"`.
 - To install into a fresh major version, repeat [Install](#install) against the new
   `pg_config`:
@@ -304,32 +304,32 @@ The extension lives **inside each database**, so:
 
 ## Troubleshooting
 
-**`permission denied for view lock_tree`** — the most common one. You granted
+**`permission denied for view lock_tree`**, the most common one. You granted
 `pg_read_all_stats` but not `SELECT`. See [Grants](#grants).
 
 **`permission denied to create extension "pg_lock_tree"` / `Must be superuser to create this
-extension`** — the control file sets `trusted = false`. Run `CREATE EXTENSION` as a superuser.
+extension`**. The control file sets `trusted = false`. Run `CREATE EXTENSION` as a superuser.
 
-**`relation "lock_tree" does not exist`** — the files are installed but the extension was never
+**`relation "lock_tree" does not exist`**: the files are installed but the extension was never
 created in *this* database. Extensions are per-database; check the others too.
 
-**`prepared transactions are disabled`** — from the prepared-transaction test or scenario only.
+**`prepared transactions are disabled`**, from the prepared-transaction test or scenario only.
 Set `max_prepared_transactions` above 0 and restart. In the shared test images it is already set
 in the image's `CMD`; note Forgejo v16 ignores a `command:` override on a workflow service
 container, so it cannot be set from a workflow.
 
-**`pg_config: No such file or directory`** — install `postgresql-server-dev-<your version>`, or
+**`pg_config: No such file or directory`**: install `postgresql-server-dev-<your version>`, or
 set `PG_CONFIG=/usr/lib/postgresql/<version>/bin/pg_config`.
 
-**`make install: Permission denied`** — it writes to a system directory. Use `sudo make install`.
+**`make install: Permission denied`**: it writes to a system directory. Use `sudo make install`.
 
 **Installed to the wrong PostgreSQL version.** `pg_config` resolves to whichever version comes
 first on your `PATH`, which on a multi-version box is rarely the one you meant. Always pass
 `PG_CONFIG=` explicitly, and confirm with `pg_config --version` before creating the extension.
-PostgreSQL does not warn about this — it will happily load a 0.2 built for a different major
+PostgreSQL does not warn about this. It will happily load a 0.2 built for a different major
 version, and you will find out at runtime.
 
-**`FATAL: Peer authentication failed for user "postgres"`** — stock Debian/Ubuntu behaviour, not
+**`FATAL: Peer authentication failed for user "postgres"`**, stock Debian/Ubuntu behaviour and not
 a problem with this extension. Local socket connections must match your OS user, so use
 `sudo -u postgres psql`, or connect over TCP with a password.
 

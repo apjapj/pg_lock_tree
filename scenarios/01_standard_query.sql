@@ -1,8 +1,8 @@
--- The query a DBA actually pastes — and what happens when you run it.
+-- The query a DBA actually pastes, and what happens when you run it.
 --
 -- This is the recursive pg_locks() lock-tree query that circulates as a PostgreSQL wiki
 -- entry and in a dozen blog posts. It is inlined rather than linked so the comparison does
--- not depend on a URL, and kept as close to the published form as possible — because the
+-- not depend on a URL, and kept as close to the published form as possible, because the
 -- point is to measure what that form gives and does not give.
 --
 -- Part 1 runs it verbatim. It is expected to time out, and that is the finding: the
@@ -103,7 +103,7 @@ SELECT * FROM std_result ORDER BY root_pid, blocked_pid;
 \echo '   --- part 3: coverage. Who reported the sessions that are genuinely stuck? ---'
 \echo ''
 \echo '   Counting: a session counts as reported if it appears in the output AND is actually'
-\echo '   waiting right now. Deliberately NOT "rows where depth > 0" — in a deadlock both'
+\echo '   waiting right now. Deliberately NOT "rows where depth > 0": in a deadlock both'
 \echo '   sessions are roots, so a depth-based count would score pg_lock_tree at zero for'
 \echo '   reporting both of them correctly. That would be a misleading number, not a true one.'
 WITH waiting AS (

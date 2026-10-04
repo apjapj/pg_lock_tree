@@ -1,10 +1,10 @@
--- s4_wide_queue.sql — a hobbled database. This is the case that decides whether a tool is
+-- s4_wide_queue.sql: a hobbled database. This is the case that decides whether a tool is
 -- usable or not.
 --
 -- Sixty sessions waiting behind one idle transaction. Nothing clever is happening: it is a
 -- batch job that forgot to commit, and now the whole application is queued behind it.
 --
--- The question is not "can you find the culprit" — you can, in the first row. The question is
+-- The question is not "can you find the culprit". You can, in the first row. The question is
 -- whether the tool lets you *read* the answer, and then act on it without scrolling. That is
 -- what this scenario measures: line widths, how many lines you have to read past, and whether
 -- the fix arrives on its own.
@@ -96,7 +96,7 @@ SELECT * FROM lock_tree_text_short() OFFSET 59;
 --
 -- The compact interval (lock_tree_age: "1m30s" not "00:01:30") is in ALL THREE. It is a
 -- change to the renderer, not to the short flag, so it cannot be isolated by comparing
--- these three columns — it is a separate saving that applies to the unabbreviated form too.
+-- these three columns. It is a separate saving that applies to the unabbreviated form too.
 WITH long_form  AS (SELECT row_number() OVER () AS n, length(t) AS w FROM lock_tree_text() t),
      full_wide  AS (SELECT row_number() OVER () AS n, length(t) AS w FROM lock_tree_lines(100, false) t),
      short_form AS (SELECT row_number() OVER () AS n, length(t) AS w FROM lock_tree_lines(100, true) t)

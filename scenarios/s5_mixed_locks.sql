@@ -1,4 +1,4 @@
--- s5_mixed_locks.sql — locks that are not table locks at all.
+-- s5_mixed_locks.sql: locks that are not table locks at all.
 --
 -- Advisory locks, and the case where the wait is on something a DBA cannot name with a
 -- table name. `pg_locks.relation` is NULL, so a relation-centric query returns either nothing
@@ -31,7 +31,7 @@ FROM unnest(ARRAY['dep','w1','w2','mon']) AS n;
 -- pg_advisory_lock returns void, so neither a bare call nor a SELECT one will do through
 -- dblink_exec, which refuses anything that would return rows. dblink_send_query is the right
 -- tool anyway: the lock blocks, so we must not wait on it. The holder ends up idle inside its
--- open transaction, still holding the advisory lock — which is exactly the state this
+-- open transaction, still holding the advisory lock, which is exactly the state this
 -- scenario is about.
 SELECT dblink_exec('dep','BEGIN');
 SELECT dblink_exec('dep','SET application_name = ''deploy_migrate''');

@@ -1,4 +1,4 @@
--- demo.sql — pg_lock_tree in action, on a throwaway database.
+-- demo.sql: pg_lock_tree in action, on a throwaway database.
 --
 -- Rebuilds the nightly-batch incident from the README using dblink, so you can watch
 -- lock_tree, lock_tree_roots() and lock_tree_text() work on a real blocking chain, then
@@ -7,14 +7,14 @@
 --   psql -X -f demo.sql          as a superuser; needs the dblink contrib module
 --
 -- Safe to re-run: everything it creates is terminated and dropped at the end.
--- Mechanical output (connecting, BEGIN, UPDATE 1) is suppressed — only the
+-- Mechanical output (connecting, BEGIN, UPDATE 1) is suppressed. Only the
 -- interesting results are shown.
 --
 -- ON THE PIDs. They change on every run. Each invocation opens fresh dblink backends and
 -- PostgreSQL hands out the next available pid, so one run may show 165 and the next 180.
 -- Within a single run every section agrees: the roster in section 2, the root line in
 -- section 3, and root_pid in section 5 are always the same number. If you are comparing
--- two runs, match on application_name, not on pid — a pid identifies one session for as long
+-- two runs, match on application_name, not on pid: a pid identifies one session for as long
 -- as that session lives, and a re-run is a different set of sessions.
 
 \set ON_ERROR_STOP 1
@@ -94,7 +94,7 @@ ORDER BY p.name;
 
 \echo ''
 \echo '##############################################################################'
-\echo '# 3. lock_tree_text() — the queue, top to bottom'
+\echo '# 3. lock_tree_text(): the queue, top to bottom'
 \echo '##############################################################################'
 \echo ' Note reads (report-c/d/e) sit under the ALTER TABLE, not under the batch:'
 \echo ' they queue behind whoever is ahead of them in the lock queue.'
@@ -103,7 +103,7 @@ SELECT * FROM lock_tree_text();
 
 \echo ''
 \echo '##############################################################################'
-\echo '# 4. lock_tree — who blocks whom, and for how long'
+\echo '# 4. lock_tree: who blocks whom, and for how long'
 \echo '##############################################################################'
 SELECT p.name AS sess, t.depth, t.state,
        coalesce(t.waiting_for, '-') AS waiting_for,
@@ -114,7 +114,7 @@ ORDER BY t.root_pid, t.path;
 
 \echo ''
 \echo '##############################################################################'
-\echo '# 5. lock_tree_roots() — the one session to act on'
+\echo '# 5. lock_tree_roots(): the one session to act on'
 \echo '##############################################################################'
 \echo ' One root here: the idle batch, blocking 4 sessions. Everything else is a symptom.'
 \echo ''
@@ -124,7 +124,7 @@ FROM lock_tree_roots() ORDER BY blocked_sessions DESC, root_pid;
 
 \echo ''
 \echo '##############################################################################'
-\echo '# 6. Act on it — terminate the idle batch'
+\echo '# 6. Act on it: terminate the idle batch'
 \echo '##############################################################################'
 \set QUIET 1
 \o /dev/null
@@ -148,7 +148,7 @@ SELECT count(*) AS sessions_left_in_tree FROM lock_tree;
 \echo '# 7. Bonus: a deadlock has no head of the queue'
 \echo '##############################################################################'
 \echo ' Two sessions each grab one table, then each asks for the other''s.'
-\echo ' Nobody is "the blocker" — so every session in the cycle is listed as a root.'
+\echo ' Nobody is "the blocker", so every session in the cycle is listed as a root.'
 \echo ''
 
 \set QUIET 1

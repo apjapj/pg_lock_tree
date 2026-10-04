@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/matrix.sh v0.1 — install pg_lock_tree into every test container and run the pgTAP suite.
+# scripts/matrix.sh: install pg_lock_tree into every test container and run the pgTAP suite.
 # Needs: a compose file whose services mount "${EXT_SRC:-.}:/src:ro", and a Dockerfile.test that
 # includes make + postgresql-server-dev-<version> (see dev environment setup v2.1).
 # Usage: COMPOSE_FILE=../pg-dev-infra/docker-compose.test.yml scripts/matrix.sh

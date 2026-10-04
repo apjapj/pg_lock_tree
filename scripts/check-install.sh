@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/check-install.sh — verify a pg_lock_tree installation end to end.
+# scripts/check-install.sh: verify a pg_lock_tree installation end to end.
 #
 # Walks the same checks as INSTALL.md's "Verify the install", so the documentation and
 # something executable cannot drift apart. Exits non-zero on the first failure.
@@ -97,6 +97,6 @@ if [ $fail -eq 0 ]; then
     echo "  To see it working on a real blocking chain:  psql -X -f demo.sql"
     exit 0
 else
-    red "some checks failed — see INSTALL.md, Troubleshooting"
+    red "some checks failed. See INSTALL.md, Troubleshooting"
     exit 1
 fi

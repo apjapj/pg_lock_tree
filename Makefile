@@ -1,4 +1,4 @@
-# pg_lock_tree — Makefile
+# pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
 DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
@@ -37,7 +37,7 @@ demo:
 
 # Verify an installation: server version, extension version, every object present, every
 # function callable, and the prepared-transaction setting. Run it as your monitoring role as
-# well as as yourself — that is how you confirm the grants rather than assuming them.
+# well as yourself, which is how you confirm the grants rather than assuming them.
 check-install:
 	./scripts/check-install.sh
 

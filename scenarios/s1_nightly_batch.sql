@@ -1,4 +1,4 @@
--- s1_nightly_batch.sql — the baseline case, and the one the README shows.
+-- s1_nightly_batch.sql: the baseline case, and the one the README shows.
 --
 -- One culprit holds a row lock and goes idle in its transaction; an ALTER TABLE queues
 -- behind it; ordinary reads queue behind the ALTER. Five sessions, one root.

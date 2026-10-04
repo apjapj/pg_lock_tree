@@ -2,8 +2,8 @@
 
 Seven incidents, each built for real with `dblink`, then queried two ways:
 
-1. **`pg_lock_tree`** — installed as an extension
-2. **the published recursive CTE** — the `pg_blocking_pids()` lock-tree query that circulates
+1. **`pg_lock_tree`**, installed as an extension
+2. **the published recursive CTE**, the `pg_blocking_pids()` lock-tree query that circulates
    as a PostgreSQL wiki entry and in a dozen blog posts, inlined in
    [`01_standard_query.sql`](01_standard_query.sql)
 
@@ -16,7 +16,7 @@ make scenarios                      # all seven, output to scenarios/out/
 ```
 
 Needs a superuser connection and `dblink`. Every scenario cleans up after itself, and each
-asserts its own shape before reporting — a chain that silently failed to form is the main way
+asserts its own shape before reporting, since a chain that silently failed to form is the main way
 these could have produced flattering nonsense.
 
 ## The scenarios
@@ -33,7 +33,7 @@ these could have produced flattering nonsense.
 
 ## Results
 
-Coverage — sessions genuinely waiting, and how many of them each approach reported:
+Coverage: sessions genuinely waiting, and how many of them each approach reported.
 
 | scenario | waiting | published CTE | pg_lock_tree |
 |---|---|---|---|
@@ -49,28 +49,28 @@ Coverage — sessions genuinely waiting, and how many of them each approach repo
 not in finding sessions. They are these:
 
 - **Scenario 7, the one that matters most.** A prepared transaction has no backend and no
-  `pg_locks.pid`. The published query finds **nothing** — the waiters appear with no blocker at
+  `pg_locks.pid`. The published query finds **nothing**. The waiters appear with no blocker at
   all, so the answer to "what is holding this?" is an empty set. `pg_lock_tree` attributes them
   to pid 0 and names the state.
 - **Scenario 1: the published form times out.** Run verbatim it never returns. See below.
 - **Scenario 6: 40 rows versus 2.** Both find the two sessions, but the published recursion has
   no cycle guard, so it walks the loop until a depth cap stops it and reports the same pid pair
-  at depths 1–20 in both directions.
+  at depths 1 to 20 in both directions.
 - **Scenarios 2, 3, 5: same coverage, more attribution.** Roots named by
-  `application_name`, the blast radius per root, and a command to run — none of which the
+  `application_name`, the blast radius per root, and a command to run, none of which the
   published query produces.
 - **Scenario 4: readability.** Measured, not asserted: see below.
 
 ## The published query has a performance bug
 
-Run verbatim, part 1 of `01_standard_query.sql` times out — five blocked sessions is enough.
+Run verbatim, part 1 of `01_standard_query.sql` times out. Five blocked sessions is enough.
 The published form omits `blocking_locks.granted`, so every ungranted lock joins with every
 lock of the same identity, *including other waiters*. Each recursion level multiplies that, and
 the row count grows geometrically with chain depth.
 
 Part 2 adds the one missing line (`AND blocking_locks.granted`) and it works. That is what the
-suite reports as "the published CTE" column. It is a fair comparison — nobody should be judged
-on a version they would not actually run — but the first attempt timing out is a real thing
+suite reports as "the published CTE" column. That is a fair comparison, since nobody should be
+judged on a version they would not actually run, but the first attempt timing out is a real thing
 that happens to people.
 
 ## Measured, not asserted
@@ -87,7 +87,7 @@ Scenario 4 renders the same 61-session tree both ways and reports the widths:
 That is a real saving and it is also modest; the compact interval (`1m30s`, not `00:01:30`)
 helps more and applies to the unabbreviated form too, so it does not show up in that
 comparison. The view itself is unchanged and always carries full names, so anything grepping
-`AccessExclusiveLock` still works — abbreviation is opt-in, in the text functions only.
+`AccessExclusiveLock` still works. Abbreviation is opt-in, in the text functions only.
 
 ## Why the coverage metric is the way it is
 

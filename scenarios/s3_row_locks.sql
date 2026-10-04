@@ -1,4 +1,4 @@
--- s3_row_locks.sql — contention that is NOT a table lock.
+-- s3_row_locks.sql: contention that is NOT a table lock.
 --
 -- The case where pg_locks shows no relation at all: two sessions UPDATE the same row, so the
 -- wait is a tuple lock plus a transaction id. Anyone reading pg_locks for `relation` sees

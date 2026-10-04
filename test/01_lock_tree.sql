@@ -1,4 +1,4 @@
--- test/01_lock_tree.sql — pg_lock_tree v0.1 pgTAP suite
+-- test/01_lock_tree.sql: pg_lock_tree v0.1 pgTAP suite
 -- Builds a real blocking chain with dblink (needs superuser and the dblink contrib module):
 --   A  holds ROW EXCLUSIVE on lock_tree_t, then sits idle in its transaction   (root)
 --   B  wants ACCESS EXCLUSIVE           -> blocked by A                         (depth 1)
