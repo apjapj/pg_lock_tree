@@ -1,8 +1,98 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.3'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.6'`
 selects a release.
+
+## 0.7 (2026-10-04)
+
+Per-query blocking time over the sampled history, and an eighth scenario for the wide case.
+
+Everything from 0.6 is unchanged except `lock_tree_history`, which gains a `query_id` column and
+an index. The column is added with `ALTER TABLE ... ADD COLUMN`, which is metadata-only: no rows
+are rewritten and no rewrite lock is taken, so the upgrade applies instantly whatever the size of
+the history.
+
+### Added
+
+- `lock_tree_history.query_id`: the session's own `pg_stat_statements` query id, recorded per
+  sampled row. The index over it is **partial**, because the column is NULL on every waiter row and
+  an index over mostly-NULL keys is mostly wasted space.
+- `lock_tree_history_statements(since interval DEFAULT '7 days')`: per-query blocking time from
+  the samples, worst first. For each root query id: how many blocked sessions it held up across
+  all samples, over how many samples, when first and last seen, the deepest chain and longest wait
+  under it, when that worst wait happened, and which applications were involved. This is the
+  question that gets a fix merged rather than a workaround. `lock_tree_statements()` answers it
+  for the chain in front of you; this answers it for the month.
+- `scenarios/s8_many_roots.sql`: five blockers at once, 30/18/10/5/3 waiters across them, 71 rows
+  of tree reduced to 5 rows by `lock_tree_wide()`. `s4` covers a wide queue behind a *single*
+  root, which is the shape the abbreviation work targeted; a queue that is wide *and* has several
+  heads is the case the aggregate exists for, and it had no scenario.
+- `test/12_history_statements.sql`, 17 assertions.
+
+### The unit is session-samples, and that is not the same as seconds
+
+`blocked_sessions` here counts each blocked session once per sample it was blocked in. A session
+blocked for 60 seconds at a 10 second sample interval contributes six, not sixty.
+
+That is deliberate. It is a higher bound on precision, not a lower one on importance: the number
+rises in proportion to the sampling rate, so the **ranking** between statements is stable and the
+absolute figure is not. What to read is which statement is at the top, not what the top number is.
+The test asserts this by dividing `blocked_sessions` by `samples` and checking the result is the
+average queue depth rather than a duration.
+
+### Only roots carry a query_id, so this is per blocking query
+
+A query blocked on a lock has no `query_id` for as long as it is blocked, and gains one when it
+completes. Same finding as `lock_tree_statements()`, and here it decides what the history can
+record: root rows only.
+
+The join is on each row's **own** pid rather than on `root_pid`. Joining on `root_pid` was the
+first attempt and it propagated the root's query id down the whole chain, so every waiter looked
+like it was running the blocking statement, which is the normal case and would have made the
+totals wrong rather than merely incomplete. `test/12_history_statements.sql` pins the property
+directly: no waiter row carries a query id, every root row does.
+
+Existing history rows keep a NULL `query_id` and are not backfilled. The value was never
+captured, and inventing one from the stored query text would produce a queryid matching nothing in
+`pg_stat_statements`.
+
+### Deliberately does not reference pg_stat_statements
+
+`lock_tree_history_statements()` references no optional module at all. The history carries
+`query_id` and the totals are pure aggregation over a table this extension owns, so it stays plain
+SQL and parses anywhere. Joining the statement text back in is one line for whoever has the module
+loaded, and the `COMMENT ON` says so. This is the opposite choice to `lock_tree_statements()`,
+which must be plpgsql precisely because it does need the module.
+
+### Bugs found while building the eighth scenario
+
+Five, all in the new scenario, all found by running it:
+
+- Roots were selected with `WHERE app IS NOT NULL`, but every waiter has an `application_name`
+  too, so all 71 sessions were selected and the loop tried to take a lock on a waiter's
+  connection. Filtering on the table name, which only roots have, is the right test.
+- Two `send_query` calls per waiter failed with "another command is already in progress": dblink
+  allows one in-flight command per connection. One statement carrying both the `SET` and the
+  query, as `s4` does, is the fix.
+- The distribution came out 14/13/13/13/13, nearly a tie, which makes the ranking the aggregate
+  exists for look like it does nothing. Now 30/18/10/5/3.
+- That fix then put all 66 on one root: a `DECLARE`d loop variable named `i` shadowed a record
+  field of the same name, so the comparison read NULL and every waiter fell through to the
+  `ELSE` branch. Reference the record field explicitly.
+- The scenario printed "no coverage block" with all the numbers visible, because the other seven
+  scenarios set `\pset border 2` and [`scenarios/run.sh`](scenarios/run.sh) requires the leading pipe to parse the
+  row. Absent, the awk matched nothing and the summary reported a missing block rather than a
+  missing border setting.
+
+Two more elsewhere: `SELECT h.* FROM lock_tree_history` in `test/07_history.sql` became ambiguous
+once the new column collided with `p.pid` from its join, so the columns are now named; and the
+sample's `INSERT` needed `query_id` in its column list, since the select list had one more
+expression than the targets.
+
+Verified: 181 tests green on PG 14, 15, 16, 17, 18 and 19beta4; all eight scenarios with `s8` at
+66 sessions across five roots; the 0.6 -> 0.7 upgrade and the full 0.2 to 0.7 chain; demo,
+check-install and check-alert.
 
 ## 0.6 (2026-10-04)
 

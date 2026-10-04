@@ -2,7 +2,7 @@
 # scenarios/run.sh: build each scenario, then query the same incident two ways and capture
 # both outputs.
 #
-#   ./scenarios/run.sh            run all seven
+#   ./scenarios/run.sh            run all eight
 #   ./scenarios/run.sh s6 s7      run named scenarios only
 #
 # Comparison is against the published recursive pg_blocking_pids() CTE, inlined in
@@ -47,7 +47,7 @@ fi
 mkdir -p "$OUT"
 rm -f "$OUT"/*.txt
 
-ALL="s1_nightly_batch s2_three_chains s3_row_locks s4_wide_queue s5_mixed_locks s6_deadlock s7_prepared"
+ALL="s1_nightly_batch s2_three_chains s3_row_locks s4_wide_queue s5_mixed_locks s6_deadlock s7_prepared s8_many_roots"
 WANTED=${*:-$ALL}
 
 for s in $WANTED; do
@@ -59,6 +59,7 @@ for s in $WANTED; do
         s5_mixed_locks)    title="advisory locks: waits with no relation" ;;
         s6_deadlock)       title="a cycle, which is not a queue" ;;
         s7_prepared)       title="a blocker that is not a session" ;;
+        s8_many_roots)     title="five blockers at once: the wide case, with several heads" ;;
         *) echo "unknown scenario: $s" >&2; exit 2 ;;
     esac
 

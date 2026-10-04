@@ -11,7 +11,7 @@ Same incident, same data, same moment. Both outputs are captured so they can be 
 without re-running anything.
 
 ```bash
-make scenarios                      # all seven, output to scenarios/out/
+make scenarios                      # all eight, output to scenarios/out/
 ./scenarios/run.sh s6 s7            # just those two
 ```
 
@@ -30,6 +30,7 @@ these could have produced flattering nonsense.
 | 5 | `s5_mixed_locks` | two advisory locks, no relation | waits with nothing to name |
 | 6 | `s6_deadlock` | two sessions blocked by each other | a cycle, which is not a queue |
 | 7 | `s7_prepared` | a prepared transaction holding locks | a blocker that is **not a session** |
+| 8 | `s8_many_roots` | five idle transactions, 30/18/10/5/3 waiters | a queue that is wide **and** has several heads |
 
 ## Results
 
@@ -44,6 +45,7 @@ Coverage: sessions genuinely waiting, and how many of them each approach reporte
 | 5 advisory locks | 2 | 2 | 2 |
 | 6 deadlock | 2 | 2 | 2 |
 | 7 prepared transaction | 2 | **0** | 2 |
+| 8 many roots | 66 | 66 | 66 |
 
 **Read that honestly: on plain coverage the two tie almost everywhere.** The differences are
 not in finding sessions. They are these:

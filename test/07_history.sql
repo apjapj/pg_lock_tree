@@ -62,7 +62,9 @@ $wait$;
 SELECT lock_tree_sample() AS live_rows \gset
 
 CREATE TEMP TABLE live AS
-SELECT h.* FROM lock_tree_history h
+SELECT h.sampled_at, h.root_pid, h.depth, h.pid, h.state, h.waiting_for, h.wait_age,
+       h.application_name, h.query, h.query_id, p.name
+FROM lock_tree_history h
 JOIN lock_tree_ht_pids p ON p.pid = h.pid;
 
 -- A sample of a quiet database writes nothing at all, not a row saying nothing was blocked.

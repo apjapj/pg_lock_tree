@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.6** (green on PG 14 to 19beta4) |
+| Current release | **v0.7** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -18,8 +18,8 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
-- **[scenarios/](scenarios/)**: seven incidents, compared against the usual hand-written query
-- **[test/](test/)**: 164 pgTAP tests, and what each one pins down
+- **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
+- **[test/](test/)**: 181 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -410,7 +410,7 @@ Four things worth knowing before you turn it on:
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
 | `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
 | `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
-| `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. |
+| `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. `query_id` on root rows only, since a blocked query has none. |
 | `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
 | `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')` | The history grouped into incidents: when each ran, peak sessions blocked, deepest chain, longest wait, and the root pids and application names involved. |
 | `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many. The table only grows otherwise. |
@@ -420,6 +420,7 @@ Four things worth knowing before you turn it on:
 | `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Returns how many it raised, so zero is the normal result. |
 | `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Maintained by the function; you should never need to look at it. |
 | `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
+| `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking time from the sampled history, worst first. Answers "which statement costs the most blocking time", which is the question that gets a fix merged rather than a workaround. |
 | `lock_tree_sampling_advice()` | A suggested interval for the sample cron entry, given how busy things are, and why. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
@@ -477,7 +478,7 @@ session lives, so it is the wrong key for correlating across restarts or reconne
 
 The query most people paste is the recursive `pg_blocking_pids()` CTE that circulates as a wiki
 entry and in a dozen blog posts. It is competent, and on plain coverage it finds the same
-sessions this extension does. `scenarios/` builds seven incidents and runs both:
+sessions this extension does. `scenarios/` builds eight incidents and runs both:
 
 ```
   scenario            waiting      std     tree   verdict
@@ -488,6 +489,7 @@ sessions this extension does. `scenarios/` builds seven incidents and runs both:
   s5_mixed_locks            2        2        2   tie
   s6_deadlock               2        2        2   tie
   s7_prepared               2        0        2   pg_lock_tree +2
+  s8_many_roots            66       66       66   tie
 ```
 
 Where they actually differ:
@@ -503,8 +505,15 @@ Where they actually differ:
 - **A two-session deadlock costs it 40 rows** (`s6`). It has no cycle guard, so it walks the loop
   until a depth cap stops it, reporting the same pid pair at depths 1 to 20 in both directions.
 
+`s8` is worth reading alongside `s4`. `s4` is a wide queue behind a *single* root, which the
+abbreviation work handles. `s8` is a queue that is wide *and* has five heads, where the published
+CTE still finds every session and the interesting question becomes "which of my five blockers is
+the worst one". That is answered by `lock_tree_wide()` in five rows rather than by reading
+seventy-one.
+
 Everything else this extension adds on top: roots named by `application_name`, the blast radius
-per root, a ready-made command, and rendering that survives a wide queue.
+per root, a ready-made command, rendering that survives a wide queue, and an aggregate for when
+rendering is not enough.
 
 Full write-up, including the reasoning behind the coverage metric, in
 [scenarios/README.md](scenarios/README.md).
@@ -512,10 +521,10 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 164 pgTAP tests against the server your libpq env vars point at
+make prove              # 181 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
-make scenarios          # all seven scenarios, both tools, output captured
+make scenarios          # all eight scenarios, both tools, output captured
 make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
 
@@ -539,12 +548,13 @@ terminate backends rather than mocking anything:
 | `test/10_statements.sql` | `lock_tree_statements()` with and without `pg_stat_statements` loaded: the roots are reported either way, and the join is pinned where it is available |
 | `test/11_alert.sql` | alerting, and mostly not alerting: onset fires once, an unchanged chain stays silent, escalation fires, recovery then relapse fires again, and all three thresholds disabled is an error |
 | `scripts/check-alert.sh` | the delivery path, which no assertion can check: psql prints notifications to stdout, so this listens from a second client and reads the payload back |
+| `test/12_history_statements.sql` | per-query blocking time from written history: only root rows count, the window filter runs before the aggregation, and the figure is session-samples rather than seconds |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
 `pg_stat_statements`) and skip themselves where it is absent, rather than failing a build that
 was never going to work. None is a runtime requirement: `pg_lock_tree` itself needs no
-`shared_preload_libraries`, and its other seven files run without them.
+`shared_preload_libraries`, and the rest of the suite runs without them.
 
 ## Roadmap
 
