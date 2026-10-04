@@ -63,7 +63,7 @@ echo "  schema: $schema"
 # function as missing.
 for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree_actions \
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
-         lock_tree_state_short; do
+         lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune; do
     found=$(psql -X -tAc "
         SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                  WHERE n.nspname='$schema' AND c.relname='$f')
@@ -78,10 +78,24 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_text()" \
          "SELECT count(*) FROM $schema.lock_tree_text_short()" \
          "SELECT count(*) FROM $schema.lock_tree_actions()" \
-         "SELECT count(*) FROM $schema.lock_tree_command()"; do
+         "SELECT count(*) FROM $schema.lock_tree_command()" \
+         "SELECT count(*) FROM $schema.lock_tree_incidents()"; do
     out=$(psql -X -tAc "$q" 2>&1)
     if [ $? -eq 0 ]; then ok "$q  -> ${out:-0}"; else bad "$q  -> $out"; fi
 done
+
+step "history (optional, off by default)"
+hrows=$(psql -X -tAc "SELECT count(*) FROM $schema.lock_tree_history" 2>&1)
+if [ $? -eq 0 ]; then
+    if [ "${hrows:-0}" -gt 0 ] 2>/dev/null; then
+        ok "lock_tree_history holds $hrows row(s): a sample has been taken"
+    else
+        ok "lock_tree_history is empty, so no sample has been taken yet (this is the default)"
+    fi
+    echo "        To record history: schedule SELECT lock_tree_sample(). See README.md."
+else
+    bad "lock_tree_history not usable  -> $hrows"
+fi
 
 step "settings"
 mpt=$(psql -X -tAc 'SHOW max_prepared_transactions' 2>/dev/null)

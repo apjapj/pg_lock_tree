@@ -36,7 +36,9 @@ jobs:
         # that predates them.
         #
         # pg_cron is a dependency of the harness, not of pg_lock_tree: the extension needs no
-        # shared_preload_libraries and is fully exercised by the other five files without one.
+        # shared_preload_libraries and six of the seven test files run without one.
+        # test/07_history.sql also needs no pg_cron, since it calls lock_tree_sample() directly
+        # rather than scheduling it.
     env:
       PGHOST: postgres
       PGUSER: postgres
@@ -52,7 +54,7 @@ jobs:
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
         run: |
-          sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' pg_lock_tree--0.3.sql \
+          sed -e "/^\\echo Use/d" -e "s/@extschema@/public/g" pg_lock_tree--0.4.sql \
             | psql -qX -v ON_ERROR_STOP=1
       - name: pgTAP
         run: pg_prove --dbname postgres test/*.sql

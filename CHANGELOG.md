@@ -1,8 +1,84 @@
 # Changelog
 
 All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.2'`
+`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.3'`
 selects a release.
+
+## 0.4 (2026-10-04)
+
+Adds history. Everything from 0.3 is unchanged: the view's columns and every function's
+signature and output are byte-identical, and the update path is purely additive, so there is
+nothing to migrate. `ALTER EXTENSION pg_lock_tree UPDATE` moves an existing installation in
+place; verified from clean 0.2 and 0.3 installs, and PostgreSQL chains `0.2--0.3--0.4` for you.
+
+The motivation is the one limit nothing here could work around. Every other object reports the
+present, which is exactly what you cannot read at the moment an incident is noticed: by then
+`pg_stat_activity` has moved on and the tree is empty. History is opt-in and starts empty.
+
+### Added
+
+- `lock_tree_history`, a table of sampled trees, one row per session per sample so the shape of
+  the chain survives. Indexed on `sampled_at` and on `(pid, sampled_at DESC)`, since an unindexed
+  history table is one nobody can afford to query once it holds a day of samples.
+- `lock_tree_sample()`: takes one snapshot, returns the number of rows written. **0** when
+  nothing is blocked, rather than a row recording that nothing was blocked, so an idle server
+  costs one `SELECT` and no storage.
+- `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')`: the history grouped into
+  incidents, each with when it ran, peak sessions blocked, deepest chain, longest wait, and the
+  root pids and application names involved. `peak_sessions` is a high-water mark, not a sum: a
+  session seen at four samples was not four sessions.
+- `lock_tree_prune(older_than interval)`: deletes history older than the given age and returns
+  how many. The table only ever grows, one row per blocked session per sample, so this is not
+  optional in practice.
+- `test/07_history.sql`, 24 assertions: the sample, the rows outliving the incident, the
+  segmentation at two thresholds, and pruning at both extremes. It calls `lock_tree_sample()`
+  directly rather than scheduling it, so the history logic is tested without depending on
+  `pg_cron`. What it does not re-test is whether a scheduler can reach any of it, which
+  `test/06_cron.sql` already covers.
+
+### Notes
+
+- `lock_tree_sample()` is `SECURITY DEFINER` so the scheduled job's role needs no `INSERT`
+  grant. It takes no arguments and inserts a fixed column list, so there is nothing to steer.
+- `sampled_at` is `statement_timestamp()`, which took two attempts to get right and is worth
+  recording. `clock_timestamp()` is volatile, so it is evaluated once per **row**: the sessions
+  of one sample land microseconds apart, grouping by `sampled_at` yields one group per session
+  instead of one per sample, and `peak_sessions` silently becomes 1 in every incident ever
+  recorded. `now()` fails the other way, being the transaction timestamp, collapsing everything
+  written in one transaction to a single instant. `statement_timestamp()` is stable for the one
+  statement that takes the sample and moves between samples.
+- Because `lock_tree_sample()` pins `search_path` to `pg_catalog`, a relation name in the history
+  can be schema-qualified where the same relation read from your session is not: `regclass`
+  renders with or without the schema depending on whether the schema is visible. Pinning is the
+  safe choice and the qualification is the better of the two for a record that outlives the
+  session which created it, but it is worth knowing before grepping history for a bare table
+  name.
+- Pruning uses `DELETE`, not `TRUNCATE`, since `TRUNCATE` would take rows you meant to keep.
+- `pg_cron` remains a convenience, not a requirement. Any scheduler works, including a host cron
+  job calling `psql`, and the extension still needs no `shared_preload_libraries`.
+
+### Fixed
+
+Four bugs, all in the new test file and all found by running it rather than reading it:
+
+- The fixture inserted one row per timestamp, so every sample looked like a single session and
+  `peak_sessions` read 1 throughout. Each sample now carries all three depths at one instant,
+  which is the point: rows sharing an instant are one observation of one tree.
+- Both prune calls ran in one quiet block before the assertion that the rows had survived, so
+  "the rows are still there" was checked against an already-emptied table.
+- The pruning window was one second, which removed the 13 backdated rows but not the 2 written
+  seconds earlier by the live sample. The window has to be older than the newest row, and the
+  newest row is always the one just taken, so it is now zero seconds.
+- The cleanup terminated pids unconditionally, warning `PID N is not a PostgreSQL backend
+  process` twice per run for a session already terminated deliberately. Harmless, and not worth
+  leaving: two warnings per run teaches people to ignore warnings, and then a real one goes
+  unnoticed.
+- `scripts/lint-docs.sh` failed on `lock_tree_history`, because it only looked for `FUNCTION`
+  and `VIEW` definitions when checking that a documented object exists. A table is as much a
+  documented object as a function. Found by running the linter, which is what it is for.
+
+Verified: 97 tests green on PG 14, 15, 16, 17, 18 and 19beta4 from the registry images; the
+0.3 -> 0.4 and 0.2 -> 0.3 -> 0.4 update paths; demo, all seven scenarios and check-install.
 
 ## 0.3 (2026-10-04)
 

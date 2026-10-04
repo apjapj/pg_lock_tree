@@ -202,9 +202,80 @@ FROM lock_tree ORDER BY pid;
 \echo ' And lock_tree_roots() lists both, with a cancel suggestion for each:'
 SELECT root_pid, state, suggested_action FROM lock_tree_roots() ORDER BY root_pid;
 
+-- Clear the cycle before moving on. PostgreSQL breaks a deadlock itself after
+-- deadlock_timeout, which this demo sets to 15s so the window is visible; left alone the two
+-- sessions stay in the tree that long, and section 8's "nothing is blocked" sample would
+-- report rows, contradicting the point it is making.
+\set QUIET 1
+\o /dev/null
+DO $clear$
+DECLARE n text;
+BEGIN
+  FOREACH n IN ARRAY ARRAY['f','g'] LOOP
+    BEGIN EXECUTE format('SELECT pg_cancel_backend(pid) FROM dblink(%L, ''SELECT pg_backend_pid()'') AS t(pid int)', n);
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END;
+  END LOOP;
+END
+$clear$;
+DO $drain$
+BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree);
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END
+$drain$;
+\o
+\unset QUIET
+
 \echo ''
 \echo '##############################################################################'
-\echo '# 8. Cleanup'
+\echo '# 8. Bonus: what it looked like while you were not looking'
+\echo '##############################################################################'
+\echo ' Everything above describes the present. History records the rest: what you read'
+\echo ' when an incident is noticed AFTER it ended and pg_stat_activity has moved on.'
+\echo ''
+\echo ' In production you schedule the sample (pg_cron, or any scheduler) and it runs on'
+\echo ' its own. Here, three samples taken by hand and backdated, so they read as three'
+\echo ' separate incidents:'
+\echo ''
+\set QUIET 1
+\o /dev/null
+-- TRUNCATE first: this database may already hold history from an earlier run, and what
+-- follows asserts on counts.
+TRUNCATE lock_tree_history;
+-- All the rows of one sample share one sampled_at. That shared instant is what lets the
+-- grouping tell "one tree, seen three times" from "three one-session trees", so the
+-- fixture has to put each sample's depths together at one timestamp.
+INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, waiting_for,
+                               wait_age, application_name, query)
+SELECT v.t, 900, d, 900 + d,
+       CASE WHEN d = 0 THEN 'idle in transaction' ELSE 'active' END,
+       CASE WHEN d = 0 THEN NULL ELSE 'AccessExclusiveLock on demo_ledger' END,
+       make_interval(secs => d * 90), 'nightly_batch',
+       'UPDATE ledger SET amount = amount WHERE id = 1'
+FROM (VALUES
+  (now() - interval '3 hours', 0), (now() - interval '3 hours', 1), (now() - interval '3 hours', 2),
+  (now() - interval '2 hours', 0), (now() - interval '2 hours', 1),
+  (now() - interval '20 min',  0), (now() - interval '20 min',  1), (now() - interval '20 min',  2)
+) AS v(t, d);
+\o
+\unset QUIET
+
+SELECT incident, samples, peak_sessions, peak_depth, longest_wait, roots, applications
+FROM lock_tree_incidents() ORDER BY started_at DESC;
+
+\echo ''
+\echo ' Three incidents from samples an hour apart. That is the answer to "it was hanging'
+\echo ' earlier": when, how bad, and which application was holding the lock.'
+\echo ''
+\echo ' And while nothing is blocked, sampling writes nothing at all:'
+\echo ''
+SELECT lock_tree_sample() AS rows_written_on_a_quiet_database;
+
+\echo ''
+\echo '# 9. Cleanup'
 \echo '##############################################################################'
 \set QUIET 1
 \o /dev/null
@@ -259,6 +330,10 @@ BEGIN
 END
 $bye$;
 
+-- The history is the extension's own table, not something this demo created, so it is
+-- emptied rather than dropped. Leaving three fake incidents in it would make the next run
+-- of this script, or a real lock_tree_incidents() query, show data that never happened.
+TRUNCATE lock_tree_history;
 DROP TABLE IF EXISTS demo_pids;
 DROP TABLE IF EXISTS demo_ledger;
 DROP TABLE IF EXISTS demo_x;

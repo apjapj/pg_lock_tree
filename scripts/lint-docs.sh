@@ -176,7 +176,9 @@ fi
 step "every object the docs describe as current exists in the release SQL"
 
 check_object() {
-    grep -qE "(FUNCTION|VIEW) @extschema@\.$1\b" "$latest" \
+    # TABLE is in the list because 0.4 added one, and the linter failed on
+    # lock_tree_history until it did: a table is as much a documented object as a function.
+    grep -qE "(FUNCTION|VIEW|TABLE) @extschema@\.$1\b" "$latest" \
       && ok "$1 is defined in $latest" \
       || bad "$1 is named in the docs but not defined in $latest"
 }

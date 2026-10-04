@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.3** (tagged, green on PG 14 to 19beta4) |
+| Current release | **v0.4** (tagged, green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: seven incidents, compared against the usual hand-written query
-- **[test/](test/)**: 73 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 97 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -114,6 +114,54 @@ returns no rows at all. That is deliberate: the description answers "is anything
 header saying zero is a useful answer to that. The command function has nothing to say and no
 heading to say it with.
 
+## After the incident has cleared
+
+Everything above describes the present. That is a real limit, and it bites at the worst moment:
+incidents are usually noticed once they have ended, by a slow query, a timeout, or someone
+reporting that "it was hanging earlier". By then `pg_stat_activity` has moved on and the tree is
+empty.
+
+0.4 keeps a history. Opt in, then sample on a schedule:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_cron;          -- once per database, see INSTALL.md
+SELECT cron.schedule('lock_tree_sample', '10 seconds', 'SELECT lock_tree_sample()');
+SELECT cron.schedule('lock_tree_prune', '1 hour',  'SELECT lock_tree_prune(''1 day'')');
+```
+
+Then ask what happened:
+
+```sql
+SELECT * FROM lock_tree_incidents() ORDER BY started_at DESC;
+```
+
+```
+ incident |          started_at          | samples | peak_sessions | depth | longest_wait |  roots  |     applications
+----------+----------------------------+---------+---------------+-------+--------------+---------+---------------------
+        1 | 2026-10-04 09:12:04.881+01   |      37 |            61 |     2 |       4m12s  | {4821}  | {api_worker,nightly_batch}
+```
+
+An incident is a run of samples with no gap longer than `max_gap` between them. `peak_sessions` is
+the high-water mark, not a sum: a session seen at four samples was not four sessions.
+
+Four things worth knowing before you turn it on:
+
+- **It is one row per session per sample**, so the chain's shape survives, and it grows by
+  `sessions blocked` rows per sample. That is why `lock_tree_prune()` exists and why the second
+  cron entry above calls it.
+- **A quiet database costs nothing.** Sampling writes no rows at all when nothing is blocked,
+  rather than one row saying so.
+- **`sampled_at` is the statement timestamp**, so every row of one sample shares an instant. That
+  is what makes the grouping work. Using `clock_timestamp()` instead looks right and quietly
+  breaks it, because it is evaluated once per row and the sessions of a single sample land
+  microseconds apart.
+- **Any scheduler works.** `pg_cron` is convenient and needs no host cron, but it requires
+  `shared_preload_libraries = pg_cron`. A plain host cron job calling `psql` needs nothing at
+  all, and the extension still needs no `shared_preload_libraries` either way.
+
+`test/07_history.sql` covers the sample, the incident grouping and the pruning;
+`test/06_cron.sql` covers whether a scheduled job can reach any of it.
+
 ## Objects
 
 | Object | Use |
@@ -124,6 +172,10 @@ heading to say it with.
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
 | `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
 | `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
+| `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. |
+| `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
+| `lock_tree_incidents(max_gap interval DEFAULT '5 minutes')` | The history grouped into incidents: when each ran, peak sessions blocked, deepest chain, longest wait, and the root pids and application names involved. |
+| `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many. The table only grows otherwise. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
 
@@ -215,7 +267,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 73 pgTAP tests against the server your libpq env vars point at
+make prove              # 97 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all seven scenarios, both tools, output captured
@@ -235,19 +287,19 @@ terminate backends rather than mocking anything:
 | `test/04_prepared.sql` | a prepared transaction as root pid 0, including that its advice is `ROLLBACK PREPARED` rather than a cancel against a backend that does not exist. Skips itself when `max_prepared_transactions` is 0 |
 | `test/05_formatting.sql` | the exact output of the rendering helpers, since the width measurements depend on them |
 | `test/06_cron.sql` | a live chain sampled by a `pg_cron` job, proving the rows outlive the incident. Skips itself when `pg_cron` is not preloaded |
+| `test/07_history.sql` | a live chain sampled into `lock_tree_history`, the rows surviving the incident, the history segmented into incidents, and pruning at both extremes. No `pg_cron` needed |
 
-CI runs the same suite on all six versions. The last two files each need a server setting the
-matrix images provide (`max_prepared_transactions`, `shared_preload_libraries=pg_cron`) and skip
+CI runs the same suite on all six versions. Two files each need a server setting the matrix
+images provide (`max_prepared_transactions`, `shared_preload_libraries=pg_cron`) and skip
 themselves where it is absent, rather than failing a build that was never going to work. Neither
 is a runtime requirement: `pg_lock_tree` itself needs no `shared_preload_libraries`.
 
 ## Roadmap
 
-- **Next**: `lock_tree_history`, so an incident can be inspected after it has cleared. The hard
-  part is now settled rather than assumed: `test/06_cron.sql` proves a `pg_cron` job can read
-  `lock_tree`, land the result somewhere durable, and have it outlive the incident. What remains is
-  the part that is a policy question, not a technical one: retention, and whether to `NOTIFY` when
-  a chain passes a depth or age threshold.
+- **Next**: alerting. History records what happened; it does not tell anyone. A `NOTIFY` when a
+  chain passes a depth or wait-age threshold, so an incident can page someone rather than wait to
+  be noticed. Deliberately not in 0.4: a threshold is a policy choice and a false alarm from a
+  diagnostic tool is worse than no alarm, so the numbers should be chosen by whoever is on call.
 - **Later**: show what each root *holds* that its waiters want, not only what the waiters ask for.
 - **Untested**: loading through AWS `pg_tle` on RDS and Aurora, where `make install` is not
   possible. Being pure SQL is what makes it plausible. The thing most likely to fail is whether
