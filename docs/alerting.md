@@ -295,18 +295,19 @@ otherwise recommend the finest interval for a database that spends every weekday
 hundred sessions waiting. The advice was not wrong about the instant; it was answering the wrong
 question.
 
-<!-- illustrative: written by hand. No sample prints this table; the row is built to show what the advice says. -->
+<!-- illustrative: written by hand, then checked against lock_tree_sampling_advice() on PG16: one historical sample of 450 sessions with nothing blocked now, and an empty history. Reasons wrapped. -->
 
 ```
- blocked_sessions | roots | suggested_every |             reason              | observed_peak | live_blocked
-------------------+-------+-----------------+---------------------------------+---------------+--------------
-              450 |     9 | 00:00:30        | a wide queue: each sample      |           450 |            0
-                 |       |                 | writes a row per blocked       |               |
-                 |       |                 | session, so widen the interval |               |
-                0 |     0 | 00:00:05        | nothing blocked now and        |             0 |            0
-                 |       |                 | nothing in the window: the     |               |
-                 |       |                 | table stays empty at any       |               |
-                 |       |                 | interval, so sample rarely     |               |
+ blocked_sessions | roots | suggested_every |              reason              | observed_peak | live_blocked
+------------------+-------+-----------------+----------------------------------+---------------+--------------
+              450 |     0 | 00:00:30        | quiet now, but 450 sessions were |           450 |            0
+                  |       |                 | waiting at the peak in this      |               |
+                  |       |                 | window, so sized for that rather |               |
+                  |       |                 | than for now                     |               |
+                0 |     0 | 00:00:05        | nothing blocked now and nothing  |             0 |            0
+                  |       |                 | in the window: the table stays   |               |
+                  |       |                 | empty at any interval, so sample |               |
+                  |       |                 | rarely                           |               |
 ```
 
 `observed_peak` and `live_blocked` are both returned, and the figure used is the greater of the two,

@@ -384,7 +384,7 @@ Also make sure `make` picked up the *same* PostgreSQL version you are connected 
 
 **What 0.10 changes:** adds `lock_tree_deadlock` (a table) and `lock_tree_deadlocks()`, so the
 `pg_stat_database.deadlocks` counter is sampled and you can see **when** deadlocks happened. It does
-not name the two statements involved: nothing in SQL does, and they are in the server log. See
+name the two statements involved only when a sample lands while the cycle exists; otherwise they are in the server log. See
 [Deadlocks](docs/after-the-incident.md#deadlocks).
 
 **What 0.11 changes:** adds `lock_tree_history_size()` and `lock_tree_prune_batched()`, which is a

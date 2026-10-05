@@ -168,50 +168,57 @@ so there is still only one thing to remember.
 
 ### What it cannot tell you
 
-**It does not name the two statements.** Nothing in SQL does. The participants exist only in the
-server log:
+**It usually cannot name the two statements, and the server log always can.**
+`pg_stat_database.deadlocks` is a bare number with no attribution, so `lock_tree_deadlocks()` gives
+you the **timestamp** and nothing else. That is the half that makes the log worth reading: with three
+deadlocks all between 09:00 and 09:15 on a Monday morning, you are looking at a deploy or a cron job
+rather than at a mystery.
+
+The exception is a sample that lands while the cycle still exists, which is the `deadlock_timeout`
+before the server breaks it. Then `lock_tree_history` holds both participants, query text included,
+as depth-0 rows that are themselves waiting. No other row looks like that: an ordinary root holds its
+lock and waits on nothing. So this finds every deadlock the history happened to catch:
+
+```sql
+SELECT sampled_at, pid, application_name, waiting_for, query
+FROM lock_tree_history
+WHERE depth = 0 AND waiting_for IS NOT NULL
+ORDER BY sampled_at, pid;
+```
+
+With the default 1s `deadlock_timeout` and a 10 second sample interval, roughly one deadlock in ten
+is caught this way. Do not raise `deadlock_timeout` to catch more: it is also how long every real lock
+wait goes unexamined. `scenarios/s6_deadlock.sql` raises it to 15s for exactly this reason, and its
+captured output shows the live tree naming both statements.
+
+For the rest, the log. A deadlock is logged at `ERROR` whatever `log_lock_waits` says, and at default
+logging the entry names both processes and the statement each was running:
+
+<!-- illustrative: written by hand, from a real deadlock on PG16 with log_lock_waits = off and log_min_duration_statement = -1. Pids, transaction ids and statements shortened. -->
 
 ```
 ERROR:  deadlock detected
-DETAIL:  Process 1234 waits for ShareLock on transaction 5678; blocked by process 5678.
-Process 5678 waits for ShareLock on transaction 1234; blocked by process 1234.
+DETAIL:  Process 404 waits for ShareLock on transaction 2944; blocked by process 406.
+        Process 406 waits for ShareLock on transaction 2943; blocked by process 404.
+        Process 404: UPDATE ledger SET amount = 1 WHERE id = 2
+        Process 406: UPDATE ledger SET amount = 2 WHERE id = 1
+HINT:  See server log for query details.
+CONTEXT:  while updating tuple (0,2) in relation "ledger"
+STATEMENT:  UPDATE ledger SET amount = 1 WHERE id = 2
 ```
 
-`pg_stat_database.deadlocks` is a bare number with no attribution, and this extension does not
-pretend otherwise. What it gives you is the **timestamp**, and that is the half that makes the log
-worth reading: with three deadlocks all between 09:00 and 09:15 on a Monday morning, you are looking
-at a deploy or a cron job rather than at a mystery.
+The client sees only the first two `DETAIL` lines; the `Process N:` lines with the statements are in
+the server log only, which is what the `HINT` means.
 
-To get the statements, enable the log entry and correlate:
-
-```conf
-# postgresql.conf, then SELECT pg_reload_conf() -- both of these are reloadable, no restart
-log_lock_waits = on
-```
-
-**You do not need `log_min_duration_statement = 0`, and you should not set it.** A deadlock is logged
-at `ERROR` and the entry names both processes with the statement each was running, at default logging:
-
-```
-ERROR:  deadlock detected
-DETAIL:  Process 633 waits for ShareLock on transaction 574; blocked by process 634.
-DETAIL:  Process 634 waits for ShareLock on transaction 573; blocked by process 633.
-CONTEXT:  while updating tuple (1,1) in relation "ledger"
-STATEMENT:  UPDATE ledger SET amount = amount WHERE id = 1
-```
-
-Setting `log_min_duration_statement = 0` logs every statement the server runs, which on a busy database
-is a large volume of log for information the deadlock entry already carries.
-
-Both settings have context `superuser` in `pg_settings`, which is how to tell a reloadable setting from
-one needing a restart:
+**You need neither `log_lock_waits` nor `log_min_duration_statement = 0` for this.**
+`log_lock_waits` is for lock *waits*, which is the other half of this problem and not the same thing.
+`log_min_duration_statement = 0` logs every statement the server runs, which on a busy database is a
+large volume of log for information the deadlock entry already carries. Both have context `superuser`
+in `pg_settings`, so either can be changed with `SELECT pg_reload_conf()` and no restart:
 
 ```sql
 SELECT name, context FROM pg_settings WHERE name IN ('log_lock_waits', 'log_min_duration_statement');
 ```
-
-`log_lock_waits` is for lock *waits*, which is the other half of this problem and not the same thing:
-deadlock messages are logged whether or not it is on.
 
 ### Counter resets
 

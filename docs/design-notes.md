@@ -20,7 +20,7 @@ on and are written out at the end.
 | Why is alerting on onset and not on every sample? | [docs/alerting.md](alerting.md#why-it-does-not-notify-on-every-sample) |
 | Why does escalation compare against the last notification? | [docs/alerting.md](alerting.md#why-the-wait-escalates-by-doubling-and-not-by-growing) |
 | Why does a deadlock counter get its own table? | [docs/after-the-incident.md](after-the-incident.md#why-the-counter-is-sampled-into-its-own-table) |
-| Why can a deadlock report not name the two statements? | [docs/after-the-incident.md](after-the-incident.md#what-it-cannot-tell-you) |
+| Why can a deadlock report usually not name the two statements? | [docs/after-the-incident.md](after-the-incident.md#what-it-cannot-tell-you) |
 | Why is redaction on by default, and what does it refuse? | [docs/history.md](history.md#redaction) |
 | Why do the samples have to be separate statements? | [docs/history.md](history.md#one-hazard-worth-knowing-before-you-schedule-anything) |
 | Why is nothing registered for `pg_dump`? | [INSTALL.md](../INSTALL.md#backups-and-restores) |

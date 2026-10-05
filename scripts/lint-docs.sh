@@ -54,8 +54,8 @@ latest_ver=$(basename "$latest" .sql)
 latest_ver=${latest_ver#pg_lock_tree--}
 
 # And confirm the filter found the release files at all, rather than trusting it.
-n_release=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -cE '^pg_lock_tree--[0-9]+\.[0-9]+\.sql$')
-n_update=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -cE '^pg_lock_tree--[0-9]+\.[0-9]+--[0-9]+\.[0-9]+\.sql$')
+n_release=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -cE '^pg_lock_tree--[0-9]+(\.[0-9]+)*\.sql$')
+n_update=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -cE '^pg_lock_tree--[0-9]+(\.[0-9]+)*--[0-9]+(\.[0-9]+)*\.sql$')
 
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
@@ -162,7 +162,7 @@ fi
 # that rather than DATA (which legitimately does not list them).
 step "every SQL file gets installed"
 for f in pg_lock_tree--*.sql; do
-    if echo "$f" | grep -qE '^pg_lock_tree--[0-9]+\.[0-9]+--[0-9]+\.[0-9]+\.sql$'; then
+    if echo "$f" | grep -qE '^pg_lock_tree--[0-9]+(\.[0-9]+)*--[0-9]+(\.[0-9]+)*\.sql$'; then
         # An update path. These are deliberately NOT in DATA: PGXS copies DATA by
         # name, and an update script is found by a different convention, so the
         # Makefile installs them from a wildcard instead.
@@ -883,21 +883,24 @@ done
 
 step "house style"
 # Neither character can appear literally in this file, or the check below would always
-# flag itself. They are built from their code points instead. One backslash is what is
-# wanted here, so printf sees \u2014 and emits the character; two would leave printf with a
-# literal backslash-u and the pattern would degenerate to the four characters "u2014",
-# which match this line rather than the dashes the check is hunting for.
+# flag itself. They are built from their UTF-8 bytes, not with printf '\u2014': printf only
+# emits the character when the locale is UTF-8. Under POSIX or C, which is what a bare
+# container gives you, it emits the six characters backslash-u-2-0-1-4 instead, the pattern
+# then matches nothing but this script's own comments, and the check passes on a file full
+# of dashes. Found by injecting one under LC_ALL=POSIX and watching it pass.
 #
 # The self-exclusion is normalised to the form git ls-files uses. Invoked as
 # ./scripts/lint-docs.sh, BASH_SOURCE carries the leading ./, and grep -x against
 # "scripts/lint-docs.sh" would match nothing, so the exclusion would silently not apply.
 self=${BASH_SOURCE[0]#./}
-emdash=$(printf '\u2014')
-endash=$(printf '\u2013')
+emdash=$'\xe2\x80\x94'
+endash=$'\xe2\x80\x93'
 
 style_scan() {
     local char=$1 label=$2 files
-    files=$(tracked_files | xargs -0 grep -l -e "$char" 2>/dev/null \
+    # The fallback list (no git repository) comes from find and carries a leading ./, which
+    # git ls-files does not, so it is stripped here or the self-exclusion below matches nothing.
+    files=$(tracked_files | xargs -0 grep -l -e "$char" 2>/dev/null | sed 's|^\./||' \
             | grep -v -x -e "$self" || true)
     if [ -n "$files" ]; then
         bad "$label found in tracked files: project convention is none"
