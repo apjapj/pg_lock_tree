@@ -464,6 +464,30 @@ for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md d
 done
 [ "$broken" -eq 0 ] && ok "every relative link and anchor in the docs resolves"
 
+# ---------------------------------------------------------------- make targets the docs name
+#
+# A documented target that does not exist is the most embarrassing thing a Makefile can do to a
+# newcomer, and it is invisible in review: "make lint" reads as plausible whether or not the Makefile
+# has it, which is exactly how one got written here and had to be corrected before release.
+#
+# Restricted to lines that begin with `make ` or are inside a fenced shell block, so the English
+# phrases "make sure" and "make it work" are not read as targets.
+step "every make target the docs name exists"
+targets=$(grep -hoE '^[[:space:]]*make [a-z][a-z-]+' README.md INSTALL.md CONTRIBUTING.md \
+             docs/*.md scenarios/README.md 2>/dev/null \
+          | sed -E 's/^[[:space:]]*make //' | sort -u)
+missing=0
+for t in $targets; do
+  # A file argument is not a target: "make -C dir install" and "make install" are, and both are here.
+  if grep -qE "^${t}:" Makefile; then
+      ok "make $t is a target"
+  else
+      bad "the docs say 'make $t' and the Makefile has no such target"
+      missing=$((missing + 1))
+  fi
+done
+[ "$missing" -eq 0 ] && ok "every make target named in the docs exists in the Makefile"
+
 step "house style"
 # Neither character can appear literally in this file, or the check below would always
 # flag itself. They are built from their code points instead. One backslash is what is

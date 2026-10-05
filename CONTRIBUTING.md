@@ -1,14 +1,23 @@
-## Development
+# contributing: changing this, and releasing it
+
+**For: whoever changes the SQL, the tests or the documentation, and whoever tags a release.** The make
+targets, the test suite, the version matrix, and the release checklist.
+
+`make check` needs no database and is the one to run first: it is the documentation lint, and it is
+what catches a rename that half the documentation has not caught up with.
+
+## Make targets
 
 ```bash
+make check              # the checks that need no server: the documentation lint, and a note
+make lint-docs          # documentation, objects, paths, links and anchors, and the test table
 make prove              # 409 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
-make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
 make check-deadlock     # prove a real deadlock moves the counter and the sample records it
-make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the counter
+make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the count
 make bench-history      # time the read side against a synthetic 1.2M row history (truncates it)
 make check-upgrade      # every upgrade path ends in the same objects as a fresh install
 make check-schema       # install into a private schema, then use it from a caller that cannot see it
@@ -16,6 +25,8 @@ make explain-alert PAYLOAD='…'   # explain a payload you already have, no data
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
 ```
+
+## Tests
 
 The tests need superuser and the `dblink` contrib module, because they open real sessions and
 terminate backends rather than mocking anything:
@@ -42,12 +53,70 @@ terminate backends rather than mocking anything:
 | `test/16_duration_resolved.sql` | the resolution notices: nothing on a quiet database, one when an alerted root leaves the tree, and that a root which never alerted produces nothing |
 | `test/17_duration_by_application.sql` | per-application blocking time, and the two directions in which it and the per-query figure invert: different statements in one application, and the same statement across two applications. Its expectations are derived from the sample rows rather than from the function under test, because a version that computed them from the same join agreed with a bug in it |
 | `test/18_replay.sql` | replaying an incident that has ended: the nearest-sample rule, tie-breaking, a target before the first sample, and the columns replay carries that the live view does not, asserted **by name** so adding one is noticed |
-| `test/19_index_usage.sql` | the read side SEEKS rather than filtering over the whole index. Reads the installed function definitions, so it holds for an extension installed from a tarball as well as from git. A first draft asserted on query plans here and failed CORRECTLY: on a 600 row fixture a sequential scan is the better plan, so the assertion was demanding a worse one |
-| `test/21_redaction.sql` | the credentials `lock_tree_redact()` must catch, including the five it missed in 1.0.0: a real SCRAM verifier with its iteration count, an empty dollar tag, a newline inside the literal, a statement truncated by `track_activity_query_size`, and `U&'x'` or a comment before the literal. Plus all six states of `lock_tree.history_query`, and which of them fail safe |
-| `test/22_schema_install.sql` | installed in a private schema: nothing lands in `public`, the two `search_path`-pinned functions qualify every sibling, and no object sits outside the schema the extension was installed into. The end-to-end half is `scripts/check-schema.sh`, because that needs a second database |
+| `test/19_index_usage.sql` | that the fifteen window bounds SEEK rather than filter over the whole index, which is the one bug here that no correctness test could see: they used `clock_timestamp()`, which is `VOLATILE`, so the planner could not use them as index bounds. Asserts on the plan, never on elapsed time, because a time bound passes vacuously on a warm cache |
+| `test/21_redaction.sql` | the credentials `lock_tree_redact()` must catch, including the five it must not, and the deliberate over-redaction of `VALID UNTIL` |
+| `test/22_schema_install.sql` | installed in a private schema: nothing lands in `public`, the two `search_path`-pinned functions resolve from a caller that cannot see the extension, and `pg_dump` registers none of the three tables |
+
+There is no `test/20`. Nothing was ever written at that number, and renumbering to close the gap
+would change three filenames in the history for no benefit.
+
+### A test that cannot fail is not a test
+
+Two of these deserve their own note, because both were written to pass and neither had been shown to
+fail.
+
+A **negative check that passes on an empty set** is the easiest kind to get wrong. `test/22` asserts
+that `lock_tree_sample()` cannot be reached unqualified from outside a private schema, and the first
+version of the plant did not reach the catalog at all, so the assertion had never run against a
+defective function. The header says so. The fix is to watch the check fail on a planted defect, and
+if the plant cannot be made to reach the code, say so rather than counting the assertion.
+
+A **check at an ignored severity** is worse than no check. pgTAP's `is()` and `ok()` are the floor;
+anything at `TODO` or `SKIP` records intent and verifies nothing. The lint script counts the
+assertions it expects against the ones it finds, and treats a shortfall as a note and an excess as a
+failure, because an assertion that appeared without being counted is an assertion nobody reviewed.
+
+## The matrix
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
 `pg_stat_statements`) and skip themselves where it is absent, rather than failing a build that
 was never going to work. None is a runtime requirement: `pg_lock_tree` itself needs no
 `shared_preload_libraries`, and the rest of the suite runs without them.
+
+PostgreSQL 14 reaches end of life on 2026-11-12, which removes the bottom of the matrix. That is a
+scheduling fact rather than a code change, and [INSTALL.md](INSTALL.md) records it.
+
+## Releasing
+
+Every release is additive: a fresh `pg_lock_tree--X.Y.sql` plus an update path
+`pg_lock_tree--X.Y-1--X.Y.sql`, so an existing installation never has to reinstall to get a fix.
+
+1. **Bump the version.** `pg_lock_tree.control`, the new `pg_lock_tree--X.Y.sql`, and the changelog
+   heading. `scripts/lint-docs.sh` reads the control file and the README and fails if they disagree,
+   so a missed bump is caught rather than shipped.
+2. **Write the update script**, and read it against the previous release's file. Most of the work in
+   an update is arriving at the same catalog state a fresh install would.
+3. **`make check-upgrade`.** Every path from every earlier version has to converge on the same
+   objects as a fresh install. Column position is the one difference that cannot be made consistent,
+   because `ALTER TABLE ADD COLUMN` appends, and it is a named exception that is checked in both
+   directions so the list cannot rot into a permanent exemption.
+4. **The full suite on every version**, `scripts/matrix.sh`, not one version.
+5. **`make lint-docs`**, which is the documentation, the objects it names, the paths it links to, the
+   links and anchors, the test table and the version the README claims against the control file. The
+   secrets are two separate CI jobs rather than a make target: gitleaks over the history and
+   detect-secrets over the tree at HEAD, and gitleaks also runs as a fail-closed pre-commit hook. So a
+   secret stops the commit and a broken anchor stops the pipeline, and neither depends on the other.
+6. **Run the demonstrations**, `make demo` and `make scenarios`, and compare them against what the
+   documentation claims. The scenario demos print the popular standard DBA query beside this
+   extension's output, and the captured output is the proof that the two agree.
+7. **Commit, push, tag, push the tag.** Push the commit before the tag, never in the same command:
+   `git push --tags` in a command whose commit was rejected by a hook pushes a tag that points at
+   the previous release, and that happened at 1.0.0.
+8. **Never amend a pushed tag.** If a tag is wrong, delete it, push the deletion, and tag again, and
+   say so in the changelog with the `git fetch --tags --force` that anyone who already fetched the
+   bad tag needs.
+9. **Record what could not be verified.** A claim that was taken from someone else's testing is
+   written as such, in the same words, until someone has run it. That has already happened once at
+   1.0.1 for the deadlock log line, and the changelog records both the original claim and how it was
+   finally checked.

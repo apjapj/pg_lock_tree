@@ -1,18 +1,16 @@
-## Roadmap
+# roadmap: what is planned, and what was considered and dropped
 
-Rewritten at 1.0.1. The previous version was written at 0.12 and described work that was finished,
-plus two items that had gone stale in opposite directions. It is organised by what the evidence
-supports rather than by release, and every item says how we know.
+Organised by what the evidence supports rather than by release, and every item says how we know.
+Work that has been done is in the last section, so this one is only ever about what is outstanding.
 
-### Immediate, and in this order
+## Immediate, and in this order
 
 | # | Work | Why here | Size |
 |---|---|---|---|
-| 1 | **Non-public schema install test** | The last correctness gap from the 0.14 plan. `lock_tree_sample()` and `lock_tree_redact()` pin `search_path = pg_catalog`, which is exactly where an unqualified sibling reference would break. One matrix case: `CREATE SCHEMA lt; CREATE EXTENSION pg_lock_tree SCHEMA lt;` then the suite with `lt` off `search_path`. | Small |
-| 2 | **README split, and the nine corrections** | The largest item and the only one with no correctness or security edge. Items (g) and (h) are mechanical and `scripts/lint-docs.sh` can assert them; (a) to (d) are textual and can be grep-asserted; (e) and (f) need regenerated examples. | 1 to 2 evenings |
-| 3 | **Whole-window `lock_tree_duration()`** | Still the slowest read in the extension, and 0.15 and 0.16 both left it there. A seven day window is 60,481 instants and 1.2 million rows of real work, so no index removes it; the four CTEs each re-read the history and merging them is the obvious thing to try. `scripts/bench-history.sh` measures it, which is the only reason the number is knowable. | Untested idea |
+| 1 | **Whole-window `lock_tree_duration()`** | The slowest read in the extension. A seven day window is 60,481 instants and 1.2 million rows of real work, so no index removes it; the four CTEs each re-read the history and merging them is the obvious thing to try. `scripts/bench-history.sh` measures it, which is the only reason the number is knowable. | Untested idea |
+| 2 | **Generated examples, diffed on every run** | The examples in the documentation are copied from `make demo` and `make scenarios` output by hand, so nothing stops them drifting from what the code prints. Capturing the output and diffing it is mechanical once the masking of pids and timestamps is agreed. | Small |
 
-### Considered and not planned
+## Considered and not planned
 
 - **Cross-database.** The extension lives in each database, as all extensions do, so a queue on
   `reporting` is invisible from `production`. Deliberately not here: this is a per-database
@@ -34,7 +32,7 @@ supports rather than by release, and every item says how we know.
   Instead the difference is a named, checked exception, and the stability statement says `SELECT *` on
   the tables is outside the contract.
 
-### Open questions, not commitments
+## Open questions, not commitments
 
 - **What each root *holds* that its waiters want**, not only what the waiters ask for. The wait side is
   reported; the hold side is `pg_locks` and the lock tags, and the interesting version is a diff
@@ -49,7 +47,7 @@ supports rather than by release, and every item says how we know.
   `lock_tree_sampling_advice()` suggests an interval, but neither says when the read side becomes the
   problem instead of the write side. That number is a judgement, and nobody has made it.
 
-### Done, and where to read about it
+## Done, and where to read about it
 
 Recorded here so the section is a record rather than a wish list. Each is one line because the
 changelog has the detail and a test has the proof.
@@ -65,3 +63,8 @@ changelog has the detail and a test has the proof.
   scrubbed at upgrade time.
 - **Verifying every upgrade path** (1.0.0), with the column-position difference it cannot fix
   classified rather than ignored.
+- **The non-public schema install** (`test/22_schema_install.sql` and `make check-schema`), for the
+  one situation where an unqualified call to a sibling fails: both `search_path`-pinned functions.
+  The end-to-end half needs a second database, so it is a make target rather than part of the suite.
+- **The README's nine factual errors, and the split** into a short entry point plus `docs/` and
+  `CONTRIBUTING.md`, with a link and anchor check so the moved sections cannot quietly break it again.

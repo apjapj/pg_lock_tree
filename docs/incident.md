@@ -1,3 +1,22 @@
+# incident: when the queue will not fit on a screen
+
+**For: someone on call, right now, past the point where `lock_tree_text()` is enough.** You can see
+the tree and you cannot read it, or the root is a transaction with no session attached to it. Start
+with the [incident card](../README.md#the-incident-card) if you have not already.
+
+```
+-- too many sessions to print: one row per root, ranked
+SELECT * FROM lock_tree_summary();
+
+-- the same, one row per waiter, so you can see who is behind whom
+SELECT * FROM lock_tree_wide();
+
+-- which query is costing the most time, and which application
+SELECT * FROM lock_tree_statements();
+SELECT * FROM lock_tree_applications();
+```
+
+
 ## When the queue is too wide to read
 
 A tree is one row per session, which is the right shape for one incident and the wrong shape for
@@ -150,59 +169,43 @@ either. `test/17_duration_by_application.sql` pins both directions.
 
 ### Before you query a week of history
 
-Every windowed function takes a `since` and, since 0.15, seeks rather than scanning. On a seven day
-history of 1.2 million rows and 264 MB, measured with `make bench-history`:
+Every windowed function takes a `since` and seeks rather than scanning, so the cost tracks the window
+you asked for and not the size of the history. On a seven day history of 1.2 million rows and 264 MB,
+measured with `make bench-history`:
 
 ```sql
 SELECT * FROM lock_tree_duration(interval '1 hour');        -- not interval '7 days'
 SELECT * FROM lock_tree_duration_by_application(interval '1 day');
 ```
 
-Before 0.15 the window was a filter over the whole index, so the cost tracked the size of the
-**history** rather than the window you asked for, and a dashboard asking about the last hour paid for
-the last week. It now does not. The seven day figures are still the slowest reads in the extension,
-because seven days of samples is genuinely 60,481 instants and 1.2 million rows of work.
+The seven day figures are still the slowest reads in the extension, because seven days of samples is
+genuinely 60,481 instants and 1.2 million rows of work.
 
-One thing changed in 0.15 that you may have built something on top of: `blocked_sessions_peak` and
-`sessions_total` in both duration functions were **one too high per sample**, because the
-root-to-waiter join matched each root to itself. A root blocking three sessions reported four.
+**If you stored these numbers anywhere.** `blocked_sessions_peak` and `sessions_total` were one too
+high per sample until 0.15, because the root-to-waiter join matched each root to itself: a root
+blocking three sessions reported four. The changelog has the entry.
 
-### One fix worth knowing about
+### Three columns that are easy to get wrong
 
-0.12 reported three columns of `lock_tree_duration()` that could not be right, and 0.13 corrects
-them. All three came from one mistake: a root's **identity** and the waits it **caused** are on
-different rows. `query_id` is on the root row, `wait_age` is on the waiter's, so:
+A root's **identity** and the waits it **caused** are recorded on different rows. `query_id` is on the
+root row, `wait_age` is on the waiter's, so the three columns that come out of the join are:
 
-| | 0.12 | 0.13 |
-|---|---|---|
-| `longest_wait` | always `NULL` | the longest wait it caused |
-| `blocked_sessions_peak` | always `1` | the peak sessions behind it |
-| `sessions_total` | a second copy of `samples` | that peak summed over the instants |
+| | |
+|---|---|
+| `longest_wait` | the longest wait this query caused |
+| `blocked_sessions_peak` | the peak number of sessions behind it at one instant |
+| `sessions_total` | that peak, summed over the instants it was the root |
 
-One join fixes all three, the root rows of a sample matched to the waiter rows of the **same** sample
-on `root_pid` and `root_object`. If you wrote a query against 0.12 that relied on
-`blocked_sessions_peak` being 1, it was reading a bug rather than a fact.
+Which is: root rows of a sample matched to the waiter rows of the **same** sample, on `root_pid` and
+`root_object`. Until 0.13 the join did not do this and all three were wrong, so a query written against
+an early release may have been reading a bug rather than a fact. The changelog has the entry.
 
-### One hazard worth knowing before you schedule anything
+### One hazard, if you are scheduling the sample
 
-The samples must be **separate statements**. `sampled_at` is `statement_timestamp()`, which is fixed
-for the duration of a statement, so a loop of samples inside a single `DO` block collapses onto one
-instant:
-
-```sql
--- WRONG: four samples, one instant, four seconds of incident invisible to the history
-DO $$ BEGIN FOR i IN 1..4 LOOP PERFORM lock_tree_sample(); PERFORM pg_sleep(1); END LOOP; END $$;
-
--- RIGHT: four samples, four instants, and lock_tree_duration() can sum the gaps
-SELECT lock_tree_sample(); SELECT pg_sleep(1);
-SELECT lock_tree_sample(); SELECT pg_sleep(1);
-SELECT lock_tree_sample(); SELECT pg_sleep(1);
-SELECT lock_tree_sample();
-```
-
-The rows are written either way, so the history looks healthy unless you count instants rather than
-rows. A `cron` entry has no such problem, since each run is its own statement. `test/16_duration_resolved.sql`
-pins this down with the measurement rather than only describing it.
+Samples have to be separate statements, because `sampled_at` is `statement_timestamp()`. A loop of
+samples inside one `DO` block collapses onto a single instant and the rows look healthy while the
+gaps between them are not there. That page has the two forms and the test that measures it:
+[One hazard worth knowing before you schedule anything](history.md#one-hazard-worth-knowing-before-you-schedule-anything).
 
 ## A blocker with no backend
 
@@ -219,24 +222,26 @@ This is the one thing the usual recursive query cannot do at all, because it wal
 its suggested action is `ROLLBACK PREPARED` rather than a `pg_cancel_backend(0)` that could never
 have worked.
 
-### Two of them are two roots, which took until 0.8 to get right
+### Two of them are two roots
 
-`pg_blocking_pids()` reports the blocker as `0` for **every** prepared transaction. So through 0.7
-every prepared root had pid 0, and everything that grouped on the pid merged them:
+`pg_blocking_pids()` reports the blocker as `0` for **every** prepared transaction, and there is no
+backend to ask for its pid. So the pid alone cannot identify a prepared root: three of them all look
+like pid 0, and anything that groups on the pid merges them into one row and reports a root that
+holds four sessions when nothing holds four sessions.
+
+**Group by the object, not the pid.** That is what `root_object` is for, and it is why
+`lock_tree_summary()` counts roots by `(root_pid, root_object)` rather than by pid:
 
 ```
- 0.7, three prepared transactions and four waiters
+ three prepared transactions and four waiters, grouped by pid alone
 
  root_pid | blocked_sessions
         0 |                 4        <- one row, and nothing holds four sessions
 ```
 
-`lock_tree_summary()` reported `roots` as 1. The number an operator acts on was wrong, in the one
-case this extension exists to be better than the usual query at.
+The same incident, grouped by pid and object:
 
 ```
- 0.8, the same incident
-
  root_pid | root_object                         | blocked_sessions
         0 | AccessExclusiveLock on ledger       |                2
         0 | AccessExclusiveLock on orders       |                2
@@ -263,8 +268,8 @@ One limit worth stating: **two prepared transactions holding compatible locks on
 are one root.** PostgreSQL cannot tell them apart either, so attributing a waiter to one of them
 would be a guess. Grouping by the object rather than by the lock mode is the honest boundary.
 
-See `scenarios/s7_prepared.sql`, which builds three at once and prints the 0.7 figure for the same
-incident so the comparison is measured rather than remembered.
+See `scenarios/s7_prepared.sql`, which builds three at once and prints both figures for the same
+incident, so the comparison is measured rather than remembered.
 
 ## Behaviour worth knowing
 

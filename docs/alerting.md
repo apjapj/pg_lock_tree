@@ -1,4 +1,15 @@
-## Alerting
+# alerting: being told, without being told about nothing
+
+**For: whoever wires a pager to a NOTIFY channel.** Thresholds, what escalates, what the payload
+contains, and how to tell that the alerting itself is working.
+
+```
+-- schedule this, and expect NOTIFY on the lock_tree channel
+SELECT lock_tree_notify();
+
+-- the other half: an event when a root stops being worth waking someone for
+SELECT lock_tree_notify_resolved();
+```
 
 Everything above is for someone who is already looking. This is for when nobody is.
 
@@ -6,7 +17,7 @@ Everything above is for someone who is already looking. This is for when nobody 
 someone for. It does **not** page anyone, and understanding why is the first thing worth
 understanding about it.
 
-### What this does and does not do
+## What this does and does not do
 
 It raises a `NOTIFY` on a PostgreSQL channel. That is all. Turning that channel into a page is
 the deployment's job, and the reason is that paging is a policy decision: what pages you, where
@@ -17,7 +28,7 @@ without knowing anything about this extension.
 The usual way to connect it is `LISTEN` from a script, or a `LISTEN`/`NOTIFY` bridge shipped with
 PostgreSQL that forwards to another channel. There is no opinion here about which.
 
-### Why it does not notify on every sample
+## Why it does not notify on every sample
 
 This is the design decision that matters, and getting it wrong makes alerting worse than not
 having it.
@@ -47,7 +58,7 @@ better and must not re-notify.
 When a root stops being notable its state is forgotten, so the same chain returning later alerts
 again. That is what makes a *second* incident visible rather than suppressed as already-seen.
 
-### Why the wait escalates by doubling and not by growing
+## Why the wait escalates by doubling and not by growing
 
 Wider and deeper are **edges**: something happened, and the comparison says so. A wait is not an
 edge, it is a slope. It grows every second, so asking "is the longest wait longer than last time?"
@@ -76,7 +87,7 @@ has been recorded yet, because the view truncates `wait_age` to whole seconds an
 second reads as zero. Comparing against twice zero is true forever. That was a real bug, found by
 the assertion that nothing is recorded when `min_wait` is off.
 
-### Choosing thresholds
+## Choosing thresholds
 
 This is the part people get wrong, so the thresholds are arguments rather than settings and there
 are no meaningful defaults. A default nobody reads is a default nobody trusts.
@@ -118,7 +129,7 @@ SELECT lock_tree_notify('lock_tree', min_blocked => NULL, min_depth => NULL,
 `NULL` means "do not consider this". `0` is the same thing for the two integer criteria, since
 "at least 0 sessions blocked" is every root.
 
-### What the return value is for
+## What the return value is for
 
 It returns how many notifications it raised. **Zero is the normal, healthy result**, and it is the
 value worth watching. A sampler that logs it will show you exactly when your alerting is doing
@@ -131,7 +142,7 @@ SELECT now(), lock_tree_notify() AS alerts;
 If that column is zero forever, either nothing is wrong or your thresholds are too high to ever
 fire. Both are worth knowing, and neither is visible from a silent channel alone.
 
-### Scheduling it
+## Scheduling it
 
 The natural home is the same cron entry as the sample, because both need to run on the same beat:
 
@@ -143,7 +154,7 @@ SELECT cron.schedule('lock_tree_sample', '10 seconds',
 One statement can do both, which also means the alert reflects the instant the sample was taken
 rather than a slightly later one.
 
-### The payload
+## The payload
 
 ```json
 {"channel":"lock_tree","event":"alerting","root_pid":179,
@@ -165,7 +176,7 @@ recognise is unaffected.
 as long as that session lives, which is the wrong key for correlating a page with a log or a
 dashboard across restarts and reconnects.
 
-### Knowing when it is over
+## Knowing when it is over
 
 `lock_tree_notify()` says when something starts getting worse and then says nothing, which is
 right for a pager and wrong for the person who was woken up. `lock_tree_notify_resolved()` closes
@@ -199,7 +210,7 @@ the two key on the same state and a mismatch means resolving alerts that were ne
 A consumer written before 0.12 that ignores unknown fields is unaffected. One that switches on
 `event` gets the pair it needs.
 
-### `lock_tree_alert`, and why you should not need to look at it
+## `lock_tree_alert`, and why you should not need to look at it
 
 One row per notable root per channel per threshold set, holding the high-water marks. It is the
 size of the current queue, not of its history, and `lock_tree_notify()` maintains it. You should
@@ -208,7 +219,7 @@ never need to touch it.
 `lock_tree_prune_alerts()` exists for state orphaned by a restart or a retired channel name, and
 is worth calling from the same cron entry as the sample if you care. It is not load-bearing.
 
-### Checking it works
+## Checking it works
 
 Two ways, and they check different things.
 
@@ -230,7 +241,7 @@ doubling, recovery then relapse fires again, thresholds behave, and all three di
 `test/16_duration_resolved.sql` covers the resolution notices: nothing on a quiet database, one
 per cleared root, none while the incident is still standing, and the state forgotten afterwards.
 
-### What to do when one arrives
+## What to do when one arrives
 
 `--explain` takes the payload and prints what it means, the queries to run in order, and what not
 to do. It needs **no database**, which is the point: the first thing you do at 3am should be
@@ -266,7 +277,7 @@ remedies.
 `make explain-alert PAYLOAD='…'` is the same thing if you prefer make. A payload that is not JSON,
 or is JSON from something else on the same channel, is reported as such rather than guessed at.
 
-### Choosing an interval
+## Choosing an interval
 
 `lock_tree_sampling_advice()` answers "how often should I be sampling", which is a question about
 cost rather than taste. The cost of a sample is one row per blocked session, so a wide queue
@@ -298,7 +309,7 @@ question.
 so a queue that started after the last sample is not ignored and the advice can be traced back to
 what it was based on.
 
-### Requirements, plainly
+## Requirements, plainly
 
 - **`NOTIFY` needs nothing.** No extension, no `shared_preload_libraries`, no restart. If
   `lock_tree_notify()` works at all, `NOTIFY` works at all.

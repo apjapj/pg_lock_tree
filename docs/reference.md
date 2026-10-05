@@ -1,3 +1,9 @@
+# reference: one object, one answer
+
+**For: someone who knows which function they want and wants its columns.** Every object the extension
+creates, the stability statement, and the NOTIFY payload keys.
+
+
 ## Objects
 
 > **Monitoring roles.** Seven of the functions below read `lock_tree_history` and are

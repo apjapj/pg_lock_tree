@@ -1,11 +1,30 @@
-## After the incident has cleared
+# after the incident: what it actually cost
 
-Everything above describes the present. That is a real limit, and it bites at the worst moment:
+**For: whoever gets the afternoon afterwards.** Replaying an incident that has ended, grouping the
+history into incidents, ranking by time rather than by count, and the deadlock report.
+
+```
+-- replay one incident, given its id, as if it were happening now
+SELECT * FROM lock_tree_replay(42);
+
+-- every incident in a window, worst first
+SELECT * FROM lock_tree_incidents(interval '7 days');
+
+-- where the blocking time went, per statement and per application
+SELECT * FROM lock_tree_duration(interval '1 hour');
+SELECT * FROM lock_tree_duration_by_application(interval '1 hour');
+```
+
+
+## The tree is gone; the history is not
+
+Everything on the rest of this page describes the present. That is a real limit, and it bites at the
+worst moment:
 incidents are usually noticed once they have ended, by a slow query, a timeout, or someone
 reporting that "it was hanging earlier". By then `pg_stat_activity` has moved on and the tree is
 empty.
 
-0.4 keeps a history. Opt in, then sample on a schedule:
+So the history is opt-in. Sample it on a schedule:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS pg_cron;          -- once per database, see INSTALL.md
