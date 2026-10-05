@@ -19,13 +19,24 @@ WHAT WAS WRONG, AND HOW IT WAS ESTABLISHED
      `SELECT pg_reload_conf()` and shows how to tell the two kinds of setting apart.
 
   b  `log_min_duration_statement = 0` "so the CONTEXT lines are there too". Not needed, and
-     costly: it logs every statement the server runs. A deadlock is logged at ERROR and the entry
-     names both processes with the statement each was running, so the text is already there. I could
-     NOT reproduce this myself: three attempts to raise a real deadlock in a container produced a
-     counter of zero and an empty log, and I would rather say so than assert something I did not
-     see. Taken from the review, which verified it on PostgreSQL 16 with a real deadlock under
-     `log_lock_waits=off` and `log_min_duration_statement=-1`, and the log format is quoted here as
-     the review recorded it.
+     costly: it logs every statement the server runs. A deadlock is logged at ERROR and the DETAIL
+     line names both processes with the statement each was running, so the text is already there.
+     **Verified on PostgreSQL 16 with default settings** (`log_lock_waits=off`,
+     `log_min_duration_statement=-1`): `pg_stat_database.deadlocks` went from 0 to 1 and the log
+     entry named both statements. The recipe that works, and the reason it matters:
+
+         begin; update dl ... id=1; select pg_sleep(1); update dl ... id=2; commit;
+
+     in each of two sessions, with the ids swapped and the second starting 0.3s after the first.
+
+     My own three attempts produced a counter of zero and an empty log, and the diagnosis is worth
+     recording because it was not a logging difference: the background clients died before they
+     reached the lock, so there was never a deadlock to log. Two session-scoped traps account for
+     it. A `docker exec -d` does not keep a session alive across calls, so the lock went with the
+     holder. And `UPDATE ... WHERE id = 1 SET id = 1` rewrites nothing, so it may never take a row
+     lock worth deadlocking over. Both were fixed by holding both sessions inside one shell and by
+     making each UPDATE genuinely change the value, and the change that actually mattered was the
+     second one.
 
   c  "`pg_stat_reset_shared('db')` sets it to zero". That function does not accept `'db'` at all.
      Verified on PostgreSQL 18:
