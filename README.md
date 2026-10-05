@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.13** (green on PG 14 to 19beta4) |
+| Current release | **v0.14** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 314 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 347 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -825,6 +825,52 @@ Then ask what happened:
 SELECT * FROM lock_tree_incidents() ORDER BY started_at DESC;
 ```
 
+## Replaying an incident that has ended
+
+The history answers questions about totals. It cannot show you the **shape**: sixty sessions behind
+one idle-in-transaction root at depth three, or five independent roots at once. That shape is what
+you remember three days later, and by then the queue has cleared and the tree is gone.
+
+```sql
+-- which moments can you ask about? The history holds one row per session, so its own row
+-- count is a count of observations, not of moments.
+SELECT * FROM lock_tree_replay_samples ORDER BY sampled_at DESC LIMIT 10;
+
+-- then ask about one
+SELECT * FROM lock_tree_replay_text(now() - interval '2 hours');
+```
+
+`lock_tree_replay(as_of)` returns the rows if you would rather query than read, and
+`lock_tree_replay_text(as_of, query_width)` renders them in `lock_tree_text()`'s layout, so a replay
+and the live tree look the same:
+
+```
+4821  idle in transaction  nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1
+ └─4822  3m12s  for AccessExclusiveLock on public.ledger  SELECT count(*) FROM ledger
+   └─4823  3m10s  for AccessShareLock on public.ledger   INSERT INTO audit VALUES (1)
+   └─4824  3m09s  for AccessShareLock on public.ledger   INSERT INTO audit VALUES (2)
+```
+
+Two things to know before you rely on it:
+
+- **`as_of` is a target, not an exact key.** The sample **nearest** it is used, and `sampled_at` is
+  the first column of every row, so you can see which one you actually got rather than assuming. A
+  target between two samples picks the closer one. `NULL` means the most recent.
+- **Nine columns of `lock_tree` are not here**, and that is deliberate rather than an oversight.
+  `path` and `blocked_by` cannot be reconstructed: the history stores one row per session, not the
+  edge between them, so nothing says which depth-1 session a depth-2 session was actually behind.
+  `usename`, `datname`, `client_addr`, `wait_event_type`, `wait_event`, `xact_age` and `state_age`
+  were simply never recorded, and adding them now would widen the history for every future sample on
+  every database without retroactively supplying the past.
+
+`waiting_for` reads back schema-qualified where the live view does not, because `lock_tree_sample()`
+runs with `search_path = pg_catalog` and `regclass` cannot resolve unqualified there. That is the
+better of the two renderings: the live one is path-dependent, and the history's says
+`public.ledger` in every row forever.
+
+`test/18_replay.sql` pins all of it, including the absent column list asserted **by name** rather
+than by count, since "which nine" is the part a reader needs.
+
 And, once you have more than one incident's worth of history, which statement cost the most
 blocking time across all of them:
 
@@ -894,6 +940,9 @@ Four things worth knowing before you turn it on:
 | `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking from the sampled history as **session-samples**: one unit per blocked session per sample. Answers "which statement blocks the most sessions", which is the right question when the shape of the damage matters more than its cost. Does not move with the sample rate in units of time, because it is not a time; see the next row. |
 | `lock_tree_duration(since interval DEFAULT '7 days')` | Per-query blocking **TIME** from the sampled history, worst first: for each root query id, the elapsed time during which it was holding the queue up, with the peak and total sessions it blocked and the longest single wait it caused. Does not move with the sample rate, which is the whole difference. A gap counts only where the query was the root at both ends, and the interval after the last sample is never counted, so it is a lower bound rather than an estimate. |
 | `lock_tree_duration_by_application(since interval DEFAULT '7 days')` | The same **TIME**, keyed on `application_name` instead of the statement, with the statements it was root for. Not the same figure and not a re-grouping: see [Which application is costing the most](#which-application-is-costing-the-most). An empty `application_name` is reported as its own row, because a blocker that never set one is a finding. |
+| `lock_tree_replay_samples` (view) | One row per sample in the history: when it was taken, how many roots were blocking, how many sessions behind them, how deep, the longest wait, and the applications and query ids at the head. The history holds one row per *session*, so this is how you find out which moments you can ask for. |
+| `lock_tree_replay(as_of timestamptz DEFAULT NULL)` | The lock tree as it was at a past sample, from the history. Takes a target and uses the sample **nearest** it, reporting which one in `sampled_at`. `NULL` means the most recent. |
+| `lock_tree_replay_text(as_of timestamptz DEFAULT NULL, query_width int DEFAULT 60)` | The same, indented, in `lock_tree_text()`'s layout. For reading about an incident at 4pm rather than during it. |
 | `lock_tree_sampling_advice(since interval DEFAULT '7 days')` | A suggested interval for the sample cron entry, sized on the **widest queue in the window** rather than on the queue at this instant, with the reasoning and both inputs returned. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
@@ -994,7 +1043,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 314 pgTAP tests against the server your libpq env vars point at
+make prove              # 347 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured

@@ -310,6 +310,22 @@ SELECT application_name, blocking_seconds, blocked_sessions_peak, sessions_total
 \echo '     ends have the same root here, so the whole gap counts; had the root changed'
 \echo '     mid-gap, the gap would be discarded instead, because nobody observed when.'
 \echo ''
+\echo ' The history can also be LOOKED AT, not only queried. The tree these samples'
+\echo ' recorded, replayed in the same layout lock_tree_text() uses:'
+\echo ''
+SELECT * FROM lock_tree_replay_text();
+
+\echo ''
+\echo ' Nine columns of lock_tree are not in a replay, and that is deliberate. path and'
+\echo ' blocked_by cannot be reconstructed: the history holds one row per session, not'
+\echo ' the edge between them. The rest were never recorded at all.'
+\echo ''
+\echo ' The waiting_for above is unqualified only because this demo INSERTED its history'
+\echo ' by hand rather than sampling it. A real lock_tree_sample() runs with search_path'
+\echo ' set to pg_catalog, so regclass cannot resolve unqualified there and every row it'
+\echo ' writes is schema-qualified. That is the stable rendering, and the live view''s is'
+\echo ' the path-dependent one. See test/18_replay.sql.'
+\echo ''
 \echo ' And while nothing is blocked, sampling writes nothing at all:'
 \echo ''
 SELECT lock_tree_sample() AS rows_written_on_a_quiet_database;

@@ -4,6 +4,109 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 0.14 (2026-10-05)
+
+0.14: replay, so the history can be looked at rather than only queried
+
+Everything in the extension until now answers questions about the present, or about totals over a
+window. lock_tree_duration() can say which application cost the most and lock_tree_incidents() can
+say when, but none of them can show the SHAPE of an incident that has ended: sixty sessions behind
+one idle-in-transaction root at depth three, or five independent roots at once. That shape is what
+you remember three days later and cannot get back, because it existed only as one row per session in
+lock_tree_history with nothing to render it.
+
+  lock_tree_replay_samples (view)   one row per sample: when, how wide, how deep, who was at the head
+  lock_tree_replay(as_of)           the rows at the nearest past sample
+  lock_tree_replay_text(as_of, w)   the same, indented, in the live renderer's layout
+
+as_of IS A TARGET, NOT AN EXACT KEY
+
+The sample nearest it is used, and sampled_at is the first column of every row, so what you actually
+got is visible rather than assumed. Getting this wrong would silently replay a moment the reader did
+not ask for. A target between two samples picks the closer one; NULL means the most recent. test/18
+asserts the choice is the NEARER of two, because an assertion that only checks "one sample came
+back" would pass if it always picked the latest.
+
+NINE COLUMNS OF lock_tree ARE NOT HERE, and that is the honest part
+
+  path, blocked_by   not reconstructible. The history stores one row per session, not the edge
+                     between them, so nothing says which depth-1 session a depth-2 session was
+                     actually behind. Anything derived from path goes with it.
+  usename, datname, client_addr, wait_event_type, wait_event, xact_age, state_age
+                    were never recorded. Adding them now would widen the history for every future
+                    sample on every database, and would not retroactively supply the past.
+
+test/18 asserts this list BY NAME against the live view rather than by count, because "which nine"
+is the part a reader needs and a count would not say it. The comparison is derived from
+pg_attribute for the view and from information_schema.parameters for the function.
+
+TWO COLUMNS ARE NEW, AND ONE OF THEM IS NOT ABOUT REPLAY
+
+sampled_at, so you can see which sample you got. And query_id, which lock_tree does not carry at
+all. I wrote the assertion expecting one new column and it reported two, which is how I noticed that
+the live view cannot be joined to the history on query_id even though the whole duration family is
+keyed on it. Not fixed here: adding query_id to a view that reads pg_stat_activity would mean a
+second source for it, and that belongs with whatever else the live view is missing.
+
+WAITING_FOR READS BACK SCHEMA-QUALIFIED, AND THAT IS BETTER
+
+  lock_tree.waiting_for           AccessShareLock on ledger
+  lock_tree_history.waiting_for   AccessShareLock on public.ledger
+
+Found by rendering a replay next to the live tree and noticing the difference. lock_tree_sample() is
+SECURITY DEFINER SET search_path = pg_catalog, so inside it regclass cannot resolve a relation in
+public and the name renders qualified. The live view is read with the caller's search_path, so it
+renders unqualified, which is the path-dependent rendering this extension already documents as
+cosmetic.
+
+The history's rendering is the stable one: the same lock reads the same way in every row forever,
+whatever the reader's search_path was. A replay that said "ledger" in one sample and "public.ledger"
+in the next would be worse. Pinned by test/18, which asserts every history row matching a relation
+name is qualified.
+
+THE PARAMETER IS NAMED as_of, NOT at
+
+PostgreSQL resolves a bare `at` against the function's own RETURNS TABLE row type rather than
+against the argument, and the failure is "missing FROM-clause entry for table lock_tree_replay". A
+parameter whose name is not one of the output columns has no such shadowing. as_of also says what
+the argument is for.
+
+The nearest-sample CTE also had to lose its DISTINCT: PostgreSQL will not let a SELECT DISTINCT
+order by an expression that is not in its select list, and DISTINCT is unnecessary anyway. Ordering
+by (distance, instant) and taking one row returns a single instant however many sessions it held.
+
+FOUR MORE OF MY OWN TEST BUGS, ALL FOUND BY THIS FILE FAILING
+
+  has_table on a view. It is a VIEW, so has_view.
+
+  An array \gset variable interpolates as a bare {a,b}, which is not a SQL token, and a joined list
+    as a bare "a, b, c". Both now go through quote_literal() in the query, which is the only place
+    this can be fixed. And once they are quoted literals, is() still cannot compare them, because two
+    untyped strings give "could not determine polymorphic type": both sides need ::text.
+
+  Three boolean \gset variables. psql interpolates a boolean as a bare t, so ok(t::text = 't', ...)
+    read that t as a COLUMN. Counted the exceptions instead.
+
+  Timestamps interpolate raw too, so :picked::timestamptz became
+    "2026-10-05 00:12:21.625699+00::timestamptz" and was a syntax error at "00".
+
+  RETURNS SETOF text yields a scalar column whose name appears in the header but is not addressable,
+    so t.lock_tree_replay_text does not resolve. A positional alias, AS t(line), does.
+
+  information_schema reports a function as lock_tree_replay_33698, OID-disambiguated, not
+    lock_tree_replay. Equality on the bare name returned nothing, so the column comparison was 18
+    against 1 and reported every column missing. The regex ^lock_tree_replay_[0-9]+$ matches this
+    function and not lock_tree_replay_text, which LIKE on the bare name would also have matched.
+
+And one design point the samples view settled: applications in it is FILTERed to root rows, because
+a waiter's application_name is not who was blocking anyone. test/18 asserts that separately from the
+applications present in the whole replay, since the two are different questions.
+
+test/18_replay.sql, 33 assertions.
+347 tests green on PG 14 to 19beta4; all eight scenarios; the 0.13 -> 0.14 update and the full
+0.2 -> 0.14 chain with the new test run against the walked-up database; demo, check-install,
+check-alert in both modes, and check-deadlock.
+
 ## 0.13 (2026-10-05)
 
 0.13: the aggregation a page actually needs
