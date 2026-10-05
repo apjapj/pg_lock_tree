@@ -4,6 +4,224 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.0.1 (2026-10-05)
+
+1.0.1: the 1.0.0 redaction leaked, and any role could switch it off
+
+A patch release, and all three defects are in the feature 1.0.0 existed to deliver. Nothing moves the
+v1.0.0 tag.
+
+Every finding below was reproduced by running the shipped 1.0.0 function and the shipped 1.0.0
+privileges, on PostgreSQL 18, rather than by reading them.
+
+H1. THE REDACTION MISSED A REAL SCRAM VERIFIER, AND FOUR PASSWORD SHAPES
+
+A real verifier is
+
+    SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>
+
+and 1.0.0's character class could not get past the 4096:, so the pattern failed and a verifier passed
+to a function was stored whole. Both keys intact, in a table anyone with SELECT could read. The
+iteration count and the colon between the keys are both load-bearing and 1.0.0's own test fixture had
+neither, which is how it survived.
+
+Also stored verbatim, all valid SQL that PostgreSQL accepts:
+
+| Shape | Why 1.0.0 missed it |
+|---|---|
+| `PASSWORD $$x$$` | The tag class required at least one character, and the empty tag is the commonest dollar quote |
+| `PASSWORD 'a literal with a newline'` | Matched to the last quote on the first line, and there is none |
+| `PASSWORD 'x` with no closing quote | `pg_stat_activity` cuts the text at `track_activity_query_size`, 1 kB by default. Same failure |
+| `PASSWORD U&'x'`, `PASSWORD /*c*/ 'x'`, `PASSWORD'x'` | Only `E?'` straight after whitespace was expected |
+
+1.0.0's release notes said the pattern "cannot under-redact". It could. **Corrected in place in the
+1.0.0 entry below**, with the reason, because a changelog is a document a reader believes.
+
+The 1.0.1 pattern replaces from the opening of the literal to the END of the text rather than to the
+last quote on the line, because a truncated statement has no closing quote to find. The literal may
+open with `'`, `E'`, `U&'` or `$`, and whitespace and comments are allowed between `PASSWORD` and it.
+
+That over-redacts the tail: `PASSWORD 'p', VALID UNTIL '2026-01-01'` loses the VALID UNTIL clause
+too. The clauses that can follow a password are VALID UNTIL and IN ROLE, neither of which is what an
+incident is diagnosed from, so that is the right side to err on. It is asserted in test/21 so it
+cannot later be mistaken for a bug.
+
+Two additions over the review's fix, both because a plausible name is not evidence:
+`SCRAM-SHA-256(?:-PLUS)?` for the channel-binding variant, and `i` on the SCRAM and md5 patterns, since
+1.0.0 matched only one case of each.
+
+H2. ROWS SAMPLED BEFORE 1.0.0 STILL HELD THEIR PASSWORDS
+
+1.0.0 changed how new rows are written and left every existing row alone. An upgraded database still
+held every password its history had ever caught, until pruning removed them. The exposure 1.0.0's notes
+describe was still present after the release that claimed to fix it.
+
+1.0.1's update script scrubs them, limited to rows that could match so it does not rewrite the table:
+
+```sql
+SELECT count(*) FROM lock_tree_history
+ WHERE query ~* '(password|scram-sha-256\$|md5[0-9a-f]{32})';
+```
+
+Run that first if the history is large. The scrub is one UPDATE inside the update script, so it is one
+transaction holding a lock on the table, and a sampler writing to it waits for the duration.
+
+**A dump taken before 1.0.1, and every physical backup taken before 1.0.1, still contains whatever the
+history held.** This release cannot reach into a backup already written.
+
+H3. ANY ROLE COULD SWITCH REDACTION OFF AND READ OTHER SESSIONS' QUERY TEXT
+
+`lock_tree_sample()` is `SECURITY DEFINER` and was executable by `PUBLIC`, and it reads
+`lock_tree.history_query` from the **caller's** session. A role holding nothing but `SELECT` on the
+history could therefore:
+
+    SET lock_tree.history_query = 'full';
+    SELECT lock_tree_sample();
+
+and read another session's blocked statement back out of the table, password included, even though
+`pg_stat_activity` showed that same text to it as `<insufficient privilege>`. Reproduced on PostgreSQL
+18 with a role that has no `pg_read_all_stats` at all.
+
+1.0.1 revokes `EXECUTE` from `PUBLIC` on `lock_tree_sample()`. That is a behaviour change for anyone
+relying on the old grant, and it is the right trade: a `SECURITY DEFINER` function that reads every
+session's query text should not be callable by every role that can connect. The grant is not restored
+for anyone on upgrade, deliberately, because reinstating it silently would put the hole back for
+exactly the roles that had it. INSTALL.md says what the scheduling role needs.
+
+**And the fresh install was missed, which `scripts/check-upgrade.sh` caught.** The revoke went into the update
+script and not the release file, so a new install kept the hole this release exists to close. The
+upgrade comparison reported the difference as an ACL mismatch on one function, which is exactly what it
+is for.
+
+M1. TWO CLAIMS IN THE 1.0.0 TEXT WERE WRONG
+
+  "It cannot under-redact." False, and the reason is H1. Corrected in place in the 1.0.0 entry.
+
+  "Copied into every backup." True of physical backups only. `pg_extension.extconfig` is empty, so
+  `pg_dump` does not include the history today. The corrected wording is in the 1.0.0 entry, and the
+  point matters beyond the wording: **dump policy was never the control for this exposure.** A base
+  backup, a snapshot and a replica copy the table whatever is registered. Redaction on the way in is
+  the control, which is why H1 and H2 are the fix and the dump decision is not.
+
+M2. TWO DEFECTS IN scripts/check-upgrade.sh
+
+  `FROM="0.12 0.16"` failed with "no upgrade path drifted on column position, but
+  KNOWN_POSITION_DRIFT names...". A partial run can legitimately include no path that predates the
+  drift, and the staleness check then failed a run that was entirely correct. The check now runs only
+  when `FROM` is unset, and says why when it is skipped.
+
+  `position only:` printed the drift list one item per line, which reads as several findings rather
+  than one line of detail.
+
+M3. A BROKEN SPLICE IN INSTALL.md
+
+The grants section read "…and the three formatting helpers. / what is important enough to page someone,
+which is not a decision an arbitrary role should make. and become usable once the view is readable."
+Half a sentence from one paragraph pasted over the start of the next. Repaired, and `lock_tree_sample()`
+removed from the list of PUBLIC-executable functions so the two paragraphs no longer contradict.
+
+THE PG_DUMP DECISION, MADE AND PINNED
+
+Register none of the three tables, and say so. That is what ships today, so it costs no code:
+
+| Table | Dump? | Why |
+|---|---|---|
+| `lock_tree_history` | No | Grows without bound and holds query text. A restore usually lands on a different server, where its pids and timestamps describe nothing. |
+| `lock_tree_alert` | No | Hysteresis keyed to roots that existed on the source. Restored, it would suppress the first real alert on the target. |
+| `lock_tree_deadlock` | No | A counter baseline. On the target `pg_stat_database.deadlocks` starts again, so the first sample would always record a `counter_reset`. |
+
+Two pins: three assertions in test/02, and a section in INSTALL.md. Writing the pin nearly went wrong
+in a way worth recording, because a review suggested
+
+    SELECT ok((SELECT extconfig FROM pg_extension WHERE extname = 'pg_lock_tree') IS NULL, ...)
+
+which is right, and a companion query against **`pg_extension_config_dump`**, which does not exist as a
+relation. It is a FUNCTION that registers a table. A name that reads like a catalog table is not one,
+and querying it fails with "relation does not exist".
+
+## A stability statement, and a roadmap that is not stale
+
+Both are new in this release, because 1.0.0 shipped a promise it never made explicit.
+
+**Stability** ([README](README.md#stability-from-100)) names the functions whose names, arguments and
+output column names and order are fixed, and lists what is not: the three formatting helpers, **table
+column order**, what `lock_tree_redact()` removes, and `lock_tree_alert`'s columns. Two of those follow
+from evidence rather than taste. Column order is not stable because `scripts/check-upgrade.sh` proved it
+cannot be, and the statement says so rather than leaving a reader to assume otherwise. Redaction output
+is not stable because a patch release widening it is a fix, not a break, and 1.0.1 is the example.
+
+**Roadmap** ([README](README.md#roadmap)) rewritten. The previous one was written at 0.12 and led with
+work that shipped in 0.12, and had two items that had gone stale in opposite directions: a
+partitioning note whose replacement shipped in 0.11, and a cross-database item written as though it
+were next. The new one leads with the two things that are actually next, separates what is not planned
+from what is merely unanswered, and records what is done so the section is a record rather than a wish
+list.
+
+## Three bugs in this project's own tooling, found while fixing the above
+
+  `scripts/lint-docs.sh` found the newest release script with a pattern requiring EXACTLY two version
+    components. The moment the version became 1.0.0 it matched nothing, `ls | grep` yielded an empty
+    string, and the linter exited 2 saying a release script was missing, about a file that was sitting
+    right there. A linter that goes blind on the project's own version numbering is worse than no
+    linter, because every check before it passes first.
+
+  The same linter counted assertions with `grep -c`, which counts LINES, and did not strip `--`
+    comments, so a test file documenting its own shape by naming an assertion had that comment counted
+    as one. Both were found the same way: a plan of 34 and a count of 33, where the server said 34 ran.
+    The count is now of call occurrences with comments stripped, and when call sites still fall short
+    of the plan it is a note rather than a failure, because an assertion inside a helper called
+    several times legitimately emits more lines than it has call sites. More calls than the plan stays
+    a failure: a plan is an upper bound.
+
+  The suppression for detect-secrets took three attempts to place, and every wrong one is a trap worth
+    naming. The token it matches is the literal `# pragma: allowlist-secret`. Written as
+    `-- pragma:` it is a SQL comment the scanner does not recognise, and the finding stands. Appended
+    to the end of the SQL statement BEFORE the semicolon, `#` is not a comment introducer in SQL, so
+    psql parsed the pragma as the tail of the expression and the file ran 19 assertions instead of 34:
+    a suppression for a scanner changed the code it was scanning. On its own comment line it is
+    ignored, because detect-secrets 1.5.0 does not look back a line. What works is one long line
+    ending in `;  -- # pragma: allowlist-secret`: a comment to psql, the pragma to the scanner, and
+    neither able to affect the other.
+
+  Three files named after test output reached 0.16 and 1.0.0, their filenames being the contents of a
+    loop variable in an unquoted shell redirect. They were nearly missed because the first check for
+    them used `git ls-files` inside a `find | while read` loop, and git consumed the loop's stdin, so
+    the check reported three lines that looked like filenames and were not. .gitignore now excludes
+    output-shaped names.
+
+## The v1.0.0 TAG WAS RE-POINTED, AND CLONES THAT FETCHED IT STILL HAVE IT
+
+`git push --tags` ran in the same command as a commit the pre-commit hook rejected, so for a few
+minutes the remote `v1.0.0` pointed at 0.16's commit, which does not contain the redaction. A tag
+claiming a security fix it did not contain. It was deleted and recreated, minutes old, and `main` was
+left at the follow-up commit rather than the tag being moved onto it.
+
+    v1.0.0 now points at badc4d7. The earlier tag pointed at fc92828.
+
+**`git fetch` does not overwrite an existing tag.** If you fetched v1.0.0 while it was wrong:
+
+    git fetch --tags --force origin
+
+and check `git rev-parse v1.0.0^{commit}` gives `badc4d7`. The fix for the cause is in the review's
+section 5 and is worth repeating: push a named tag only after checking it, and never chain a
+`--tags` push after a commit in a line that does not stop on failure.
+
+## What is not in this release
+
+  A non-public schema install test. The last correctness gap from the 0.14 plan, and the one thing
+    `lock_tree_sample()` and `lock_tree_redact()` both pinning `search_path = pg_catalog` makes
+    worth having: an unqualified sibling reference is exactly what would break. One matrix case.
+
+  The README split and the nine factual corrections. Untouched in this release, and the README still
+    contains them, three of which were reproduced on PostgreSQL 16.
+
+  Whole-window `lock_tree_duration()`. Still the slowest read in the extension, and now the first
+    roadmap item, because 0.15 and 0.16 both left it there.
+
+398 tests green on PG 14 to 19beta4, up from 361. All 17 upgrade paths to 1.0.1 match a fresh install,
+with the one unfixable difference classified and checked in both directions. test/21 is proven
+non-vacuous: 9 failures against the v1.0.0 tag, 34 of 34 here.
+
 ## 1.0.0 (2026-10-05)
 
 1.0.0: credentials stop reaching the history, and upgrade paths stop being invisible
@@ -38,6 +256,13 @@ that is a real exposure and also a perfectly ordinary thing to have in an ad-hoc
 at your data is not the right default.
 
 Neither occurrence of that example is written out in full here or in the SQL. A documentation example
+**CORRECTED IN 1.0.1: the claim below that this ends up "copied into every backup" is true of
+PHYSICAL backups only.** `pg_extension.extconfig` is empty, so `pg_dump` does not include
+`lock_tree_history` today, and the 1.0.1 changelog records the decision not to register it. A base
+backup, a filesystem snapshot and a streaming replica copy the table whatever is registered, so dump
+policy was never the control for this exposure; redaction on the way in is, which is why fixing it
+was the work and the dump decision was not.
+
 of the form it is easy to write, in a file this project scans for credentials, is a false positive on
 every commit, and a suppression added for prose is a suppression that teaches the next reader that
 suppressions are for prose.
@@ -53,7 +278,15 @@ three were found by running them rather than by reading them:
   E'a\'b'        matched as E'a\' leaving a bare b' behind. Inside an E-string the escaped quote is
                  indistinguishable from a terminator to a regular expression. It now matches to the
                  last quote on the line, which over-redacts `PASSWORD 'p', VALID UNTIL '2026-01-01'`.
-                 A cosmetic loss, and it cannot under-redact.
+                 A cosmetic loss.
+
+                 **CORRECTED IN 1.0.1: the sentence here used to end "and it cannot under-redact".
+                 That was false.** A real SCRAM verifier, `SCRAM-SHA-256$4096:<salt>$<key>:<key>`, has
+                 a colon after the iteration count that this pattern's character class could not get
+                 past, and the fixture above had no iteration count, so the test could not have shown
+                 it. Four more shapes leaked too. 1.0.1 closes all of them and the claim is left
+                 standing as a correction rather than quietly edited out, because the reason it was
+                 believed is worth seeing.
   SCRAM          the first pattern ran to the end of the statement and left the bracket dangling; the
                  second stopped after the salt and left the stored key exposed, which is half the
                  credential and still verifies a password attempt. Both segments go now.

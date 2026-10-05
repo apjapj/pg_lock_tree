@@ -238,11 +238,30 @@ ERROR:  permission denied for view lock_tree
 
   Everything else is executable by `PUBLIC` by default, including `lock_tree_roots()`,
   `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()`, `lock_tree_command()`,
-  `lock_tree_sample()`, `lock_tree_prune()`, `lock_tree_wide()`, `lock_tree_summary()`,
+  `lock_tree_prune()`, `lock_tree_wide()`, `lock_tree_summary()`,
   `lock_tree_statements()`, `lock_tree_prune_alerts()`, `lock_tree_deadlocks()`,
   `lock_tree_history_size()` and the three formatting helpers.
-what is important enough to page someone, which is not a decision an arbitrary role should make. and become usable once the view
-is readable. If you install into a non-public schema, grant against that schema instead:
+
+  **Not `lock_tree_sample()`.** Since 1.0.1 it is *not* executable by `PUBLIC`, and that is
+  deliberate. It is `SECURITY DEFINER`, so it reads `pg_stat_activity` as its owner and can see
+  every session's query text. While it was also callable by any role, a role holding nothing but
+  `SELECT` on the history could set `lock_tree.history_query = 'full'` for its own session, call the
+  sampler, and read another session's blocked statement back out of the table, password included,
+  even though `pg_stat_activity` showed that same text to it as `<insufficient privilege>`. So the
+  role that schedules the sample needs it granted:
+
+  ```sql
+  GRANT EXECUTE ON FUNCTION lock_tree_sample() TO monitoring;
+  ```
+
+  The grant is not restored for anyone on upgrade, on purpose. Reinstating it silently would put the
+  hole back for exactly the roles that had it.
+
+  `lock_tree.history_query` is read from the caller's session, so the role that samples decides. Set
+  it on that role's connection, or per database with `ALTER DATABASE`, and the value applies to
+  everyone. An unrecognised value redacts.
+
+  If you install into a non-public schema, grant against that schema instead:
 
 ```sql
 GRANT USAGE ON SCHEMA monitoring TO monitoring;
@@ -474,6 +493,38 @@ The extension lives **inside each database**, so:
   ```bash
   sudo make PG_CONFIG=/usr/lib/postgresql/19/bin/pg_config install
   ```
+
+## Backups and restores
+
+**None of the three tables is registered with `pg_dump`, and that is a decision rather than an
+oversight.** It is pinned by a test, so nobody has to take this paragraph's word for it, and
+`scripts/check-upgrade.sh` re-checks it on every upgrade path.
+
+| Table | In a `pg_dump`? | Why not |
+|---|---|---|
+| `lock_tree_history` | No | It grows without bound and holds query text. A restore usually lands on a different server, where its pids and timestamps describe nothing that ever happened there. |
+| `lock_tree_alert` | No | Hysteresis state, keyed to roots that existed on the source server. Restored onto a new one it would suppress the first real alert there. |
+| `lock_tree_deadlock` | No | A counter baseline from the source. On the target `pg_stat_database.deadlocks` starts again from zero, so the first sample would record a `counter_reset` and the history would read as a gap. |
+
+**What this does not protect you from, and the thing worth being clear about.** A physical backup, a
+base backup, a filesystem snapshot and a streaming replica all copy `lock_tree_history` whatever this
+extension decides about `pg_dump`. Dump policy was never the control for credentials reaching a backup.
+What keeps them out is `lock_tree_redact()`, applied by `lock_tree_sample()` on the way in, and that is
+why it defaults to redacting and why 1.0.1 widened it.
+
+**A dump taken before 1.0.1, and every physical backup taken before 1.0.1, still contains whatever the
+history held at the time.** Upgrading scrubs the live table; it cannot reach into a backup already
+written.
+
+**To carry the history across a restore**, take it out explicitly before you dump:
+
+```sql
+COPY (SELECT * FROM lock_tree_history WHERE sampled_at >= now() - interval '7 days')
+  TO PROGRAM 'gzip > /var/backups/lock_tree_history.csv.gz' WITH (FORMAT csv);
+```
+
+and load it back with `COPY ... FROM`. The `sampled_at` bound matters: the whole table on a long-lived
+server is large, and the value of the history is recent.
 
 ## Troubleshooting
 

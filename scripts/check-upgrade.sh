@@ -182,7 +182,10 @@ for v in $STARTS; do
       echo "        Add it to KNOWN_POSITION_DRIFT with a reason, or fix the drift."
       failed+=("$v")
     elif [ -n "$drift" ]; then
-      echo "ok    $v -> $DEFAULT  (position only:$drift)"
+      # $drift is one item per line because drift_of pipes through sort -u. Left as is, the message
+      # ran the list over several lines, which reads as several findings rather than one line of
+      # detail. $(echo $drift) flattens it, and loses nothing: the items contain no whitespace.
+      echo "ok    $v -> $DEFAULT  (position only: $(echo $drift))"
     else
       echo "ok    $v -> $DEFAULT"
     fi
@@ -196,20 +199,31 @@ done
 # The classified drift must actually have been observed, or the list is stale. Without this the
 # classification would rot into a permanent exemption the moment somebody tidied the CREATE TABLE
 # order and nothing would say so.
-if [ -z "$seen_drift" ]; then
-  echo "FAIL  no upgrade path drifted on column position, but KNOWN_POSITION_DRIFT names:"
-  echo "        $KNOWN_POSITION_DRIFT"
-  echo "      Either the CREATE TABLE order was changed to match, in which case delete the entry and"
-  echo "      this becomes a clean run, or the paths are not exercising what they claim to."
-  failed+=("known-position-drift-list")
+#
+# Only when FROM is unset, i.e. on a full run. A partial run can legitimately include no path that
+# predates the drift: FROM="0.12 0.16" exercises only paths from 0.12 onwards, and 0.8 already had
+# root_object where the release file has it, so NOTHING drifts and the entry is never observed. The
+# check then failed a run that was entirely correct, which is how a check earns being ignored.
+if [ -n "${FROM:-}" ]; then
+  [ -n "$seen_drift" ] && echo "note  column position drifted on: $(echo $seen_drift)"
+  echo "note  the KNOWN_POSITION_DRIFT staleness check is skipped for a FROM= run, since the paths"
+  echo "        you chose may include none that predate the drift. Run with FROM unset to check it."
 else
-  for k in $KNOWN_POSITION_DRIFT; do
-    case " $seen_drift " in
-      *" $k "*) ;;
-      *) echo "FAIL  KNOWN_POSITION_DRIFT names $k but no path drifted on it; remove the entry"
-         failed+=("known-position-drift-list") ;;
-    esac
-  done
+  if [ -z "$seen_drift" ]; then
+    echo "FAIL  no upgrade path drifted on column position, but KNOWN_POSITION_DRIFT names:"
+    echo "        $KNOWN_POSITION_DRIFT"
+    echo "      Either the CREATE TABLE order was changed to match, in which case delete the entry and"
+    echo "      this becomes a clean run, or the paths are not exercising what they claim to."
+    failed+=("known-position-drift-list")
+  else
+    for k in $KNOWN_POSITION_DRIFT; do
+      case " $seen_drift " in
+        *" $k "*) ;;
+        *) echo "FAIL  KNOWN_POSITION_DRIFT names $k but no path drifted on it; remove the entry"
+           failed+=("known-position-drift-list") ;;
+      esac
+    done
+  fi
 fi
 
 if [ ${#failed[@]} -gt 0 ]; then echo "upgrade paths that differ: ${failed[*]}"; exit 1; fi

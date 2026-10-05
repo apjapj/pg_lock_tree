@@ -30,9 +30,75 @@ END
 $role$;
 DROP ROLE IF EXISTS lock_tree_monitor;
 \o
+
+SELECT plan(6);
+
+-- ------------------------------------------------- what pg_dump will and will not carry
+--
+-- The decision, pinned so it cannot change silently and so nobody has to take INSTALL.md's word for
+-- it. Extension tables are not dumped unless registered with pg_extension_config_dump, and none of
+-- the three are.
+--
+-- The reason this belongs in the permissions file: it is a statement about what leaves the database,
+-- which is the same question as what a role can read out of it. check-upgrade.sh also carries the
+-- answer on every upgrade path, in its `config-dump none` fingerprint line, so a change to the
+-- registration shows up in the upgrade comparison as well as here.
+\set QUIET 1
+\o /dev/null
+SELECT (SELECT extconfig IS NULL)::int AS none_registered
+  FROM pg_extension WHERE extname = 'pg_lock_tree' \gset
+-- The registration lives in one place only: the extconfig oid[] column of pg_extension. Unnesting
+-- it and resolving each oid is the honest version of the check, and it catches a registration of any
+-- of the three tables rather than only the one named.
+--
+-- Two things got this wrong first, and both are the kind of error a plausible name invites.
+-- pg_extension_config_dump is a FUNCTION that registers a table, not a relation to read, so
+-- "SELECT ... FROM pg_extension_config_dump" fails with 'relation does not exist'. And aliasing the
+-- unnest as `oid` collides with the type name, giving 'column reference "oid" is ambiguous'. A name
+-- that reads like a catalog table is not one.
+SELECT (SELECT count(*)::int
+          FROM pg_extension e,
+               unnest(coalesce(e.extconfig, '{}'::oid[])) AS cfg(oid),
+               pg_class c
+         WHERE e.extname = 'pg_lock_tree'
+           AND c.oid = cfg.oid
+           AND c.relname LIKE 'lock_tree%') AS tables_in_dump \gset
+\o
+\set QUIET 0
+
+SELECT is(:none_registered::int, 1,
+          'no table is registered for pg_dump, so pg_dump leaves the history out. A restore usually '
+          || 'lands on a different server, where the pids and timestamps in a copied history '
+          || 'describe nothing that happened there');
+
+SELECT is(:tables_in_dump::int, 0,
+          'and unresolving pg_extension.extconfig finds none of our tables registered, so this is '
+          || 'not one table forgotten while another was registered');
+
+-- The limit of that decision, asserted because it is the part that matters and the part that is easy
+-- to misread as a guarantee. A physical backup, a base backup, a snapshot and a replica all copy the
+-- table whatever extconfig says. What keeps credentials out of those is lock_tree_redact() on the way
+-- in, not this setting.
+\set QUIET 1
+\o /dev/null
+-- (SELECT count(*) = 0) was written here, which asserts the function is ABSENT, and it failed for
+-- the right reason. The property worth pinning is not that the function exists but that the sample
+-- path calls it, so this reads the definition of lock_tree_sample() and looks for the call.
+SELECT (SELECT count(*)::int
+          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = current_schema()
+           AND p.proname = 'lock_tree_sample'
+           AND pg_get_functiondef(p.oid) LIKE '%lock_tree_redact(%')::int AS sample_redacts \gset
+\o
+\set QUIET 0
+
+SELECT is(:sample_redacts::int, 1,
+          'and lock_tree_sample() calls lock_tree_redact() on the way in, which is the control that '
+          || 'matters: a physical backup, a base backup, a snapshot and a replica all copy the table '
+          || 'whatever pg_dump is told to do, so extconfig was never what kept credentials out of one');
+
 \unset QUIET
 
-SELECT plan(3);
 
 CREATE ROLE lock_tree_monitor;
 GRANT pg_read_all_stats TO lock_tree_monitor;    -- see other users' queries
