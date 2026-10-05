@@ -20,3 +20,4 @@ scenarios/out/
 # unnoticed until the tree was listed with escapes visible.
 *FAIL*
 *not ok*
+report.json

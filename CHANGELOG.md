@@ -6,6 +6,58 @@ selects a release.
 
 ## Unreleased
 
+the CI verdicts could not be read, so the gates were run locally instead
+
+No code change. This is what was found while trying to answer the one open question the API could
+not.
+
+WHAT THE RUNNER SAYS
+
+All four job types do run, and have been running on every push. Read from the runner container's log
+rather than the API: `lint`, `gitleaks (history)`, `detect-secrets (tree at HEAD)` and `pgtap` for 14,
+15, 16, 17, 18 and 19beta4. Tasks for this repository are in the log continuously, the most recent
+matching these pushes, and the whole log contains zero lines at error or warn level.
+
+WHAT IT DOES NOT SAY
+
+The runner log records task lifecycle and network cleanup, and nothing else: no exit code, no
+conclusion, no failed step. So it can tell that every job ran and cannot tell that any of them
+passed. The API would, and every endpoint returns 403 from this host: the repository endpoint, the
+commit status endpoint and the actions endpoint alike, with or without a token, and no Forgejo
+credential is present in the environment or on disk.
+
+So the verdicts are unreadable from here and are not claimed.
+
+WHAT WAS RUN INSTEAD, WITH THE CI COMMANDS AND VERSIONS
+
+  - `./scripts/lint-docs.sh`, which is the whole of the lint job: 418 checks pass
+  - `gitleaks git --no-banner --redact --config .gitleaks.toml`, the gitleaks job verbatim: 42 commits
+    scanned, no leaks found
+  - `detect-secrets scan --all-files --force-use-all-plugins --exclude-files '^\.git/'`, with
+    detect-secrets 1.5.0 as pinned: 0 findings, including the newly committed captures
+  - `pg_prove --dbname postgres test/*.sql` on all six versions: 409 tests pass on each
+
+The detect-secrets run is the one worth having. The new committed files are captured program output,
+which is exactly the shape that a secret scanner exists to look at, and the answer is that the masking
+replaces every pid, wait and timestamp with a named token before anything is written.
+
+FOUR THINGS THIS FOUND, NONE OF THEM ABOUT SECRETS
+
+  - the two secret jobs install their tools inside the job container, and that image has neither
+    apt-get nor python3, so neither gate can be reproduced on this host without a different image. CI
+    does it inside its own container and has always done so
+  - `mapfile`, which the new generated-example check used to split the mask, is a bash 4 builtin and
+    this script runs in a container whose bash version the repository does not control. Replaced with a
+    while loop, which every bash that can run the rest of the file supports
+  - the mask was being read out of capture.sh with a sed line range, which also swallowed the comment
+    lines inside the array. GNU sed ignores an expression beginning with #, so it worked by accident,
+    and 21 "expressions" were read where there are 11. Left alone it would have kept working only for
+    as long as that accident held
+  - the check that the mask actually masks was defeated by renaming a replacement string, because it
+    only asserted that volatile tokens had gone and not what had replaced them. It now asserts the
+    four named tokens are present, and all three sabotages are caught: renaming a replacement, deleting
+    a rule, emptying the array
+
 documentation: captured examples, and a check that had never been shown to fail
 
 Three things, none of which changes the extension. No SQL behaviour change, no control file change,
@@ -42,7 +94,11 @@ nothing to check them against. The marker stops a hand-written example reading a
 The mask covers pids standing alone, after a box-drawing glyph, inside brackets and inside arrays,
 waits in every form including 1m30s, and timestamps, each with a named replacement so a diff shows what
 was hidden. It deliberately does not mask the coverage numbers, because masking the thing under test is
-not a check. Proven sufficient by capturing twice on a live server and diffing: identical.
+not a check. Proven sufficient by capturing twice on a live server and diffing: identical. The two captures that
+are *compared* are stable, and were checked again with a different set of backends. The full transcript
+is not, and is not compared: psql aligns a numeric column to its widest value, so a run whose pids are
+all three digits lays out differently from one where a pid is four, and notices depend on the server's
+history rather than on the code. Stated in capture.sh rather than left to be found.
 
 FOUR BUGS IN THAT CHECK, EACH FOUND BY PLANTING
 
@@ -82,7 +138,7 @@ VERIFIED
 
   - 409 tests pass on PostgreSQL 18, and `make check-schema` end to end
   - 415 documentation checks, up from 203
-  - two captures on a live server byte-identical across runs
+  - the two compared captures byte-identical across runs, re-checked against a fresh server
   - gitleaks clean on the staged tree and the history
   - no em-dashes and no en-dashes in any document, including the captures
 

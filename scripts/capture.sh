@@ -140,8 +140,20 @@ fi
 # ---------------------------------------------------------------- the demo transcript
 #
 # Masked, because every pid and every wait in it moves on every run. It is captured so that a reader
-# who runs "make demo" can see what it prints, and so that lint-docs can assert the demo still prints
-# the sections the documentation refers to.
+# who runs "make demo" can see what it prints.
+#
+# THIS FILE IS NOT COMPARED, and it is not byte-stable, for two reasons that have nothing to do with
+# the masking:
+#
+#   - psql right-aligns a numeric column to its widest value, and the mask changes the width of what
+#     is in it. A run whose pids are all three digits lays out differently from one where a pid is
+#     four, and the trailing spaces move with it.
+#   - notices depend on the server's history rather than on the code. A fresh container prints
+#     "extension dblink already exists, skipping" where a used one does not.
+#
+# The two files that ARE compared, demo-sections.md and scenarios-coverage.md, hold section titles and
+# coverage counts, neither of which is a pid and neither of which psql aligns. Those are stable, and
+# they are the ones the generated-example check depends on.
 if psql -X -q -d "$DATABASE" -f demo.sql > /tmp/lock-tree-demo.raw 2>&1; then
     mask < /tmp/lock-tree-demo.raw > "$EXAMPLES/demo.out"
     say "wrote $EXAMPLES/demo.out ($(grep -c '' "$EXAMPLES/demo.out") lines, masked)"

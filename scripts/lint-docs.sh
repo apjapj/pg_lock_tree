@@ -574,9 +574,47 @@ else
         for e in "$@"; do args+=(-e "$e"); done
         sed -E "${args[@]}"
     }
-    # Split the mask into one expression per line, then per argument. Written as a function so the
-    # same loop serves both the comparison and the "unreferenced capture" report.
-    mapfile -t MASK_EXPRS < <(printf '%s\n' "$MASKS")
+    # The mask, one expression per array element.
+    #
+    # Read with a while loop rather than mapfile. mapfile is the obvious choice and it is a bash 4
+    # builtin, and this script runs in a CI container whose bash version is not something the
+    # repository controls. A while loop works on every bash that can run the rest of the file.
+    MASK_EXPRS=()
+    while IFS= read -r _e; do
+        [ -n "$_e" ] && MASK_EXPRS+=("$_e")
+    done <<< "$MASKS"
+
+    # The mask has to be shown to work, or "the block matches its capture" means nothing: an empty or
+    # broken mask compares the two texts exactly and still agrees whenever the documentation is a
+    # faithful copy, which is the case a reader is most worried about not being checked.
+    #
+    # So it is applied to a line built to be volatile, and every volatile token must be gone. If this
+    # ever fails, the fix is in capture.sh's MASKS and not in the documentation.
+    # Two lines, because each shape is handled by a different expression and a probe that any one
+    # expression can satisfy does not prove the others work. The second line is the case that needs
+    # the pid-at-line-start rule specifically: with that rule removed the probe still passed, because
+    # everything else on the first line was masked by other expressions.
+    probe='pid 157 waited 3.5s then 1m30s at 2026-10-05 17:04:11 (392) in {158,159} behind └─160  0s
+ 900  idle in transaction  0s nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1'
+    masked=$(printf '%s\n' "$probe" | mask_text "${MASK_EXPRS[@]}")
+    if [ "$masked" = "$probe" ]; then
+        bad "the mask changed nothing, so a generated example is compared verbatim and drift in a pid or a wait would be invisible"
+    elif printf '%s' "$masked" | grep -qE '[0-9]{3,}|3\.5s|1m30s|[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+        bad "the mask left a volatile token behind: $masked"
+    else
+        # The replacement text is part of what is being checked, not just the fact of replacement.
+        # Renaming <AGE> to something else still hides the token, so a rule can be broken by renaming
+        # its replacement and this guard cannot tell. That was found by trying exactly that.
+        missing=''
+        for tok in '<PID>' '<PIDS>' '<AGE>' '<TIMESTAMP>'; do
+            case "$masked" in *"$tok"*) ;; *) missing="$missing $tok" ;; esac
+        done
+        if [ -n "$missing" ]; then
+            bad "the mask does not use the named replacement(s):$missing. Got: $masked"
+        else
+            ok "the mask replaces pids, waits, timestamps and pid arrays, with named tokens: $masked"
+        fi
+    fi
 
     gen_ok=0; gen_bad=0; gen_seen=0
     for f in $DOCS_ALL; do

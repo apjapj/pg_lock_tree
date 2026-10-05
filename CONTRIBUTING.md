@@ -126,6 +126,13 @@ numbers in the scenarios table, because masking the thing under test is not a ch
 `make capture` needs a server with the extension installed, so it is not part of `make check`. Run it
 after changing anything that prints, and commit what it writes.
 
+Only the demo's section list and the scenarios coverage table are compared, and the files holding them
+are named in the markers above. The full transcript in the examples directory is a linked artifact for
+a reader and is deliberately not compared: psql right-aligns a
+numeric column to its widest value, so the mask changes the layout, and notices depend on the
+server's history rather than on the code. A generated block pointing at the transcript would fail on
+whitespace alone.
+
 ## Proving a check fails
 
 A check that has never failed is not a check. This repository has three tests of its own tests, each
