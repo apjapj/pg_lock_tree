@@ -186,8 +186,10 @@ and measured, and none of them helped: [the roadmap](roadmap.md#the-whole-window
 has the numbers, including the one that made it twice as slow.
 
 **Only the functions that read the history are ever slow.** Everything that reads the live tree is
-milliseconds whatever the history holds: `lock_tree_statements()` at 17.9 ms, `lock_tree_text()` at
-12.8 ms, `lock_tree_roots()` at 2.4 ms against the same 1.2 million row fixture.
+milliseconds whatever the history holds: against the same 1.2 million row fixture,
+`lock_tree_statements()` and `lock_tree_text()` each come in under 20 ms and `lock_tree_roots()` under
+5 ms. Those are given as bounds rather than exact figures on purpose, because they move a little
+between runs and the point is the order of magnitude, not the decimal.
 `make bench-history` prints the two groups separately so you do not have to know which is which.
 
 **If you stored these numbers anywhere.** `blocked_sessions_peak` and `sessions_total` were one too

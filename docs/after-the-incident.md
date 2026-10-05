@@ -4,11 +4,14 @@
 history into incidents, ranking by time rather than by count, and the deadlock report.
 
 ```
--- replay one incident, given its id, as if it were happening now
-SELECT * FROM lock_tree_replay(42);
-
 -- every incident in a window, worst first
 SELECT * FROM lock_tree_incidents(since => interval '7 days');
+
+-- replay one incident as if it were happening now. lock_tree_replay() takes a TIMESTAMP, not an
+-- incident id, so take the incident's own start and replay from there.
+SELECT * FROM lock_tree_replay(
+  (SELECT started_at FROM lock_tree_incidents(since => interval '7 days') LIMIT 1)
+);
 
 -- where the blocking time went, per statement and per application
 SELECT * FROM lock_tree_duration(interval '1 hour');

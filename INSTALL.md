@@ -474,6 +474,12 @@ SELECT * FROM lock_tree_replay_text(now() - interval '2 hours');
 one of them became a filter over the entire index. On a seven day history of 1.2 million rows, a
 one millisecond window went from 980 ms to 78 ms and `lock_tree_replay()` from 987 ms to 0.3 ms.
 
+Those figures are from the release that fixed it, and they are kept as they were recorded. A fixture
+loaded by a single bulk insert has no visibility map, so every index-only scan in it was fetching
+every page; once the fixture is vacuumed the same one millisecond window measures 0.4 ms rather than
+78 ms. If you are comparing your own numbers against this line, vacuum the table first and see
+[what the benchmark script prints](scripts/bench-history.sh).
+
 It also **fixes two columns**: `blocked_sessions_peak` and `sessions_total` in both duration
 functions were one too high per sample, because the root-to-waiter join matched each root to itself.
 If you built a query against those figures in 0.13 or 0.14, subtract one per sample.

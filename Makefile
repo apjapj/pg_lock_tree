@@ -34,7 +34,7 @@ prove:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema
+.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -105,3 +105,12 @@ check-upgrade:
 # pgTAP file, and it is not in `make prove`. test/22_schema_install.sql covers the structural half.
 check-schema:
 	./scripts/check-schema.sh
+
+# Do the SQL examples in the documentation still work? Needs a server with the extension installed,
+# which is why it is not in `make check`; run it beside `make prove`.
+#
+# It exists because `SELECT * FROM lock_tree_replay(42)` sat in docs/after-the-incident.md since
+# 0.14 and lock_tree_replay() has only ever taken a timestamptz. Nothing executed the examples, so
+# nothing noticed.
+check-examples:
+	./scripts/check-examples.sh

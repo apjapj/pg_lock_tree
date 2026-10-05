@@ -94,9 +94,11 @@ The benchmark now times the live-tree reads as their own group, labelled as such
 not have to know which function touches the history to know which will be slow. That is the whole fix,
 and the omission is what let the wrong number be quoted.
 
-**The 688 ms difference is a fifth scan, and the fifth scan is required.** The per-application variant
-has an extra CTE, `qids`, that collects the distinct `query_id`s an application was root for, and it
-costs 100 to 160 ms on its own. The obvious cheaper shape is to derive it from `rooted`, which is already
+**The 353 ms difference is a fifth scan, and the fifth scan is required.** The per-application variant
+has an extra CTE, `qids`, that collects the distinct `query_id`s an application was root for. That step
+cost 100 to 160 ms on its own before 1.1.0; `INCLUDE (query_id)` took it to 31.2 ms, so the gap between
+the two functions is now 353 ms rather than the 688 ms this paragraph used to quote, and the fifth
+scan is still the largest single thing left in the difference. The obvious cheaper shape is to derive it from `rooted`, which is already
 filtered to `depth = 0` and grouped by application, and that would remove a scan. It would also be wrong:
 `rooted` is at the grain `(sampled_at, application_name)`, and adding `query_id` to that grain takes it
 from 23,036 rows to 150,485 on the fixture, because one application can be the root of several queries
