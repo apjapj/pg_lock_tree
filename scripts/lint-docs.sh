@@ -25,8 +25,14 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail + 1)); }
 # exactly the release files. Do not loosen this to '-\d+\.\d+\.sql$': that also
 # matches pg_lock_tree--0.1.sql, since the double separator ends in a dash, and
 # then the filter discards every file including the ones we want.
+# The version component is (.[0-9]+)* rather than .[0-9]+, because the pattern used to require
+# exactly two components and therefore matched NOTHING once the version became 1.0.0. The failure
+# was quiet: ls piped into grep with no match yields an empty string, the guard below then exits 2,
+# and the message says "no release script matching pg_lock_tree--X.Y.sql found", which reads as a
+# missing file rather than a linter that has stopped understanding the project's own version
+# numbering. Found by bumping the version and being told a file that exists is not there.
 latest=$(ls pg_lock_tree--*.sql 2>/dev/null \
-         | grep -E '^pg_lock_tree--[0-9]+\.[0-9]+\.sql$' \
+         | grep -E '^pg_lock_tree--[0-9]+(\.[0-9]+)*\.sql$' \
          | sort -V | tail -1)
 if [ -z "$latest" ]; then
     echo "  no release script matching pg_lock_tree--X.Y.sql found" >&2

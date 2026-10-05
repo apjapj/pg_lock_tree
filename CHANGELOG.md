@@ -4,6 +4,128 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.0.0 (2026-10-05)
+
+1.0.0: credentials stop reaching the history, and upgrade paths stop being invisible
+
+Nothing in this release changes a result you would query for. Two of the three things it does are
+about things that were wrong in ways no test could see.
+
+THE REDACTION, WHICH IS THE POINT
+
+lock_tree_history keeps the first 300 characters of every blocked session's query. A blocked
+`ALTER ROLE app PASSWORD 'hunter2'` is a blocked query. Up to 0.16 it sat in that table, in full,
+until it aged out, readable by anyone with SELECT on the history, and copied into every backup of the
+database. It is not a secret that leaked by accident; it is the server doing exactly what it was
+asked, and storing the result.
+
+lock_tree_sample() now runs the text through lock_tree_redact() first. Redaction happens BEFORE the
+300 character truncation, so a password beginning before the cut is still caught rather than being
+left as a prefix of itself.
+
+  lock_tree.history_query    redacted   strip credentials            the default
+                             none       store NULL
+                             full       store the query verbatim
+
+There is no C code in this extension, so the setting is a placeholder GUC with no declared default
+and no SHOW ALL entry until something sets it, which is why lock_tree_sample() coalesces it and why
+an unrecognised value redacts rather than leaking. Set it per session, or per database with
+ALTER DATABASE mydb SET lock_tree.history_query = 'full'.
+
+WHAT IS STRIPPED: the literal after PASSWORD in CREATE/ALTER ROLE, USER or GROUP in all three quoting
+styles; SCRAM-SHA-256 verifiers; md5 hashes. Connection URLs carrying a password are deliberately NOT stripped, because
+that is a real exposure and also a perfectly ordinary thing to have in an ad-hoc query, and guessing
+at your data is not the right default.
+
+Neither occurrence of that example is written out in full here or in the SQL. A documentation example
+of the form it is easy to write, in a file this project scans for credentials, is a false positive on
+every commit, and a suppression added for prose is a suppression that teaches the next reader that
+suppressions are for prose.
+
+THE COST, STATED PLAINLY: two statements differing only in a password now group as ONE row in
+lock_tree_incidents() and lock_tree_history_statements(), where before they were two. That is
+arguably the better answer, since the password is not what distinguishes the incident, but it is a
+behaviour change.
+
+Three of the ten redaction cases were real bugs in the first three versions of the regexes, and all
+three were found by running them rather than by reading them:
+
+  E'a\'b'        matched as E'a\' leaving a bare b' behind. Inside an E-string the escaped quote is
+                 indistinguishable from a terminator to a regular expression. It now matches to the
+                 last quote on the line, which over-redacts `PASSWORD 'p', VALID UNTIL '2026-01-01'`.
+                 A cosmetic loss, and it cannot under-redact.
+  SCRAM          the first pattern ran to the end of the statement and left the bracket dangling; the
+                 second stopped after the salt and left the stored key exposed, which is half the
+                 credential and still verifies a password attempt. Both segments go now.
+  the md5 case   the FIXTURE had 31 hex digits, so the function was right and the test was wrong. A
+                 redaction test that passes for the wrong reason is worse than none, and the only way
+                 to tell was to count.
+
+UPGRADE PATHS, AND scripts/check-upgrade.sh
+
+Every upgrade path to 1.0.0 now ends in exactly the same objects as a fresh install, and that is
+checked rather than asserted. The script was contributed with the review and earned its place
+immediately: it found four differences on the first run, and THREE OF THE FOUR WERE THE FRESH INSTALL
+BEING WRONG, which is the worse direction, since a fresh install is what most people have.
+
+  lock_tree_history.query_id had no COMMENT ON COLUMN in any release file up to 0.16, though the 0.7
+    update script set one. Every fresh install had an uncommented column; every upgraded database had
+    a commented one.
+  COMMENT ON TABLE lock_tree_history was a version behind on every path predating 0.12.
+  lock_tree_summary() had lost three lines of explanatory comment, added in 0.8, on paths that did not
+    go through 0.12.
+  COMMENT ON FUNCTION lock_tree_notify_resolved() said "give both the same arguments" where the
+    release file says "use the same arguments".
+
+None of these is visible from inside one database. Comparing an upgraded install to a fresh one is
+the only thing that sees them, which is the whole argument for the script.
+
+The one difference that CANNOT be fixed is column position, and it is now a named, checked exception
+rather than an unknown failure. ALTER TABLE ADD COLUMN appends, so root_object, added in 0.8, lands at
+the end of lock_tree_alert and lock_tree_history on any database older than 0.8 and displaces what was
+declared after it; in lock_tree_history the two late columns were also added in the opposite order to
+the release file, so query_id and root_object are transposed as well. Rebuilding lock_tree_history to
+reorder it would need twice the disk and hold ACCESS EXCLUSIVE for the length of the copy, which is a
+worse outcome than a column order nobody relies on: the interface is the view, which names its
+columns.
+
+The exception list is checked in BOTH directions. A path drifting on a column not named in it fails,
+and a run where no path drifts on the named ones also fails, because that means the source order
+changed and the list has become a lie.
+
+Two bugs in the script itself are worth recording, because both produced confident nonsense. The
+position join was keyed on the table name alone, which cross-joins every column of a table against
+every other column of it and reported sixteen columns as drifted, among them lock_tree.path, which is
+a view column and cannot drift. And the span extractor for the update script did not know about
+CREATE INDEX, so the span for lock_tree_redact ran past one and swallowed it, and every upgrade path
+died with 'relation lock_tree_history_application_idx already exists'.
+
+WHAT IS NOT IN THIS RELEASE
+
+Four things from the review are not here, and none of them is because they were judged unimportant.
+
+A pgTAP file pinning the redaction. The function itself is verified: ten cases by hand, run against
+the real server, three of which found real bugs. The test file reached the point where seventeen
+assertions passed and one statement still failed, and it was deleted rather than shipped in that
+state. What it cost is worth recording, because every failure was the same trap seen four ways: a
+psql \gset substitutes a value UNQUOTED, so a boolean arrives as a bare t, a "char" column arrives as a
+bare i, and a function definition arrives as the bare words CREATE OR REPLACE FUNCTION, and SQL reads
+each as a column name. The rule that survives all of them is that nothing but a number goes through
+\gset. The file should be written that way from the first line.
+
+The pg_dump decision. Extension tables are not dumped unless registered with
+pg_extension_config_dump, and no decision has been made or tested here.
+
+The README split into a short README plus docs/, and the nine factual corrections the review lists,
+three of which were reproduced on PostgreSQL 16. The README is unchanged in this release and still
+contains them.
+
+A non-public schema install test, and the stability statement for the ~25 functions that 1.0 is
+supposed to promise. Both are 1.0 business and neither is done.
+
+361 tests green on PG 14 to 19beta4, unchanged in count. All 16 upgrade paths to 1.0.0 match a fresh
+install, with the one unfixable difference classified and checked in both directions.
+
 ## 0.16 (2026-10-05)
 
 0.16: an index by measurement, query_id on the live view, and the grants a monitoring role needs

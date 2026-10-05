@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--0.10.sql pg_lock_tree--0.11.sql pg_lock_tree--0.11--0.12.sql pg_lock_tree--0.12.sql pg_lock_tree--0.12--0.13.sql pg_lock_tree--0.13.sql pg_lock_tree--0.13--0.14.sql pg_lock_tree--0.14.sql pg_lock_tree--0.14--0.15.sql pg_lock_tree--0.15.sql pg_lock_tree--0.15--0.16.sql pg_lock_tree--0.16.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--0.10.sql pg_lock_tree--0.11.sql pg_lock_tree--0.11--0.12.sql pg_lock_tree--0.12.sql pg_lock_tree--0.12--0.13.sql pg_lock_tree--0.13.sql pg_lock_tree--0.13--0.14.sql pg_lock_tree--0.14.sql pg_lock_tree--0.14--0.15.sql pg_lock_tree--0.15.sql pg_lock_tree--0.15--0.16.sql pg_lock_tree--0.16.sql pg_lock_tree--0.16--1.0.0.sql pg_lock_tree--1.0.0.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
@@ -80,3 +80,10 @@ check-deadlock:
 # passes --force itself rather than relying on you having read this comment. Needs a server.
 bench-history:
 	./scripts/bench-history.sh --force $(if $(DAYS),--days=$(DAYS),) $(if $(EVERY),--every=$(EVERY),) $(if $(SESSIONS),--sessions=$(SESSIONS),) $(if $(KEEP),--keep,)
+
+# Proves that every upgrade path ends in exactly the same objects as a fresh install. Creates and
+# drops databases, so it needs a server you are willing to have it create databases on. It is not in
+# `make prove` because it is a release check, not a unit test: the tests run against whatever is already
+# installed and would pass on an update path that had never been executed.
+check-upgrade:
+	./scripts/check-upgrade.sh
