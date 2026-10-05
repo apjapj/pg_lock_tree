@@ -67,13 +67,23 @@ SELECT dblink_exec('a', 'SET application_name = ''nightly_batch''');
 SELECT dblink_exec('a', 'UPDATE demo_ledger SET amount = amount WHERE id = 1');
 
 -- B: DDL, which queues behind A.
-SELECT dblink_send_query('b', 'BEGIN; SET application_name=''schema_change''; ALTER TABLE demo_ledger ADD COLUMN IF NOT EXISTS note text; COMMIT');
+--
+-- The application_name goes in its own dblink_exec, before the query that is going to block. Sent
+-- as one string the recorded query is the whole string, and lock_tree_text truncates it, so the
+-- tree showed the SET rather than the DDL this session exists to illustrate. Three calls per
+-- session instead of one, and the demo prints the statements it means to print.
+SELECT dblink_exec('b', 'BEGIN');
+SELECT dblink_exec('b', 'SET application_name = ''schema_change''');
+SELECT dblink_send_query('b', 'ALTER TABLE demo_ledger ADD COLUMN note text');
 
 -- C, D, E: plain reads, which queue behind B rather than straight at A.
 SELECT pg_sleep(0.4);
-SELECT dblink_send_query('c', 'SET application_name=''report-c''; SELECT sum(amount) FROM demo_ledger');
-SELECT dblink_send_query('d', 'SET application_name=''report-d''; SELECT * FROM demo_ledger ORDER BY id LIMIT 10');
-SELECT dblink_send_query('e', 'SET application_name=''report-e''; SELECT count(*) FROM demo_ledger');
+SELECT dblink_exec('c', 'SET application_name = ''report-c''');
+SELECT dblink_send_query('c', 'SELECT sum(amount) FROM demo_ledger WHERE id = 1');
+SELECT dblink_exec('d', 'SET application_name = ''report-d''');
+SELECT dblink_send_query('d', 'SELECT * FROM demo_ledger ORDER BY id LIMIT 10');
+SELECT dblink_exec('e', 'SET application_name = ''report-e''');
+SELECT dblink_send_query('e', 'SELECT count(*) FROM demo_ledger');
 
 DO $w$
 BEGIN
@@ -345,18 +355,26 @@ SELECT lock_tree_sample() AS rows_written_on_a_quiet_database;
 -- Terminate rather than cancel: a cancelled session stays connected holding an aborted
 -- transaction, which would still show up in the next run's tree.
 CREATE TEMP TABLE demo_kill (pid int);
-DO $collect$
-DECLARE n text; p int;
-BEGIN
-  FOREACH n IN ARRAY ARRAY['a','b','c','d','e','f','g'] LOOP
-    BEGIN
-      SELECT q INTO p FROM dblink(n, 'SELECT pg_backend_pid()') AS t(q int);
-      IF p IS NOT NULL THEN INSERT INTO demo_kill VALUES (p); END IF;
-    EXCEPTION WHEN OTHERS THEN NULL;   -- already gone
-    END;
-  END LOOP;
-END
-$collect$;
+
+-- Collect the backend pids from pg_stat_activity, NOT over dblink.
+--
+-- Asking dblink for a connection's pid requires that connection to have no query in flight, and four
+-- of them do: the waiters are blocked on the culprit's lock, which is not released until the next
+-- step terminates it. So the collect step waits for a lock only the following step can release, and
+-- the demo hangs there. It hung in exactly that place once a waiter's application_name moved out of
+-- the same statement as its query.
+--
+-- pg_stat_activity needs no cooperation from the session it is asking about, and it finds the
+-- deadlock sessions too, which the dblink loop only found because their names happened to be in its
+-- hard-coded list.
+--
+-- Terminate rather than cancel: a cancelled session stays connected holding an aborted transaction,
+-- which would still show up in the next run's tree.
+INSERT INTO demo_kill
+SELECT pid FROM pg_stat_activity
+ WHERE pid <> pg_backend_pid()
+   AND (query LIKE '%demo_ledger%' OR query LIKE '%demo_x%' OR query LIKE '%demo_y%'
+        OR query LIKE 'LOCK TABLE demo_%' OR query LIKE '%demo_pids%');
 
 DO $kill$
 DECLARE p int;

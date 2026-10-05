@@ -75,50 +75,55 @@ SELECT * FROM lock_tree_text();
 
 ## What it looks like
 
-<!-- illustrative: written by hand, not captured. See the note under it. -->
+Captured from a run of `make demo`, with pids and waits replaced by `<PID>` and `<AGE>`:
+
+<!-- generated: docs/examples/demo-tree.md#tree -->
 
 ```
-postgres=# SELECT * FROM lock_tree_text();
- 166  idle in transaction  0s  nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1
- └─167  0s  for AccessExclusiveLock on ledger  relation  ALTER TABLE ledger ADD COLUMN note text
-   └─168  0s  for AccessShareLock on ledger  relation  SELECT sum(amount) FROM ledger WHERE id = 42
-   └─169  0s  for AccessShareLock on ledger  relation  SELECT * FROM ledger ORDER BY id LIMIT 10
+<PID>  idle in transaction  <AGE>  nightly_batch  UPDATE demo_ledger SET amount = amount WHERE id = 1
+└─<PID>  <AGE>  for AccessExclusiveLock on demo_ledger  relation  ALTER TABLE demo_ledger ADD COLUMN note text
+  └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT sum(amount) FROM demo_ledger WHERE id = 1
+  └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT * FROM demo_ledger ORDER BY id LIMIT 10
+  └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT count(*) FROM demo_ledger
 ```
 
-One root, `166`, a nightly job that has been `idle in transaction` since its UPDATE, with three
-sessions behind it: an `ALTER TABLE` and two reads. Nothing here is a guess, and nothing here needs
+<!-- /generated -->
+
+One root, a nightly job that has been `idle in transaction` since its UPDATE, with four sessions behind
+it: an `ALTER TABLE`, then three reads that queue behind the `ALTER TABLE` rather than straight at the
+batch. The reads carry different `application_name` values so the per-application figures further down
+have something to separate. Nothing here is a guess, and nothing here needs
 `log_min_duration_statement` turned on.
 
-**Those two transcripts are written by hand, not captured.** They are shortened: the pids are round
-numbers, the waits are all `0s`, and the statements are trimmed to the part that matters. `make demo`
-prints the same shape on a table it creates called `demo_ledger`, with one more reader behind the
-`ALTER TABLE` so the per-application figures have something to separate. Run it and compare: the format
-is the same, the numbers are not, and that is expected. The captured order of what the demo prints is
-in [Seeing it work](#seeing-it-work), and that one is checked.
+The pids and waits are the only things replaced: psql aligns its columns to the widest value in the
+run, so the spacing is normalised to two spaces per column and the indentation, which is the depth, is
+left alone. `make demo` builds this on a table it creates called `demo_ledger`, and drops it afterwards.
 
 ### Reading it, then running it
 
-Nothing in the tree is a suggestion to act. Get from "I can see it" to "I have decided".
+Nothing in the tree is a suggestion to act. Get from "I can see it" to "I have decided". Two functions,
+captured from the same run as the tree above, and they are kept apart on purpose:
 
-<!-- illustrative: written by hand, not captured. -->
+<!-- generated: docs/examples/demo-decision.md#actions -->
 
 ```
-postgres=# SELECT root_pid, application_name, blocked_sessions FROM lock_tree_roots();
- root_pid | application_name | blocked_sessions
-----------+------------------+------------------
-      166 | nightly_batch    |                3
-
-postgres=# SELECT * FROM lock_tree_actions();
 -- 1 root blocker(s). Most sessions unblocked first.
--- 1. nightly_batch: idle in transaction, blocks 3 session(s), chain depth 2, longest wait 0s
+-- 1. nightly_batch: idle in transaction, blocks 4 session(s), chain depth 2, longest wait <AGE>
 -- Descriptions, not commands. Every line here is a comment. For statements you can run: SELECT command FROM lock_tree_command().
 -- Terminating a session rolls back its transaction. Re-run the tree afterwards.
-
-postgres=# SELECT command FROM lock_tree_command();
-                 command
----------------------------------------
- SELECT pg_terminate_backend(166);
 ```
+
+<!-- /generated -->
+
+Every line there is a comment, so pasting it does nothing. For something you can run:
+
+<!-- generated: docs/examples/demo-decision.md#command -->
+
+```
+SELECT pg_terminate_backend(<PID>);
+```
+
+<!-- /generated -->
 
 `lock_tree_command()` returns SQL rather than running it, so nothing terminates a session because
 you read a table. When you do run it, the blocker is rolled back rather than committed, and the
@@ -138,7 +143,7 @@ make scenarios        # eight incidents, each queried two ways, output captured
 The demo builds a real chain with dblink, waits for the lock queue to form, prints it four ways, and
 cleans up after itself. This is the order it prints, captured from a run rather than described:
 
-<!-- generated: docs/examples/demo-sections.md#all -->
+<!-- generated: docs/examples/demo-sections.md#sections -->
 
 ```
 # 0. Install

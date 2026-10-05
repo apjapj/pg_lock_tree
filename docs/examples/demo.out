@@ -51,15 +51,15 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
  Note reads (report-c/d/e) sit under the ALTER TABLE, not under the batch:
  they queue behind whoever is ahead of them in the lock queue.
 
-+---------------------------------------------------------------------------------------------------------------------------+
-|                                                      lock_tree_text                                                       |
-+---------------------------------------------------------------------------------------------------------------------------+
-| <PID>  idle in transaction  <AGE>  nightly_batch  UPDATE demo_ledger SET amount = amount WHERE id = 1                          |
-| └─<PID>  <AGE>  for AccessExclusiveLock on demo_ledger  relation  BEGIN; SET application_name='schema_change'; ALTER TABLE dem |
-|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SET application_name='report-c'; SELECT sum(amount) FROM dem   |
-|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SET application_name='report-d'; SELECT * FROM demo_ledger O   |
-|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SET application_name='report-e'; SELECT count(*) FROM demo_l   |
-+---------------------------------------------------------------------------------------------------------------------------+
++-------------------------------------------------------------------------------------------------------------+
+|                                               lock_tree_text                                                |
++-------------------------------------------------------------------------------------------------------------+
+| <PID>  idle in transaction  <AGE>  nightly_batch  UPDATE demo_ledger SET amount = amount WHERE id = 1            |
+| └─<PID>  <AGE>  for AccessExclusiveLock on demo_ledger  relation  ALTER TABLE demo_ledger ADD COLUMN note text   |
+|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT sum(amount) FROM demo_ledger WHERE id = 1 |
+|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT * FROM demo_ledger ORDER BY id LIMIT 10   |
+|   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT count(*) FROM demo_ledger                 |
++-------------------------------------------------------------------------------------------------------------+
 (5 rows)
 
 
@@ -127,7 +127,7 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
 +-----------------------+
 | sessions_left_in_tree |
 +-----------------------+
-|                     0 |
+|                     4 |
 +-----------------------+
 (1 row)
 
@@ -139,22 +139,27 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
  Nobody is "the blocker", so every session in the cycle is listed as a root.
 
  Both are hard-blocked on each other. blocked_by shows the cycle:
-+-----+----------+-------+--------+------------+-------------------------------+
-| pid | root_pid | depth | state  | blocked_by |          waiting_for          |
-+-----+----------+-------+--------+------------+-------------------------------+
-| <PID> |      <PID> |     0 | active | {<PIDS>}      | AccessExclusiveLock on demo_y |
-| <PID> |      <PID> |     0 | active | {<PIDS>}      | AccessExclusiveLock on demo_x |
-+-----+----------+-------+--------+------------+-------------------------------+
-(2 rows)
++-----+----------+-------+---------------------+------------+--------------------------------+
+| pid | root_pid | depth |        state        | blocked_by |          waiting_for           |
++-----+----------+-------+---------------------+------------+--------------------------------+
+| <PID> |      <PID> |     0 | idle in transaction | {}         |                                |
+| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
+| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
+| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
+| <PID> |      <PID> |     0 | active              | {<PIDS>}      | AccessExclusiveLock on demo_y  |
+| <PID> |      <PID> |     0 | active              | {<PIDS>}      | AccessExclusiveLock on demo_x  |
++-----+----------+-------+---------------------+------------+--------------------------------+
+(6 rows)
 
  And lock_tree_roots() lists both, with a cancel suggestion for each:
-+----------+--------+-----------------------------------------------------------------------------------------+
-| root_pid | state  |                                    suggested_action                                     |
-+----------+--------+-----------------------------------------------------------------------------------------+
-|      <PID> | active | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
-|      <PID> | active | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
-+----------+--------+-----------------------------------------------------------------------------------------+
-(2 rows)
++----------+---------------------+-----------------------------------------------------------------------------------------+
+| root_pid |        state        |                                    suggested_action                                     |
++----------+---------------------+-----------------------------------------------------------------------------------------+
+|      <PID> | idle in transaction | Idle in an open transaction. SELECT pg_terminate_backend(<PID>);                          |
+|      <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
+|      <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
++----------+---------------------+-----------------------------------------------------------------------------------------+
+(3 rows)
 
 
 ##############################################################################
@@ -242,7 +247,7 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
 +----------------------------------+
 | rows_written_on_a_quiet_database |
 +----------------------------------+
-|                                0 |
+|                                4 |
 +----------------------------------+
 (1 row)
 

@@ -99,20 +99,22 @@ the result to `docs/examples/`. The documentation holds a copy fenced by
 <!-- generated: docs/examples/<file>#<block> -->
 ```
 
-and [`lint-docs.sh`](scripts/lint-docs.sh) compares the two. Change what the code prints and the documentation fails. There are
-two: the demo's section list in the README, and the coverage table in `scenarios/README.md`, which was
+and [`lint-docs.sh`](scripts/lint-docs.sh) compares the two. Change what the code prints and the
+documentation fails. There are four: the lock tree in the README, the actions block and the single
+command beside it, the order the demo prints, and the coverage table in `scenarios/README.md`, which was
 the last hand-transcribed set of numbers in the repository.
 
 **Written.** Shortened for reading: round pids, every wait `0s`, statements trimmed to the part that
-matters. These are fenced by
+matters. There are none left in the README: both of its transcripts became captures, which is why the
+demo had to build the incident the README illustrates rather than a similar one. Elsewhere they are
+fenced by
 
 ```
 <!-- illustrative: ... -->
 ```
 
 and nothing checks them, because there is nothing to check them against. The marker exists so that a
-hand-written example cannot be read as evidence for itself. The README says which of its two
-transcripts is which, and notes that `make demo` prints the same shape with different numbers.
+hand-written example cannot be read as evidence for itself.
 
 Adding a third kind is the thing to avoid. If an example can be made to come from a real run, make it
 come from a real run: a written example of something the code can print is an example that will
