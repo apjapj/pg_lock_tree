@@ -99,7 +99,7 @@ warning is kept, because a reader on an old release needs it.
 
 VERIFIED
 
-  - 409 tests pass on PostgreSQL 18
+  - 409 tests pass on PostgreSQL 14, 15, 16, 17, 18 and 19beta4
   - all 17 upgrade paths converge on a fresh install
   - 203 documentation checks, up from 236. Fewer, because the checks that read the README now read
     the page each object and each test is documented on, and one new check covers every page at once
@@ -107,6 +107,11 @@ VERIFIED
   - gitleaks clean on the staged tree and the history
   - no em-dashes and no en-dashes in any document
   - the version check fires when the README and the control file disagree, in both directions
+
+The first attempt at the 19beta4 run reported every file as having no plan, which reads like a
+failure. It was my runner: the container accepts connections while its init scripts are still
+running, so the suite ran against a database that was not finished. With a settle delay, 19beta4
+passes like the rest.
 
 NOT DONE
 
