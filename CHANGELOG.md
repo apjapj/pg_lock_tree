@@ -6,6 +6,118 @@ selects a release.
 
 ## Unreleased
 
+documentation: the split, by when the reader arrives
+
+The README was 1,270 lines with fifteen sections and served four readers at once. It is now 151 lines
+and an entry point, with the argument on the page its reader arrives at for some other reason.
+
+No version number on this one, because there is nothing here to release: not one line of SQL, the
+control file, the Makefile or the test suite changed. It goes out under whatever release carries it
+next, or on its own.
+
+Three commits, in this order, because the middle one is worth reading on its own:
+
+  - a verbatim move of every section, whole and unedited, into docs/ and CONTRIBUTING.md, so the
+    diff reviews as moves
+  - a link and anchor check, which found four broken links in INSTALL.md and four in this file
+  - the rewrite: page openings, the duplication removed, and the version history moved into here
+
+DOCS ONLY. No SQL, no control file, no Makefile change, no version change to the extension.
+
+WHAT MOVED, AND WHERE A READER LANDS NOW
+
+| Was | Now |
+|---|---|
+| 15 sections in README.md | README.md, plus docs/incident.md, alerting.md, history.md, after-the-incident.md, reference.md, roadmap.md, design-notes.md and CONTRIBUTING.md |
+| Alerting, 315 lines | docs/alerting.md, unchanged apart from an opening and its own `##` structure |
+| When the queue is too wide to read, 206 lines | docs/incident.md, which also took the prepared-transaction material |
+| Objects and the stability statement | docs/reference.md |
+| Development | CONTRIBUTING.md |
+| Roadmap | docs/roadmap.md |
+| Stability, from 1.0.0 | docs/reference.md |
+| Everything said about sampling, pruning and redaction, scattered | docs/history.md |
+
+INSTALL.md did not move. It already served one reader, which is the test the others were measured
+against.
+
+THE LINK CHECK, AND THREE BUGS IN THE CHECK
+
+The split is worth automating a check for: sections moved between files, so a link that used to be
+`README.md#some-heading` now points at a heading in another file, and nothing in a text diff shows
+that the anchor has stopped existing. The changelog had been linking to README anchors for several
+releases before the check existed.
+
+Building it turned up three bugs in the check itself. Each was found by planting a defect and
+watching the check pass, which is the only way to know a negative check is doing anything:
+
+  - the extractor required a `#`, so every anchorless link went unchecked. A link to a file that does
+    not exist passed, provided nobody had added a fragment to it
+  - same-file detection tested path == target, which is true for any link with no fragment, so the
+    missing file was rewritten to the linking file, which does exist
+  - anchors are generated lower-case and the fragment was compared as written, so `#Redaction` missed
+    `#redaction` and reported a heading that is plainly there
+
+All fourteen cases are now checked in both directions, with the positive cases proving the check does
+not simply fail on everything. Two false alarms of my own are worth recording, because I would have
+read them as results: the first two proof runs planted defects into a string that did not exist in the
+file, and "passed" could have meant the check was broken or that nothing had been planted. It was the
+second.
+
+A FOURTH CHECK, FROM A MISTAKE IN THIS WORK
+
+Writing CONTRIBUTING.md, I named `make lint` twice. There is no such target. It is plausible either way
+in review, so lint-docs now checks that every `make` target the docs name exists, anchored to lines
+beginning with `make` so that "make sure" is not read as one.
+
+THE SAME FILE HAD TWO INVENTED TEST ROWS
+
+a row for a scenarios file numbered 19, and a catch-all row for a numbered 20, neither of which
+exists: the real file at 19 is `test/19_index_usage.sql`, and no file numbered 20 has ever existed. The test table check
+caught it, which is the argument for that check, and it caught the second one too.
+
+Written without the `test/` prefix on purpose. The path check reads a backticked path as a claim that
+the file exists, and in this sentence that claim is the opposite of the truth, so a bare path here
+would be a false failure rather than a false pass.
+
+DUPLICATION AND DATED PROSE
+
+A move like this creates both, so both were dealt with rather than left tidy:
+
+  - "What it looks like" was in the README and in docs/incident.md, which is 51 lines of psql
+    transcript in two files on the same reader's path
+  - the `statement_timestamp()` scheduling hazard was in two places. It is a fact about scheduling,
+    so it is on the history page with the rest of scheduling
+  - design-notes.md first restated four arguments that already had a home. It is now an index of
+    every design argument and where it is made, plus the three with no page: the redaction pattern,
+    the column order and the `search_path` pinning
+
+The rule applied to the prose is that version history lives in this file. Four passages dated
+themselves: the 0.15 window bounds, the 0.12 to 0.13 columns, "which took until 0.8 to get right",
+and "0.4 keeps a history". Each now states the current behaviour and points here. Where the change
+was a migration warning, such as `blocked_sessions_peak` having been one too high per sample, the
+warning is kept, because a reader on an old release needs it.
+
+VERIFIED
+
+  - 409 tests pass on PostgreSQL 18
+  - all 17 upgrade paths converge on a fresh install
+  - 203 documentation checks, up from 236. Fewer, because the checks that read the README now read
+    the page each object and each test is documented on, and one new check covers every page at once
+    where two used to cover the README alone
+  - gitleaks clean on the staged tree and the history
+  - no em-dashes and no en-dashes in any document
+  - the version check fires when the README and the control file disagree, in both directions
+
+NOT DONE
+
+The non-public schema test's vacuity is still not proved. `test/22_schema_install.sql` asserts that
+`lock_tree_sample()` cannot be reached unqualified from outside a private schema, and the planted
+defect never reached the catalog, so the assertion has still never run against a defective function.
+Its header says so.
+
+The examples are still hand-maintained, which is item (e) and (f) of the corrections below and still
+the reason the corrected figures can drift.
+
 0.16: the README's factual errors, corrected, and two of them made unfixable by omission
 
 The nine errors the review of 0.14 listed in the README, seven of them corrected here. Two were in
