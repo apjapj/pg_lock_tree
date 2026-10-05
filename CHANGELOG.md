@@ -242,14 +242,14 @@ and querying it fails with "relation does not exist".
 
 Both are new in this release, because 1.0.0 shipped a promise it never made explicit.
 
-**Stability** ([README](README.md#stability-from-100)) names the functions whose names, arguments and
+**Stability** ([docs/reference.md](docs/reference.md#stability-from-100)) names the functions whose names, arguments and
 output column names and order are fixed, and lists what is not: the three formatting helpers, **table
 column order**, what `lock_tree_redact()` removes, and `lock_tree_alert`'s columns. Two of those follow
 from evidence rather than taste. Column order is not stable because `scripts/check-upgrade.sh` proved it
 cannot be, and the statement says so rather than leaving a reader to assume otherwise. Redaction output
 is not stable because a patch release widening it is a fix, not a break, and 1.0.1 is the example.
 
-**Roadmap** ([README](README.md#roadmap)) rewritten. The previous one was written at 0.12 and led with
+**Roadmap** ([docs/roadmap.md](docs/roadmap.md)) rewritten. The previous one was written at 0.12 and led with
 work that shipped in 0.12, and had two items that had gone stale in opposite directions: a
 partitioning note whose replacement shipped in 0.11, and a cross-database item written as though it
 were next. The new one leads with the two things that are actually next, separates what is not planned

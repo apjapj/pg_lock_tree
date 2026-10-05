@@ -252,9 +252,11 @@ done
 # ---------------------------------------------------------------- the test suite
 
 step "the test files the README describes all exist"
-if [ -f README.md ]; then
-    for t in $(grep -oE 'test/[0-9][0-9_a-z]*\.sql' README.md | sort -u); do
-        [ -f "$t" ] && ok "$t" || bad "README describes $t, which does not exist"
+# The test table lives in CONTRIBUTING.md, where the make targets it sits next to are.
+TESTDOC=CONTRIBUTING.md
+if [ -f "$TESTDOC" ]; then
+    for t in $(grep -oE 'test/[0-9][0-9_a-z]*\.sql' "$TESTDOC" | sort -u); do
+        [ -f "$t" ] && ok "$t" || bad "$TESTDOC describes $t, which does not exist"
     done
 fi
 
@@ -267,28 +269,29 @@ fi
   unlisted=0
   for t in test/*.sql; do
       [ -f "$t" ] || continue
-      if ! grep -q "$(basename "$t")" README.md; then
-          bad "$t exists but the README test table does not describe it"
+      if ! grep -q "$(basename "$t")" "$TESTDOC"; then
+          bad "$t exists but the test table in $TESTDOC does not describe it"
           unlisted=$((unlisted + 1))
       fi
   done
-  [ "$unlisted" -eq 0 ] && ok "every test file on disk is in the README test table"
+  [ "$unlisted" -eq 0 ] && ok "every test file on disk is in the $TESTDOC test table"
 
   # The same drift one level up: a function in the release that the Objects table does not mention. A
   # function added and not documented is invisible in review, and the review of 0.14 asked for this.
   rel=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -E '^pg_lock_tree--[0-9]+(\.[0-9]+)*\.sql$' | sort -V | tail -1)
-  if [ -n "$rel" ] && [ -f README.md ]; then
+  REFDOC=docs/reference.md
+  if [ -n "$rel" ] && [ -f "$REFDOC" ]; then
       undocumented=0
       for f in $(grep -oE '^CREATE (OR REPLACE )?FUNCTION @extschema@\.lock_tree_[a-z_]+' "$rel" \
                    | sed 's/.*\.//' | sort -u); do
-          if ! grep -qE "(^|[^a-z_])${f}([^a-z_]|$)" README.md; then
-              bad "$f() is in $rel but not the README Objects table"
+          if ! grep -qE "(^|[^a-z_])${f}([^a-z_]|$)" "$REFDOC"; then
+              bad "$f() is in $rel but not the Objects table in $REFDOC"
               undocumented=$((undocumented + 1))
           fi
       done
       [ "$undocumented" -eq 0 ] \
-        && ok "every function in $rel appears in the README Objects table" \
-        || bad "$undocumented function(s) in $rel are not in the README Objects table"
+        && ok "every function in $rel appears in the Objects table in $REFDOC" \
+        || bad "$undocumented function(s) in $rel are not in the Objects table in $REFDOC"
   fi
 
 # plan(N) must match the number of assertions on the path that actually runs, or
@@ -369,6 +372,97 @@ for t in test/*.sql; do
         fi
     fi
 done
+
+# ---------------------------------------------------------------- links and anchors
+#
+# Every relative link and every #anchor, across the docs and the changelog, has to resolve. The split
+# is what makes this worth having: sections moved between files, so a link that used to be
+# `README.md#some-heading` now points at a heading that lives in docs/incident.md, and nothing in a
+# plain text diff shows that an anchor no longer exists. The CHANGELOG had been linking to README
+# anchors for several releases before this check existed.
+step "every link and anchor in the docs resolves"
+
+# GitHub's anchor rule: lowercase, drop anything that is not a letter, digit, space or hyphen, then
+# spaces become hyphens. Implemented with sed rather than assumed, because an approximation of the
+# rule produces failures on headings that are perfectly fine.
+anchor_of() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9 -]//g' -e 's/ /-/g'
+}
+
+# Every heading in a file, as anchors. A setext underline (=== or ---) under a line of text is a
+# heading too, and the README uses one for the title.
+anchors_in() {
+  [ -f "$1" ] || return 0
+  awk '
+    /^#{1,6} /   { sub(/^#+ /, ""); print tolower($0) }
+    /^[^=-]+$/   { if (getline nxt) { if (nxt ~ /^=+$/) { print tolower($0) } ; next } }
+  ' "$1" 2>/dev/null | sed -e 's/[^a-z0-9 -]//g' -e 's/ /-/g' | sort -u
+}
+
+# Build the anchor set for every doc, as file=anchor lines, then check each link against it.
+all_anchors=$(mktemp)
+trap 'rm -f "$all_anchors"' RETURN 2>/dev/null || true
+for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md; do
+  [ -f "$f" ] || continue
+  canon="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+  anchors_in "$f" | while read -r a; do printf '%s\t%s\n' "$canon" "$a"; done >> "$all_anchors"
+done
+
+broken=0
+for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md; do
+  [ -f "$f" ] || continue
+  dir=$(dirname "$f")
+  # Markdown links: [text](target). The fragment is optional. Requiring a '#' here, which is what
+  # this did first, silently skipped every anchorless link, so a link to a file that does not exist
+  # passed as long as nobody had added a fragment to it. Found by planting exactly that.
+  for target in $(grep -oE '\]\([^)]*\)' "$f" | sed -e 's/^](//' -e 's/)$//' \
+                  | grep -vE '^(https?:|mailto:)' | grep -v '^$' \
+                  | sed 's:/*$::' | sort -u); do
+      # Split on the '#' only if there is one. ${target#*#} on a target with no '#' returns the
+      # target unchanged, which made an anchorless link look like a fragment of the whole path and
+      # reported every relative link in the repo as an unresolvable anchor.
+      path=${target%%#*}
+      case "$target" in
+        *#*) frag=${target#*#} ;;
+        *)   frag="" ;;
+      esac
+      # Only a target that STARTS with '#' is a same-file anchor. Testing $path = $target instead,
+      # as this did, is true for every link with no fragment, so [x](does-not-exist.md) had its path
+      # rewritten to the linking file, which exists, and passed. Found by planting that link.
+      case "$target" in
+        \#*) path="$f" ;;
+      esac
+      # A same-file anchor has an empty $path, so $resolved has to start from the linking file.
+      resolved=$path
+      [ -n "$path" ] || resolved="$f"
+      [ -e "$resolved" ] || resolved="$dir/$path"
+      # Normalise, or the anchor lookup compares a path with a .. in it against an anchor set keyed
+      # on the canonical name and reports a heading that is plainly there. docs/../INSTALL.md is
+      # INSTALL.md, and the check said it had no #backups-and-restores heading, which it has.
+      # dirname first: realpath on a bare file name resolves against the CWD, not the doc.
+      if [ -e "$resolved" ]; then
+          resolved=$(cd "$(dirname "$resolved")" && pwd)/$(basename "$resolved")
+      fi
+      # -e, not -f: a link to a directory is legitimate. [scenarios/](scenarios/) is one, and the
+      # trailing slash was stripped when the targets were collected so that this lookup finds it.
+      if [ ! -e "$resolved" ]; then
+          bad "$f links to $target, and $path does not exist"
+          broken=$((broken + 1))
+          continue
+      fi
+      # Lower-case the fragment before looking it up. Every anchor in the set is lower-case because
+      # that is how they are generated, so comparing the fragment as written made #Redaction miss
+      # #redaction and report a heading that is plainly there.
+      frag=$(printf '%s' "$frag" | tr '[:upper:]' '[:lower:]')
+      if [ -n "$frag" ] && ! grep -qF "$(printf '%s\t%s' "$resolved" "$frag")" "$all_anchors"; then
+          bad "$f links to $target, and $resolved has no heading anchoring #$frag"
+          broken=$((broken + 1))
+      fi
+  done
+done
+[ "$broken" -eq 0 ] && ok "every relative link and anchor in the docs resolves"
 
 step "house style"
 # Neither character can appear literally in this file, or the check below would always

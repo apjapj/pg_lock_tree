@@ -360,7 +360,7 @@ Also make sure `make` picked up the *same* PostgreSQL version you are connected 
 **What 0.10 changes:** adds `lock_tree_deadlock` (a table) and `lock_tree_deadlocks()`, so the
 `pg_stat_database.deadlocks` counter is sampled and you can see **when** deadlocks happened. It does
 not name the two statements involved: nothing in SQL does, and they are in the server log. See
-[Deadlocks](README.md#deadlocks).
+[Deadlocks](docs/after-the-incident.md#deadlocks).
 
 **What 0.11 changes:** adds `lock_tree_history_size()` and `lock_tree_prune_batched()`, which is a
 **procedure** rather than a function because only a procedure can `COMMIT`, and a batched prune that
@@ -373,7 +373,7 @@ CALL lock_tree_prune_batched(interval '7 days', 20000);
 ```
 
 Put the `CALL` on its own line. Inside `BEGIN`/`COMMIT` it is refused, and it checks for that
-**before deleting anything**. See [Why the history is not partitioned](README.md#why-the-history-is-not-partitioned).
+**before deleting anything**. See [Why the history is not partitioned](docs/roadmap.md#considered-and-not-planned).
 
 **What 0.12 changes:** adds `lock_tree_duration()`, which reports per-query blocking **time** rather
 than the session-sample count that `lock_tree_history_statements()` reports, and
@@ -382,7 +382,7 @@ incident ends. Both are new. `lock_tree_history_statements()` and `lock_tree_not
 
 `lock_tree_duration()` needs a sampled history to have any figure to work from, so schedule
 `lock_tree_sample()` before you expect it to say anything. See
-[Which query is costing the most time](README.md#which-query-is-costing-the-most-time), including the
+[Which query is costing the most time](docs/incident.md#which-query-is-costing-the-most-time), including the
 sampling hazard described there: samples must be separate statements, or every one of them shares a
 single `sampled_at` and no duration can be recovered from them.
 
@@ -399,7 +399,7 @@ SELECT lock_tree_notify_resolved('lock_tree', 10, 3, '30 seconds');
 the two disagree wherever an application hands the queue from one statement to another, which is
 what a batch job running a fixed script does constantly. Measured on one such incident, the per-query
 figures summed to 4.0 seconds where the application had in fact held the queue for 15.4. See
-[Which application is costing the most](README.md#which-application-is-costing-the-most).
+[Which application is costing the most](docs/incident.md#which-application-is-costing-the-most).
 
 **Grants survive this update.** The three corrected columns are changed with `CREATE OR REPLACE
 FUNCTION`, not `DROP` and `CREATE`, so the function keeps its identity and any `GRANT EXECUTE ON
