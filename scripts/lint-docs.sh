@@ -411,6 +411,7 @@ for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md d
 done
 
 broken=0
+unphony=0
 for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md; do
   [ -f "$f" ] || continue
   dir=$(dirname "$f")
@@ -487,6 +488,46 @@ for t in $targets; do
   fi
 done
 [ "$missing" -eq 0 ] && ok "every make target named in the docs exists in the Makefile"
+
+# ---------------------------------------------------------------- no target is silently a no-op
+#
+# Every target in this Makefile is procedural: none produces a file of its own name. `make scenarios`
+# nonetheless did nothing at all until every target was declared .PHONY, because make saw the
+# scenarios/ directory and decided the target was already up to date. It printed nothing, failed
+# nothing, and the documentation said it captured output.
+#
+# So: every target must be phony. A target that is not phony and whose name is a path in the tree is
+# the exact shape of that bug, and the collision is reported by name rather than only failing later.
+step "every make target is phony, so none can be silently up to date"
+all_targets=$(grep -oE '^[a-z][a-z0-9-]*:' Makefile | tr -d ':' | sort -u)
+phony=$(sed -n 's/^\.PHONY:[[:space:]]*//p' Makefile | tr ' ' '\n' | grep -v '^$' | sort -u)
+for t in $all_targets; do
+    if printf '%s\n' "$phony" | grep -qx "$t"; then
+        ok "make $t is declared .PHONY"
+    else
+        bad "make $t is not declared .PHONY"
+        if [ -e "$t" ]; then
+            bad "  and $t exists in the tree, so make would report it up to date and do nothing"
+        fi
+        unphony=$((unphony + 1))
+    fi
+done
+[ "$unphony" -eq 0 ] && ok "every make target is phony"
+
+# A target whose name is also a path in the tree is the shape of that bug, so it is called out by
+# name. It is not a failure on its own: with .PHONY declared, make runs the recipe regardless, which
+# is why `make scenarios` works at all now that scenarios/ exists. It is a failure if the target is
+# not phony, which is the check above.
+collide=0
+for t in $all_targets; do
+    if [ -e "$t" ]; then
+        collide=$((collide + 1))
+        if printf '%s\n' "$phony" | grep -qx "$t"; then
+            ok "make $t shares its name with the $t path in the tree, and is phony, so it runs"
+        fi
+    fi
+done
+[ "$collide" -eq 0 ] && ok "no make target shares its name with a path in the tree"
 
 step "house style"
 # Neither character can appear literally in this file, or the check below would always
