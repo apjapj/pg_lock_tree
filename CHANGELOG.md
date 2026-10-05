@@ -4,6 +4,137 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 0.13 (2026-10-05)
+
+0.13: the aggregation a page actually needs
+
+Three columns 0.12 could not get right, and the aggregation that answers the question a page asks.
+
+### The bug: a root's identity and the waits it caused are on different rows
+
+0.12's lock_tree_duration() reported three columns that could not be right. query_id is on the root
+row. wait_age is on the waiter's. The 0.12 aggregates grouped by query_id and read wait_age off
+those same rows, so:
+
+| | 0.12 returned | why |
+|---|---|---|
+| longest_wait | always NULL | the rows carrying a query_id carry no wait on them |
+| blocked_sessions_peak | always 1 | it counted ROOT rows per query per sample, and there is exactly one root row per query per sample |
+| sessions_total | a second copy of samples | that same 1, summed over the instants |
+
+Measured on a root blocking three sessions across three samples: 0.12 reported
+blocked_sessions_peak = 1, sessions_total = 3, longest_wait = NULL.
+
+One join fixes all three, the root rows of a sample matched to the waiter rows of the SAME sample on
+root_pid and root_object. The object is part of the match for the same reason it is half of
+lock_tree_alert's primary key: pid 0 is every prepared transaction at once, so matching on pid alone
+would credit one prepared root's waiters to another.
+
+Three columns, three column names, three documented meanings, all unchanged. They now return what
+the documentation has always said they return.
+
+### lock_tree_duration_by_application(since interval DEFAULT '7 days')
+
+NOT lock_tree_duration() summed by application, and the difference is the whole point.
+
+A batch job holding the queue for ten minutes will hand the queue from one statement to another
+while it does it, because that is what a fixed script does. Say its statement 1 is the root at t0 and
+its statement 2 is the root at t1:
+
+    per query         both gaps DISCARDED: neither statement was the root at both ends
+    per application   the gap COUNTS: the application was holding the queue at both ends
+
+So summing the per-query figures reports the time an application spent blocking MINUS every
+handover. Measured on a six-sample incident with one handover: the per-query sum was 4.028 seconds
+where the application had actually held the queue for 15.368. A service that blocked forty sessions
+for a quarter of an hour can be reported as having cost two seconds, and nobody notices, because the
+number is small and plausible.
+
+That is why the gap arithmetic is done again on (sampled_at, application_name) rather than
+aggregating the per-query output. Everything else is identical, including the same conservatism: a
+gap where the APPLICATION was not at the far end is discarded, and the interval after the last sample
+is never counted.
+
+An empty application_name is reported as its own row rather than filtered. A blocker that never
+called SET application_name is one of the findings you are looking for, and dropping the row would
+hide exactly the thing worth noticing.
+
+### The two figures are not always ordered the same way
+
+query_id identifies a STATEMENT, not who ran it, so two services running identical text share one
+query_id. That inverts the comparison, and the README explains both directions:
+
+  a handover between DIFFERENT statements inside one application: per-application is LARGER, because
+    the per-query rule discarded the handover gap
+
+  the SAME statement handed between two applications: per-query is LARGER, because the statement is
+    identical on both sides so every gap has it at both ends, while the per-application rule discards
+    that gap as attributable to neither service
+
+Neither is wrong. test/17 pins both directions, because a test that only pinned the first would
+have let the second look like a bug.
+
+### WHY CREATE OR REPLACE AND NOT DROP
+
+The signature and every column type are unchanged, so CREATE OR REPLACE FUNCTION is permitted: the
+restriction is on changing a return type, not on changing a body. It also keeps the OID, which keeps
+GRANT EXECUTE ON FUNCTION lock_tree_duration(interval). Verified: a role granted EXECUTE before
+ALTER EXTENSION ... UPDATE still has it after. DROP and CREATE would have silently revoked an
+operator's grant on a function that did not change shape, which is a worse failure than the bug being
+fixed.
+
+Nothing is dropped, no view is re-created and no rewrite lock is taken.
+
+### check-alert.sh --explain now explains a cleared payload
+
+0.12 added the resolution notice but left --explain reading it as an onset, which printed "Run these,
+in this order" and pg_terminate_backend on a pid that had already gone. It now dispatches on the
+event key and explains the two differently on purpose: an alerting payload is a question and the
+output is what to run; a cleared payload is a statement about the past and the useful output is what
+the incident WAS, plus five queries for looking it up.
+
+The alerting branch is unchanged apart from one added line reporting the event, so a payload with no
+event key at all (everything sent before 0.12) still explains as an onset, which is the only place
+in the script where an absent key is read as a present one.
+
+Two bugs in the generated SQL, found by executing it rather than reading it:
+
+  json.dumps emits DOUBLE quotes, which PostgreSQL reads as an identifier, so every query it
+    produced was a syntax error waiting to be pasted. Replaced with a sql_str helper that emits
+    single quotes and doubles any inside. Verified by running all five generated statements.
+
+  FROM lock_tree_incidents(), unnest(applications) AS u names the TABLE u, not a column u, so
+    GROUP BY u failed. The column alias AS u(application) is what makes it a column.
+
+### A test bug that was an arithmetic bug
+
+The 0.12 test asserted sum(gaps) + sum(gaps_excluded) equals a hardcoded instant count. It passed,
+for the wrong reason twice: gaps are counted PER QUERY, so a gap where two queries were both rooted
+is counted once for each, and the constant happened to be the sum rather than the count. 0.13's test
+computes the expectation from the samples instead.
+
+Three more of my own, all found by this file failing:
+
+  count(*) over the function's rows, where sum(gaps) was meant. One row per application, so it is
+    always 1.
+
+  Summing EVERY per-query figure and comparing it against ONE application. Different questions.
+    Now joined through query_ids so both sides are the same statements.
+
+  A fixture where both applications ran the identical LOCK TABLE app_t2, so they shared a query_id
+    and lock_tree_duration() correctly merged them. The fixture now uses three tables, and the shared
+    query_id case is pinned deliberately rather than avoided.
+
+And one design point the second of those taught me: a gap is keyed on the application being rooted
+at its NEAR end, so a single isolated sample is not a blocker by this measure at all. Two instants
+are needed before a root appears. Same rule that discards the trailing interval everywhere else.
+
+### Also
+
+- test/17_duration_by_application.sql, 22 assertions.
+- 314 tests total, green on PG 14, 15, 16, 17, 18 and 19beta4.
+- scripts/lint-docs.sh needed no change: it already recognised FUNCTION.
+
 ## 0.12 (2026-10-05)
 
 Two additions, both about the same thing: turning what the extension already records into something

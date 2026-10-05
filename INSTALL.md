@@ -49,8 +49,8 @@ Check out the version you want. Tags are releases; `main` is whatever is newest 
 ahead of the last tag:
 
 ```bash
-git tag                 # v0.1 to v0.12
-git checkout v0.12      # or: git checkout main
+git tag                 # v0.1 to v0.13
+git checkout v0.13      # or: git checkout main
 ```
 
 ## Install
@@ -96,6 +96,7 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 # pg_lock_tree--0.9--0.10.sql  the update path from 0.9
 # pg_lock_tree--0.10--0.11.sql the update path from 0.10
 # pg_lock_tree--0.11--0.12.sql the update path from 0.11
+# pg_lock_tree--0.12--0.13.sql the update path from 0.12
 # pg_lock_tree--0.1.sql         release
 # pg_lock_tree--0.2.sql         release
 # pg_lock_tree--0.3.sql         release
@@ -107,7 +108,8 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
 # pg_lock_tree--0.9.sql         release
 # pg_lock_tree--0.10.sql        release
 # pg_lock_tree--0.11.sql        release
-# pg_lock_tree--0.12.sql        current release
+# pg_lock_tree--0.12.sql        release
+# pg_lock_tree--0.13.sql        current release
 # pg_lock_tree.control
 ```
 
@@ -224,7 +226,7 @@ the objects are missing or the schema is wrong, and an empty result just means n
 blocked:
 
 ```sql
-SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.12
+SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';   -- 0.13
 SELECT count(*) FROM lock_tree;                                        -- 0
 SELECT * FROM lock_tree_text();                                        -- 0 rows
 ```
@@ -280,17 +282,17 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '0.12';    -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '0.13';    -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "0.x" to version "0.12"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.12.sql` in the
+**If you get `no update path from version "0.x" to version "0.13"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.13.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.11--0.12.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.12--0.13.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
@@ -330,8 +332,28 @@ single `sampled_at` and no duration can be recovered from them.
 SELECT lock_tree_notify_resolved('lock_tree', 10, 3, '30 seconds');
 ```
 
-**Downgrade is not supported.** There is no `0.12--0.11` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get 0.11 behaviour back, install 0.11 in a scratch database alongside it.
+**What 0.13 changes:** adds `lock_tree_duration_by_application()`, which reports the same blocking
+**time** keyed on `application_name` rather than on the statement, and corrects three columns
+`lock_tree_duration()` reported wrongly in 0.12.
+
+`lock_tree_duration_by_application()` is **not** `lock_tree_duration()` grouped by application, and
+the two disagree wherever an application hands the queue from one statement to another, which is
+what a batch job running a fixed script does constantly. Measured on one such incident, the per-query
+figures summed to 4.0 seconds where the application had in fact held the queue for 15.4. See
+[Which application is costing the most](README.md#which-application-is-costing-the-most).
+
+**Grants survive this update.** The three corrected columns are changed with `CREATE OR REPLACE
+FUNCTION`, not `DROP` and `CREATE`, so the function keeps its identity and any `GRANT EXECUTE ON
+FUNCTION lock_tree_duration(interval)` you have issued is still in force afterwards. Nothing is
+dropped and no view is re-created.
+
+```sql
+SELECT application_name, blocking_seconds, blocked_sessions_peak, longest_wait, query_ids
+FROM lock_tree_duration_by_application() LIMIT 20;
+```
+
+**Downgrade is not supported.** There is no `0.13--0.12` script, and `ALTER EXTENSION ... UPDATE TO`
+will not go backwards. To get 0.12 behaviour back, install 0.12 in a scratch database alongside it.
 
 **Upgrading from an earlier version chains automatically.** There is no `0.2--0.4` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the

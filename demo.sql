@@ -289,6 +289,17 @@ JOIN lock_tree_duration() d USING (query_id)
 ORDER BY h.query_id;
 
 \echo ''
+\echo ' The same time, per application. Not a re-grouping of the row above: where an'
+\echo ' application hands the queue from one statement to another, the per-query figure'
+\echo ' throws that gap away and this one counts it, so summing the per-query seconds'
+\echo ' UNDERSTATES a service whose statements take turns blocking.'
+\echo ''
+SELECT application_name, blocking_seconds, blocked_sessions_peak, sessions_total,
+       longest_wait, query_ids
+  FROM lock_tree_duration_by_application()
+ ORDER BY blocking_seconds DESC;
+
+\echo ''
 \echo ' The samples above are 3 hours, 2 hours and 20 minutes old, so the two gaps between'
 \echo ' them are 1 hour and 40 minutes, and 9600 seconds is exactly those two added up. Two'
 \echo ' things it is not doing, and both are deliberate:'

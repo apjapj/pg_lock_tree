@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.12** (green on PG 14 to 19beta4) |
+| Current release | **v0.13** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 292 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 314 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -528,6 +528,73 @@ Two things it does not claim:
   [`lock_tree_sample()`](#choosing-an-interval) scheduled, and neither will invent figures from a
   table that has never been written to.
 
+### Which application is costing the most
+
+Per statement is the right unit when you are fixing one query. It is the wrong unit for the question
+a page actually asks, which is which *service* is costing the most, and the two are not
+interchangeable:
+
+```sql
+SELECT application_name, blocking_seconds, blocked_sessions_peak, longest_wait, query_ids
+FROM lock_tree_duration_by_application() LIMIT 20;
+```
+
+The tempting thing is to sum `lock_tree_duration()` by application. That gives the wrong answer, and
+it is wrong in the direction that matters.
+
+A batch job holding the queue for ten minutes will very likely hand the queue from one statement to
+another while it does it, because that is what a fixed script does. Say its statement 1 is the root
+at `t0` and its statement 2 is the root at `t1`:
+
+| | the gap from `t0` to `t1` |
+|---|---|
+| `lock_tree_duration()` | **discarded**: neither statement was the root at both ends |
+| `lock_tree_duration_by_application()` | **counted**: the application was holding the queue at both ends, and from where the application is concerned nothing changed |
+
+So summing the per-query figures reports the time the application spent blocking *minus* every
+handover. Measured on a single six-sample incident with one handover: the per-query sum was **4.0
+seconds** where the application had actually held the queue for **15.4**. A service that blocked
+forty sessions for a quarter of an hour could be reported as having cost two seconds, and nobody
+would notice, because the number is small and plausible.
+
+That is why `lock_tree_duration_by_application()` does the gap arithmetic again on
+`(sampled_at, application_name)` rather than aggregating the per-query output. Everything else is
+identical, including the same conservatism: a gap where the **application** was not at the far end
+is discarded, and the interval after the last sample is never counted.
+
+### The two figures are not always ordered the same way
+
+`query_id` identifies a **statement**, not who ran it. Two services running identical text share one
+`query_id`, so `lock_tree_duration()` reports one row covering both, while
+`lock_tree_duration_by_application()` reports two. That inverts the comparison:
+
+- **A handover between different statements inside one application** (the batch job above).
+  Per-application is the larger figure, because the per-query rule threw the handover gap away.
+- **The same statement handed between two applications.** Per-query is the *larger* figure, because
+  the statement is identical on both sides of the handover so every gap has it at both ends, while
+  the per-application rule discards that gap as attributable to neither service.
+
+Neither is wrong. The per-query figure answers "what does this statement cost, including the time it
+spent blocking under two different services". The per-application figure answers "what did each
+service cost", and comes out lower because a handover between two services is not attributable to
+either. `test/17_duration_by_application.sql` pins both directions.
+
+### One fix worth knowing about
+
+0.12 reported three columns of `lock_tree_duration()` that could not be right, and 0.13 corrects
+them. All three came from one mistake: a root's **identity** and the waits it **caused** are on
+different rows. `query_id` is on the root row, `wait_age` is on the waiter's, so:
+
+| | 0.12 | 0.13 |
+|---|---|---|
+| `longest_wait` | always `NULL` | the longest wait it caused |
+| `blocked_sessions_peak` | always `1` | the peak sessions behind it |
+| `sessions_total` | a second copy of `samples` | that peak summed over the instants |
+
+One join fixes all three, the root rows of a sample matched to the waiter rows of the **same** sample
+on `root_pid` and `root_object`. If you wrote a query against 0.12 that relied on
+`blocked_sessions_peak` being 1, it was reading a bug rather than a fact.
+
 ### One hazard worth knowing before you schedule anything
 
 The samples must be **separate statements**. `sampled_at` is `statement_timestamp()`, which is fixed
@@ -825,7 +892,8 @@ Four things worth knowing before you turn it on:
 | `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Holds three high-water marks, recorded at the last notification rather than at the last sample. Maintained by the function; you should never need to look at it. |
 | `lock_tree_prune_alerts(older_than interval)` | Forget alert state orphaned by a restart or a retired channel. |
 | `lock_tree_history_statements(since interval DEFAULT '7 days')` | Per-query blocking from the sampled history as **session-samples**: one unit per blocked session per sample. Answers "which statement blocks the most sessions", which is the right question when the shape of the damage matters more than its cost. Does not move with the sample rate in units of time, because it is not a time; see the next row. |
-| `lock_tree_duration(since interval DEFAULT '7 days')` | Per-query blocking **TIME** from the sampled history, worst first: for each root query id, the elapsed time during which it was holding the queue up. Does not move with the sample rate, which is the whole difference. A gap counts only where the query was the root at both ends, and the interval after the last sample is never counted, so it is a lower bound rather than an estimate. |
+| `lock_tree_duration(since interval DEFAULT '7 days')` | Per-query blocking **TIME** from the sampled history, worst first: for each root query id, the elapsed time during which it was holding the queue up, with the peak and total sessions it blocked and the longest single wait it caused. Does not move with the sample rate, which is the whole difference. A gap counts only where the query was the root at both ends, and the interval after the last sample is never counted, so it is a lower bound rather than an estimate. |
+| `lock_tree_duration_by_application(since interval DEFAULT '7 days')` | The same **TIME**, keyed on `application_name` instead of the statement, with the statements it was root for. Not the same figure and not a re-grouping: see [Which application is costing the most](#which-application-is-costing-the-most). An empty `application_name` is reported as its own row, because a blocker that never set one is a finding. |
 | `lock_tree_sampling_advice(since interval DEFAULT '7 days')` | A suggested interval for the sample cron entry, sized on the **widest queue in the window** rather than on the queue at this instant, with the reasoning and both inputs returned. |
 | `lock_tree_age(interval)` | Compact interval rendering: `4s`, `1m30s`, `2h05m`. |
 | `lock_tree_mode_short(text)`, `lock_tree_state_short(text)` | `AccessExclusiveLock` becomes `AX`, `idle in transaction` becomes `idle-in-tx`. Unknown values pass through unchanged rather than being guessed at. |
@@ -926,7 +994,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 292 pgTAP tests against the server your libpq env vars point at
+make prove              # 314 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured

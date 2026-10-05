@@ -34,89 +34,186 @@ hdr()     { printf '\n  \033[1m%s\033[0m\n' "$1"; }
 #
 # Deliberately no database access. It has to work on a laptop with the VPN down, from a payload
 # someone pasted out of a chat message, and it must not itself be a thing that can hang at 3am.
+# ---------------------------------------------------------------- the explanation
+#
+# Deliberately no database access. It has to work on a laptop with the VPN down, from a payload
+# someone pasted out of a chat message, and it must not itself be a thing that can hang at 3am.
+#
+# Both event kinds are explained, and they are explained differently on purpose. An `alerting`
+# payload is a question: what do I run. A `cleared` payload is a statement about the past, and the
+# useful output is what the incident WAS, because that is what someone reviewing it at 4pm wants.
+# Handing a cleared payload to the alerting branch would print "Run these, in this order" and
+# pg_terminate_backend on a pid that has already gone.
 explain_payload() {
     local payload=$1
     printf '\n'
     python3 - "$payload" <<'PY'
 import json, sys
 
-try:
-    d = json.loads(sys.argv[1])
-except Exception as e:
-    print("  This is not JSON, so it did not come from lock_tree_notify(). The nearest")
-    print("  explanation is that something else on the channel sent it.")
-    print("  Parse error: %s" % e)
-    sys.exit(1)
 
-if not isinstance(d, dict) or 'root_pid' not in d:
-    print("  No root_pid, so this is not a pg_lock_tree alert either. A listener that")
-    print("  receives several kinds of message on one channel should route on that key.")
-    sys.exit(0)
+def sql_str(v):
+    """A SQL string literal. json.dumps is not one: it emits double quotes, which PostgreSQL reads
+    as an identifier, so every query it produced would have failed the moment it was pasted."""
+    return "'" + str(v).replace("'", "''") + "'"
 
-pid      = d.get('root_pid')
-obj      = d.get('root_object')
-app      = d.get('application_name') or '(none set)'
-blocked  = d.get('blocked_sessions')
-depth    = d.get('max_depth')
-waited   = d.get('longest_wait')
-waiting  = d.get('waiting_for')
-prepared = (pid == 0)
 
-print("  What this says")
-print("  -------------")
-print("  A root blocker is holding up %s session(s), in a chain %s deep." % (blocked, depth))
-print("  The longest anyone in it has been waiting is %s." % waited)
-print("  The waiters want %s." % waiting)
-print("  The blocker is %s." % app)
-if obj:
-    print("  It is holding %s." % obj)
+def explain_alerting(d):
+    pid      = d.get('root_pid')
+    obj      = d.get('root_object')
+    app      = d.get('application_name') or '(none set)'
+    blocked  = d.get('blocked_sessions')
+    depth    = d.get('max_depth')
+    waited   = d.get('longest_wait')
+    waiting  = d.get('waiting_for')
+    prepared = (pid == 0)
 
-print()
-print("  What it means")
-print("  -------------")
-if prepared:
-    print("  The blocker is a PREPARED TRANSACTION. It has no backend, no session and no")
-    print("  application_name, which is why the root pid is 0 and the name is empty.")
-    print("  Nothing you can do to a session will clear this. pg_cancel_backend(0) returns")
-    print("  false and warns that pid 0 is not a backend; pg_terminate_backend(0) likewise.")
-    print("  The only remedy is ROLLBACK PREPARED, and you need the gid.")
-else:
-    print("  The blocker is an ordinary session, so it can be cancelled and then terminated.")
-    print("  A session that has been 'idle in transaction' is almost always the problem: it is")
-    print("  holding locks from work it has already finished, and nothing will release them")
-    print("  until it ends. Check its query and its xact_start before killing it, because if")
-    print("  it is mid-migration or mid-reindex you may prefer to wait.")
+    print("  What this says")
+    print("  -------------")
+    print("  event: %s" % (d.get('event') or '(none: sent before 0.12, which added the key)'))
+    print("  A root blocker is holding up %s session(s), in a chain %s deep." % (blocked, depth))
+    print("  The longest anyone in it has been waiting is %s." % waited)
+    print("  The waiters want %s." % waiting)
+    print("  The blocker is %s." % app)
+    if obj:
+        print("  It is holding %s." % obj)
 
-print()
-print("  Run these, in this order")
-print("  ------------------------")
-if prepared:
-    print("  SELECT gid, prepared, owner FROM pg_prepared_xacts;")
-    print("    -- pick the gid whose prepared time is close to the incident, then:")
-    print("  ROLLBACK PREPARED '<gid>';")
-    print("  -- the lock it holds is: %s" % (obj or "(not recorded)"))
-else:
-    print("  -- 1. see the whole chain before acting on it")
-    print("  SELECT * FROM lock_tree WHERE root_pid = %s ORDER BY path;" % pid)
     print()
-    print("  -- 2. what the blocker is actually doing")
-    print("  SELECT pid, state, xact_start, left(query, 200) FROM pg_stat_activity")
-    print("   WHERE pid = %s;" % pid)
-    print()
-    print("  -- 3. one row per root, if the queue is wide and you only want the worst")
-    print("  SELECT root_pid, root_object, blocked_sessions, longest_wait")
-    print("    FROM lock_tree_wide() ORDER BY blocked_sessions DESC LIMIT 10;")
-    print()
-    print("  -- 4. if it still has not cleared, terminate it")
-    print("  SELECT pg_terminate_backend(%s);" % pid)
+    print("  What it means")
+    print("  -------------")
+    if prepared:
+        print("  The blocker is a PREPARED TRANSACTION. It has no backend, no session and no")
+        print("  application_name, which is why the root pid is 0 and the name is empty.")
+        print("  Nothing you can do to a session will clear this. pg_cancel_backend(0) returns")
+        print("  false and warns that pid 0 is not a backend; pg_terminate_backend(0) likewise.")
+        print("  The only remedy is ROLLBACK PREPARED, and you need the gid.")
+    else:
+        print("  The blocker is an ordinary session, so it can be cancelled and then terminated.")
+        print("  A session that has been 'idle in transaction' is almost always the problem: it is")
+        print("  holding locks from work it has already finished, and nothing will release them")
+        print("  until it ends. Check its query and its xact_start before killing it, because if")
+        print("  it is mid-migration or mid-reindex you may prefer to wait.")
 
-print()
-print("  Before you page anyone")
-print("  ---------------------")
-print("  An alert means a chain crossed a threshold, not that the database is down. Compare")
-print("  against lock_tree_summary(): if blocked_sessions is a handful, this is a chain worth")
-print("  naming, not an outage. If it is hundreds, it is an outage.")
-print("  See the Alerting section of README.md for how the thresholds are meant to be set.")
+    print()
+    print("  Run these, in this order")
+    print("  ------------------------")
+    if prepared:
+        print("  SELECT gid, prepared, owner FROM pg_prepared_xacts;")
+        print("    -- pick the gid whose prepared time is close to the incident, then:")
+        print("  ROLLBACK PREPARED '<gid>';")
+        print("  -- the lock it holds is: %s" % (obj or "(not recorded)"))
+    else:
+        print("  -- 1. see the whole chain before acting on it")
+        print("  SELECT * FROM lock_tree WHERE root_pid = %s ORDER BY path;" % pid)
+        print()
+        print("  -- 2. what the blocker is actually doing")
+        print("  SELECT pid, state, xact_start, left(query, 200) FROM pg_stat_activity")
+        print("   WHERE pid = %s;" % pid)
+        print()
+        print("  -- 3. one row per root, if the queue is wide and you only want the worst")
+        print("  SELECT root_pid, root_object, blocked_sessions, longest_wait")
+        print("    FROM lock_tree_wide() ORDER BY blocked_sessions DESC LIMIT 10;")
+        print()
+        print("  -- 4. if it still has not cleared, terminate it")
+        print("  SELECT pg_terminate_backend(%s);" % pid)
+
+    print()
+    print("  Before you page anyone")
+    print("  ---------------------")
+    print("  An alert means a chain crossed a threshold, not that the database is down. Compare")
+    print("  against lock_tree_summary(): if blocked_sessions is a handful, this is a chain worth")
+    print("  naming, not an outage. If it is hundreds, it is an outage.")
+    print("  See the Alerting section of README.md for how the thresholds are meant to be set.")
+
+
+def explain_cleared(d):
+    pid      = d.get('root_pid')
+    obj      = d.get('root_object')
+    app      = d.get('application_name') or '(none set)'
+    at_most  = d.get('blocked_at_most')
+    notified = d.get('notified_count')
+    channel  = d.get('channel') or 'lock_tree'
+    prepared = (pid == 0)
+
+    print("  What this says")
+    print("  -------------")
+    print("  event: cleared, on channel %s." % channel)
+    print("  An incident that had already alerted has ended: the root is out of the queue.")
+    if prepared:
+        print("  The root was a PREPARED TRANSACTION, so it was released by ROLLBACK PREPARED")
+        print("  rather than by a session ending, and no pid was ever involved.")
+    else:
+        print("  The root was pid %s, which has since left the tree." % pid)
+    print("  It was %s." % app)
+    if obj:
+        print("  It had been holding %s." % obj)
+    print("  At its worst it was blocking %s session(s)." % at_most)
+    if notified is not None:
+        print("  It alerted %s time(s), which counts escalations as well as the onset." % notified)
+
+    print()
+    print("  What it means")
+    print("  -------------")
+    print("  Nothing is blocked by this root any more. If the queue is empty you can stand down.")
+    print("  Check before you do, though: one root clearing says nothing about the next one.")
+    print()
+    print("  If it escalated more than once before clearing, that is the part worth reading. A")
+    print("  chain that alerted once and cleared is routine. A chain that escalated while getting")
+    print("  worse is the one that tells you what to change, and once the history is pruned this")
+    print("  payload is the only record of it.")
+
+    print()
+    print("  Look this up")
+    print("  -------------")
+    print("  -- 1. is anything blocked right now? Decide before you close the page.")
+    print("  SELECT sessions_blocked, roots, longest_wait FROM lock_tree_summary();")
+    print()
+    print("  -- 2. what the application cost you in the sampled history")
+    print("  SELECT application_name, blocking_seconds, blocked_sessions_peak, longest_wait")
+    print("    FROM lock_tree_duration_by_application()")
+    print("   WHERE application_name = %s;" % sql_str(app))
+    print()
+    print("  -- 3. every incident that application was in, not just this one")
+    print("  SELECT started_at, ended_at, peak_sessions, peak_depth, longest_wait")
+    print("    FROM lock_tree_incidents()")
+    print("   WHERE %s = ANY(applications) ORDER BY started_at DESC LIMIT 10;" % sql_str(app))
+    print()
+    print("  -- 4. the pid is gone, so this finds anything only while the history still holds it.")
+    print("  --    Depth 0 is the root; the rows beneath it are what it was holding up.")
+    print("  SELECT sampled_at, depth, state, waiting_for, wait_age, left(query, 120) AS query")
+    print("    FROM lock_tree_history WHERE root_pid = %s" % pid)
+    print("   ORDER BY sampled_at, depth;")
+    print()
+    print("  -- 5. and whether this application blocking is a pattern rather than a one-off")
+    print("  SELECT application, count(*) AS incidents, sum(peak_sessions) AS sessions_hit")
+    print("    FROM lock_tree_incidents(), unnest(applications) AS u(application)")
+    print("   GROUP BY application ORDER BY sessions_hit DESC LIMIT 10;")
+
+
+def main():
+    try:
+        d = json.loads(sys.argv[1])
+    except Exception as e:
+        print("  This is not JSON, so it did not come from lock_tree_notify(). The nearest")
+        print("  explanation is that something else on the channel sent it.")
+        print("  Parse error: %s" % e)
+        sys.exit(1)
+
+    if not isinstance(d, dict) or 'root_pid' not in d:
+        print("  No root_pid, so this is not a pg_lock_tree alert either. A listener that")
+        print("  receives several kinds of message on one channel should route on that key.")
+        return
+
+    # Dispatch on the event key. Anything that is not explicitly 'cleared' is explained as an
+    # onset, INCLUDING a payload with no event key at all, which is what every pre-0.12
+    # notification looks like. Those had exactly one meaning, so treating them as onsets is right,
+    # and it is the only place in this script where an absent key is read as a present one.
+    if d.get('event') == 'cleared':
+        explain_cleared(d)
+    else:
+        explain_alerting(d)
+
+
+main()
 PY
 }
 
