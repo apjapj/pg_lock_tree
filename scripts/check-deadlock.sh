@@ -231,7 +231,7 @@ printf '\n  \033[2mwhat it does not do\033[0m\n'
 printf '  This names no statements. pg_stat_database.deadlocks is a bare counter with no\n'
 printf '  attribution, and the two statements involved exist only in the server log. The\n'
 printf '  timestamp this reports is how you find the right log entry. See the Deadlocks\n'
-printf '  section of README.md for the log_lock_waits recipe.\n'
+printf '  Deadlocks section of docs/after-the-incident.md for the log_lock_waits recipe.\n'
 
 # Clean up. Terminate rather than cancel: a cancelled session stays connected holding an aborted
 # transaction and would still appear in the next run's tree.

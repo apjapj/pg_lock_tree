@@ -122,7 +122,7 @@ def explain_alerting(d):
     print("  An alert means a chain crossed a threshold, not that the database is down. Compare")
     print("  against lock_tree_summary(): if blocked_sessions is a handful, this is a chain worth")
     print("  naming, not an outage. If it is hundreds, it is an outage.")
-    print("  See the Alerting section of README.md for how the thresholds are meant to be set.")
+    print("  See docs/alerting.md for how the thresholds are meant to be set.")
 
 
 def explain_cleared(d):

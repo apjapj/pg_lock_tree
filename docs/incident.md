@@ -13,7 +13,7 @@ SELECT * FROM lock_tree_wide();
 
 -- which query is costing the most time, and which application
 SELECT * FROM lock_tree_statements();
-SELECT * FROM lock_tree_applications();
+SELECT * FROM lock_tree_duration_by_application(interval '1 hour');
 ```
 
 

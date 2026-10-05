@@ -89,12 +89,14 @@ scheduling fact rather than a code change, and [INSTALL.md](INSTALL.md) records 
 
 ## Releasing
 
-Every release is additive: a fresh `pg_lock_tree--X.Y.sql` plus an update path
-`pg_lock_tree--X.Y-1--X.Y.sql`, so an existing installation never has to reinstall to get a fix.
+Every release is additive: a new full-version script plus an update path from the version
+before it, both named the way the release files already in the tree are named. An existing
+installation therefore never has to reinstall to get a fix.
 
-1. **Bump the version.** `pg_lock_tree.control`, the new `pg_lock_tree--X.Y.sql`, and the changelog
-   heading. `scripts/lint-docs.sh` reads the control file and the README and fails if they disagree,
-   so a missed bump is caught rather than shipped.
+1. **Bump the version.** The control file, the new full-version script, and the changelog heading.
+   `scripts/lint-docs.sh` reads the control file and the README and fails if they disagree, and also
+   fails if the control file names a version with no script for it, so a missed bump is caught
+   rather than shipped.
 2. **Write the update script**, and read it against the previous release's file. Most of the work in
    an update is arriving at the same catalog state a fresh install would.
 3. **`make check-upgrade`.** Every path from every earlier version has to converge on the same

@@ -14,6 +14,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Every documentation file. Defined once, because it was written out in three places and the split
+# updated one of them: a name in backticks in a file the other two missed was never checked.
+#
+# CHANGELOG.md is here for objects and paths but its objects are deliberately not required to resolve:
+# see check_object. docs/roadmap.md and docs/design-notes.md are here for the same reason as the rest.
+DOCS_ALL="README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md"
+
 fail=0
 pass=0
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; pass=$((pass + 1)); }
@@ -204,23 +211,38 @@ check_object() {
 #   forever and the check would be unsatisfiable by design.
 #
 # Everything else must resolve.
-for f in README.md INSTALL.md scenarios/README.md; do
+# Every documentation file, read whole.
+#
+# This glob listed three files while the split moved the material into nine, so seven of them were not
+# scanned at all: a name in backticks in docs/incident.md that matches no object in the release passed.
+# Found by planting one. The Roadmap exclusion is gone with it: there is no Roadmap section in the
+# README any more, so `sed -n '1,/^## Roadmap/p'` ran to end of file and the whole file was read
+# anyway, which is what a partial read of a documentation file should never do.
+for f in $DOCS_ALL; do
     [ -f "$f" ] || continue
-    if [ "$f" = README.md ]; then
-        # Drop the Roadmap section: from its heading to the next heading, or EOF.
-        body=$(sed -n '1,/^## Roadmap/p' "$f" | sed '$d')
-    else
-        body=$(cat "$f")
-    fi
-    names=$(printf '%s\n' "$body" | grep -oE '`lock_tree[a-z_]*(\(\))?`' \
-            | tr -d '`' | sed 's/()$//' | sort -u)
+    # Two extractions, because prose and code drift apart. A name in backticks in prose is
+    # checkable; the same name inside a ```sql block was invisible, so
+    # `SELECT * FROM lock_tree_no_such_thing();` in an example passed. Found by planting exactly that.
+    #
+    # check_object resolves functions, procedures, views and tables alike, so pulling bare
+    # lock_tree_ names out of fenced blocks cannot produce a false failure for a setting such as
+    # lock_tree.history_query: that reduces to `lock_tree`, which is the view.
+    names=$(
+        {
+            grep -oE '`lock_tree[a-z_]*(\(\))?`' "$f" | tr -d '`' | sed 's/()$//'
+            awk '
+                /^```/          { inside = !inside; next }
+                inside          { print }
+            ' "$f" | grep -oE 'lock_tree_[a-z_]+' 
+        } | sort -u
+    )
     for n in $names; do check_object "$n"; done
 done
 
 # ---------------------------------------------------------------- files the docs link to
 
 step "every local path the docs mention exists"
-for f in README.md INSTALL.md CHANGELOG.md scenarios/README.md; do
+for f in $DOCS_ALL; do
     [ -f "$f" ] || continue
     # A path in a doc is relative to that doc, not to the repo root. scenarios/README.md
     # refers to 01_standard_query.sql, which lives in scenarios/. Resolving from the
@@ -404,7 +426,7 @@ anchors_in() {
 # Build the anchor set for every doc, as file=anchor lines, then check each link against it.
 all_anchors=$(mktemp)
 trap 'rm -f "$all_anchors"' RETURN 2>/dev/null || true
-for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md; do
+for f in $DOCS_ALL; do
   [ -f "$f" ] || continue
   canon="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
   anchors_in "$f" | while read -r a; do printf '%s\t%s\n' "$canon" "$a"; done >> "$all_anchors"
@@ -412,7 +434,7 @@ done
 
 broken=0
 unphony=0
-for f in README.md INSTALL.md CONTRIBUTING.md CHANGELOG.md scenarios/README.md docs/*.md; do
+for f in $DOCS_ALL; do
   [ -f "$f" ] || continue
   dir=$(dirname "$f")
   # Markdown links: [text](target). The fragment is optional. Requiring a '#' here, which is what
@@ -474,8 +496,7 @@ done
 # Restricted to lines that begin with `make ` or are inside a fenced shell block, so the English
 # phrases "make sure" and "make it work" are not read as targets.
 step "every make target the docs name exists"
-targets=$(grep -hoE '^[[:space:]]*make [a-z][a-z-]+' README.md INSTALL.md CONTRIBUTING.md \
-             docs/*.md scenarios/README.md 2>/dev/null \
+targets=$(grep -hoE '^[[:space:]]*make [a-z][a-z-]+' $DOCS_ALL 2>/dev/null \
           | sed -E 's/^[[:space:]]*make //' | sort -u)
 missing=0
 for t in $targets; do
@@ -488,6 +509,27 @@ for t in $targets; do
   fi
 done
 [ "$missing" -eq 0 ] && ok "every make target named in the docs exists in the Makefile"
+
+# ---------------------------------------------------------------- prose references to moved sections
+#
+# A sentence in a shell script saying "see the Alerting section of README.md" is not a link, so the
+# link check cannot see it, and the split moved those sections. Two were stale: check-alert.sh and
+# check-deadlock.sh. The words are matched rather than the path, because the failure is a section
+# name that no longer lives in the README.
+step "no script points at a README section that has moved"
+prose_stale=0
+# lint-docs.sh is excluded because it necessarily contains the pattern it is looking for: the regular
+# expression itself spells out "section of README.md". A check that matches itself is a check that
+# always fails, which is worse than none.
+for s in $(ls scripts/*.sh | grep -v 'lint-docs\.sh$') test/*.sql demo.sql Makefile; do
+    [ -f "$s" ] || continue
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        bad "$s points at a README section that has moved: $line"
+        prose_stale=$((prose_stale + 1))
+    done < <(grep -nEo '(section|chapter|part|heading)s? of (the )?README\.md' "$s" 2>/dev/null)
+done
+[ "$prose_stale" -eq 0 ] && ok "no script names a README section, since the sections moved to docs/"
 
 # ---------------------------------------------------------------- no target is silently a no-op
 #
