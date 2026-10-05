@@ -317,10 +317,13 @@ what it was based on.
   not queue notifications for absent listeners, so a `NOTIFY` raised while nothing is listening is
   simply discarded. This matters for the sampler: if your listener is down, you get no alerts and
   no record that you got none.
-- **`lock_tree_alert` must be writable by whoever runs the sampler.** The function is not
-  `SECURITY DEFINER`, deliberately: it is a decision about what is important enough to tell
-  someone, and a role that can set thresholds is a role that can page people.
-- **The sampler needs to run as often as you want to know.** Alerting inherits the sample
+- **`lock_tree_alert` needs write access, and the grant is four privileges.** This was documented here
+  as "must be writable", which is one word for `SELECT, INSERT, UPDATE, DELETE`. The grant and what was
+  measured about it are in [INSTALL.md](../INSTALL.md#grants). No minimum is quoted: every subset tried
+  was accepted on one run and refused on the next with the same grants, so which are needed appears to
+  depend on what the channel has already recorded. The function is not `SECURITY DEFINER`,
+  deliberately: it is a decision about what is important enough to tell someone, and a role that can set
+  thresholds is a role that can page people.- **The sampler needs to run as often as you want to know.** Alerting inherits the sample
   interval. Sampling every minute means learning about a minute-long queue a minute late, which is
   usually fine, and sampling every ten seconds means learning in ten seconds at ten times the
   write cost.

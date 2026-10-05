@@ -11,7 +11,7 @@ what catches a rename that half the documentation has not caught up with.
 ```bash
 make check              # the checks that need no server: the documentation lint, and a note
 make lint-docs          # documentation, objects, paths, links and anchors, and the test table
-make prove              # 409 pgTAP tests against the server your libpq env vars point at
+make prove              # 413 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -34,7 +34,7 @@ terminate backends rather than mocking anything:
 | file | covers |
 |---|---|
 | `test/01_lock_tree.sql` | a real five-session chain: roots, depth, paths, multiple blockers, wait details, the root summary, text output, that the tree empties when the root rolls back, and that the description and command halves of the action block stay apart |
-| `test/02_permissions.sql` | the grants a monitoring role needs, including that `pg_read_all_stats` alone is not enough |
+| `test/02_permissions.sql` | the grants a monitoring role needs: that `pg_read_all_stats` alone is not enough, that `lock_tree_notify()` needs all four privileges on `lock_tree_alert` rather than one, and what `pg_dump` does and does not carry |
 | `test/03_deadlock.sql` | a real two-session wait-for cycle, and that the tree does not go empty |
 | `test/04_prepared.sql` | a prepared transaction as root pid 0, including that its advice is `ROLLBACK PREPARED` rather than a cancel against a backend that does not exist. Skips itself when `max_prepared_transactions` is 0 |
 | `test/05_formatting.sql` | the exact output of the rendering helpers, since the width measurements depend on them |

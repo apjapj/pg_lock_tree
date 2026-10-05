@@ -257,7 +257,32 @@ ERROR:  permission denied for view lock_tree
   The grant is not restored for anyone on upgrade, on purpose. Reinstating it silently would put the
   hole back for exactly the roles that had it.
 
-  `lock_tree.history_query` is read from the caller's session, so the role that samples decides. Set
+**If the same role also raises alerts**, `lock_tree_notify()` and `lock_tree_notify_resolved()` need
+access to `lock_tree_alert`, and it is more than one privilege. Measured on 1.0.1:
+
+| Grants on `lock_tree_alert` | `lock_tree_notify()` |
+|---|---|
+| none | `permission denied for table lock_tree_alert` |
+| `SELECT, INSERT, UPDATE, DELETE` | works |
+
+The middle of that table is deliberately blank. Every subset tried was accepted on one run and refused
+on the next, with the same grants and the same empty `lock_tree_alert`, so which of them are needed
+appears to depend on what the channel has already recorded. A minimum that changes with the contents of
+the table is not a minimum worth writing down, and a reader who grants three of four and gets a working
+alert has not been told they are one privilege short.
+
+So grant all four:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON lock_tree_alert TO monitoring;
+```
+
+`DELETE` on a state table is a wider privilege than it looks, and it is deliberate: the function is not
+`SECURITY DEFINER`, because a role that can set thresholds is a role that can page people. Give this to
+the role that schedules the sampler and to nobody else. The error a reader gets names the table and not
+the missing privilege, which is why it is written down here.
+
+`lock_tree.history_query` is read from the caller's session, so the role that samples decides. Set
   it on that role's connection, or per database with `ALTER DATABASE`, and the value applies to
   everyone. An unrecognised value redacts.
 

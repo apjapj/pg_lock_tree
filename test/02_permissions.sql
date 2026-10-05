@@ -31,7 +31,7 @@ $role$;
 DROP ROLE IF EXISTS lock_tree_monitor;
 \o
 
-SELECT plan(6);
+SELECT plan(10);
 
 -- ------------------------------------------------- what pg_dump will and will not carry
 --
@@ -115,6 +115,46 @@ GRANT SELECT ON lock_tree TO lock_tree_monitor;  -- the missing half of the READ
 SET ROLE lock_tree_monitor;
 SELECT lives_ok($$ SELECT count(*) FROM lock_tree $$, 'with both grants the role can read the view');
 SELECT lives_ok($$ SELECT * FROM lock_tree_roots() $$, 'lock_tree_roots() is readable with those grants');
+RESET ROLE;
+
+-- ------------------------------------------------- what raising an alert needs
+--
+-- lock_tree_notify() is SECURITY INVOKER and keeps its hysteresis in lock_tree_alert, so the role that
+-- runs it needs access to that table. This was documented as "must be writable", which is one word for
+-- four privileges, and a reader who granted one of them found out the rest by hitting errors.
+--
+-- The refusal itself is NOT asserted here, and the reason is worth recording. Run outside this harness,
+-- as a role holding only the grants above, the call fails with
+-- "permission denied for table lock_tree_alert" from the sweep that forgets resolved roots, at line 161
+-- of the function. Inside pgTAP it completes. Same role, same grants, same empty table: the only
+-- difference is that pg_prove runs the file in a transaction. An assertion that passes in the harness and
+-- fails in a shell is worse than no assertion, so what is asserted here is the precondition, which is a
+-- catalog fact and does not depend on any of that.
+--
+-- No subset is pinned either. Every subset tried was accepted on one run and refused on the next with
+-- the same grants and the same empty lock_tree_alert, so which privileges are individually required
+-- depends on what the channel has already recorded. INSTALL.md says so and tells the reader to grant
+-- all four.
+--
+-- The thresholds are 999 blocked sessions on a database with none, so the function runs the whole way
+-- through the "not worth alerting" path.
+SELECT is((SELECT count(*)::int FROM pg_class WHERE relname = 'lock_tree_alert'),
+          1,
+          'the table the alerting functions keep their state in exists, so the two checks below are not counting an empty set');
+
+SELECT is((SELECT count(*)::int FROM pg_class
+            WHERE relname = 'lock_tree_alert'
+              AND has_table_privilege('lock_tree_monitor', oid, 'SELECT, INSERT, UPDATE, DELETE')),
+          0,
+          'and the role holds none of the four privileges on it, which is what makes the call a permission error outside this harness');
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON lock_tree_alert TO lock_tree_monitor;
+
+SET ROLE lock_tree_monitor;
+SELECT lives_ok($$ SELECT lock_tree_notify('lt_grants', 999, 999, interval '99 hours') $$,
+                'lock_tree_notify() works for a role holding all four');
+SELECT lives_ok($$ SELECT lock_tree_notify_resolved('lt_grants', 999, 999, interval '99 hours') $$,
+                'and so does the resolved event');
 RESET ROLE;
 
 SELECT * FROM finish();

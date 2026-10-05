@@ -33,15 +33,15 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
  A nightly batch holds a row lock, then sits idle in its transaction.
  An ALTER TABLE queues behind it, then ordinary reads queue behind the ALTER.
 
-+------+-----+------------------+---------------------+
-| sess | pid | application_name |        state        |
-+------+-----+------------------+---------------------+
++------+------+------------------+---------------------+
+| sess | pid  | application_name |        state        |
++------+------+------------------+---------------------+
 | a    | <PID> | nightly_batch    | idle in transaction |
 | b    | <PID> | schema_change    | active              |
 | c    | <PID> | report-c         | active              |
 | d    | <PID> | report-d         | active              |
 | e    | <PID> | report-e         | active              |
-+------+-----+------------------+---------------------+
++------+------+------------------+---------------------+
 (5 rows)
 
 
@@ -51,15 +51,15 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
  Note reads (report-c/d/e) sit under the ALTER TABLE, not under the batch:
  they queue behind whoever is ahead of them in the lock queue.
 
-+-------------------------------------------------------------------------------------------------------------+
-|                                               lock_tree_text                                                |
-+-------------------------------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------------------------------------+
+|                                                lock_tree_text                                                |
++--------------------------------------------------------------------------------------------------------------+
 | <PID>  idle in transaction  <AGE>  nightly_batch  UPDATE demo_ledger SET amount = amount WHERE id = 1            |
 | └─<PID>  <AGE>  for AccessExclusiveLock on demo_ledger  relation  ALTER TABLE demo_ledger ADD COLUMN note text   |
 |   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT sum(amount) FROM demo_ledger WHERE id = 1 |
 |   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT * FROM demo_ledger ORDER BY id LIMIT 10   |
 |   └─<PID>  <AGE>  for AccessShareLock on demo_ledger  relation  SELECT count(*) FROM demo_ledger                 |
-+-------------------------------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------------------------------------------+
 (5 rows)
 
 
@@ -70,10 +70,10 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
 | sess | depth |        state        |            waiting_for             |  waited  | blocked_by |
 +------+-------+---------------------+------------------------------------+----------+------------+
 | a    |     0 | idle in transaction | -                                  | -        | {}         |
-| b    |     1 | active              | AccessExclusiveLock on demo_ledger | <AGE> | {<PIDS>}      |
-| c    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}      |
-| d    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}      |
-| e    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}      |
+| b    |     1 | active              | AccessExclusiveLock on demo_ledger | <AGE> | {<PIDS>}     |
+| c    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}     |
+| d    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}     |
+| e    |     2 | active              | AccessShareLock on demo_ledger     | <AGE> | {<PIDS>}     |
 +------+-------+---------------------+------------------------------------+----------+------------+
 (5 rows)
 
@@ -83,11 +83,11 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
 ##############################################################################
  One root here: the idle batch, blocking 4 sessions. Everything else is a symptom.
 
-+----------+---------------+---------------------+------------------+-----------+--------------+----------------------------------------------------------------+
-| root_pid |      app      |        state        | blocked_sessions | max_depth | longest_wait |                        suggested_action                        |
-+----------+---------------+---------------------+------------------+-----------+--------------+----------------------------------------------------------------+
-|      <PID> | nightly_batch | idle in transaction |                4 |         2 | <AGE>     | Idle in an open transaction. SELECT pg_terminate_backend(<PID>); |
-+----------+---------------+---------------------+------------------+-----------+--------------+----------------------------------------------------------------+
++----------+---------------+---------------------+------------------+-----------+--------------+-----------------------------------------------------------------+
+| root_pid |      app      |        state        | blocked_sessions | max_depth | longest_wait |                        suggested_action                         |
++----------+---------------+---------------------+------------------+-----------+--------------+-----------------------------------------------------------------+
+|     <PID> | nightly_batch | idle in transaction |                4 |         2 | <AGE>     | Idle in an open transaction. SELECT pg_terminate_backend(<PID>); |
++----------+---------------+---------------------+------------------+-----------+--------------+-----------------------------------------------------------------+
 (1 row)
 
 
@@ -109,11 +109,11 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
 
  Then run the second. It is statements and nothing else, so it pastes cleanly:
 
-+-----------------------------------+
-|              command              |
-+-----------------------------------+
++------------------------------------+
+|              command               |
++------------------------------------+
 | SELECT pg_terminate_backend(<PID>); |
-+-----------------------------------+
++------------------------------------+
 (1 row)
 
 
@@ -139,26 +139,26 @@ psql:demo.sql:32: NOTICE:  table "demo_y" does not exist, skipping
  Nobody is "the blocker", so every session in the cycle is listed as a root.
 
  Both are hard-blocked on each other. blocked_by shows the cycle:
-+-----+----------+-------+---------------------+------------+--------------------------------+
-| pid | root_pid | depth |        state        | blocked_by |          waiting_for           |
-+-----+----------+-------+---------------------+------------+--------------------------------+
-| <PID> |      <PID> |     0 | idle in transaction | {}         |                                |
-| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
-| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
-| <PID> |      <PID> |     1 | active              | {<PIDS>}      | AccessShareLock on demo_ledger |
-| <PID> |      <PID> |     0 | active              | {<PIDS>}      | AccessExclusiveLock on demo_y  |
-| <PID> |      <PID> |     0 | active              | {<PIDS>}      | AccessExclusiveLock on demo_x  |
-+-----+----------+-------+---------------------+------------+--------------------------------+
++------+----------+-------+---------------------+------------+--------------------------------+
+| pid  | root_pid | depth |        state        | blocked_by |          waiting_for           |
++------+----------+-------+---------------------+------------+--------------------------------+
+| <PID> |     <PID> |     0 | idle in transaction | {}         |                                |
+| <PID> |     <PID> |     1 | active              | {<PIDS>}     | AccessShareLock on demo_ledger |
+| <PID> |     <PID> |     1 | active              | {<PIDS>}     | AccessShareLock on demo_ledger |
+| <PID> |     <PID> |     1 | active              | {<PIDS>}     | AccessShareLock on demo_ledger |
+| <PID> |     <PID> |     0 | active              | {<PIDS>}     | AccessExclusiveLock on demo_y  |
+| <PID> |     <PID> |     0 | active              | {<PIDS>}     | AccessExclusiveLock on demo_x  |
++------+----------+-------+---------------------+------------+--------------------------------+
 (6 rows)
 
  And lock_tree_roots() lists both, with a cancel suggestion for each:
-+----------+---------------------+-----------------------------------------------------------------------------------------+
-| root_pid |        state        |                                    suggested_action                                     |
-+----------+---------------------+-----------------------------------------------------------------------------------------+
-|      <PID> | idle in transaction | Idle in an open transaction. SELECT pg_terminate_backend(<PID>);                          |
-|      <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
-|      <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
-+----------+---------------------+-----------------------------------------------------------------------------------------+
++----------+---------------------+-------------------------------------------------------------------------------------------+
+| root_pid |        state        |                                     suggested_action                                      |
++----------+---------------------+-------------------------------------------------------------------------------------------+
+|     <PID> | idle in transaction | Idle in an open transaction. SELECT pg_terminate_backend(<PID>);                           |
+|     <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
+|     <PID> | active              | Try SELECT pg_cancel_backend(<PID>); then pg_terminate_backend(<PID>) if it does not clear. |
++----------+---------------------+-------------------------------------------------------------------------------------------+
 (3 rows)
 
 

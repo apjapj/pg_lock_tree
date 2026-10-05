@@ -6,6 +6,59 @@ selects a release.
 
 ## Unreleased
 
+documentation review: one real omission, and the checks that would have caught it
+
+Every claim in the ten documentation files checked against the release, the tests or a live server.
+One omission was real and it is about privileges, which is the category where a documentation bug is a
+security bug.
+
+RAISING AN ALERT NEEDS FOUR PRIVILEGES, AND IT SAID "WRITABLE"
+
+`docs/alerting.md` said `lock_tree_alert` "must be writable by whoever runs the sampler", and INSTALL.md's
+Grants section did not mention the table at all. A reader who followed the documentation, granted
+`INSERT` because that is what "writable" suggests, and called `lock_tree_notify()` got:
+
+    ERROR:  permission denied for table lock_tree_alert
+
+which names the table and not the missing privilege. Measured on 1.0.1 with a role holding everything
+else INSTALL documents: no privileges at all is refused, and `SELECT, INSERT, UPDATE, DELETE` works.
+
+**No minimum is quoted, because there is not one that can be relied on.** Every subset tried was
+accepted on one run and refused on the next, with the same grants and the same empty `lock_tree_alert`,
+so which privileges are individually required appears to depend on what the channel has already
+recorded. A minimum that changes with the contents of the table is not worth writing down, and a reader
+who grants three of four and gets a working alert has not been told they are one privilege short. Both
+pages now say to grant all four, and say why no smaller answer is given.
+
+`test/02_permissions.sql` gained four assertions. Two of them are functional and proven non-vacuous by
+planting a three-privilege grant and watching them fail.
+
+**The refusal itself is not asserted, and the reason is in the test's header.** Run outside the harness
+the call fails as described. Inside pgTAP it completes: same role, same grants, same empty table, the
+only difference being that pg_prove runs the file in a transaction. An assertion that passes in the
+harness and fails in a shell is worse than no assertion, so what is asserted is the precondition, which
+is a catalog fact: the table exists, and the role holds none of the four privileges on it. Both were
+shown to fail when pointed at a table name that does not exist, so neither passes on an empty set.
+
+WHAT ELSE WAS CHECKED, AND WHAT WAS WRONG WITH IT
+
+  - every function the documentation names exists in 1.0.1, and every documented argument list matches
+    the real one. The differences a mechanical comparison found are parameter names against types, such
+    as `lock_tree_age(interval)` where the release says `i interval`, which is correct as written
+  - the two example NOTIFY payloads in docs/alerting.md carry exactly the keys the SQL builds, no more
+    and no fewer, and the 8000-byte payload limit quoted is PostgreSQL's
+  - 413 tests, 60,481 instants, 1.2 million rows, six matrix versions, eight scenarios, fifteen window
+    bounds: all of them still true
+  - the performance notes said "187 MB" for what `make bench-history` prints as 266 MB. Both are right
+    and they are different things: 187 MB is the heap, 266 MB includes the indexes. Both pages now say
+    which is which, because a reader comparing the two numbers would conclude one of them was wrong
+
+The `lock_tree_alert` row in the new table is deliberately blank, and the first draft of that table was
+not: it named a minimum, from a single run, that the next run contradicted.
+
+Verified: 413 tests pass on PostgreSQL 18, `make check-schema` and `make check-upgrade` green, the demo
+exits 0, the captures are byte-identical across runs, 424 documentation checks, gitleaks clean.
+
 the whole-window read, measured and left alone; the demo now matches the README
 
 No SQL change, so no version bump. Two findings and one fix to the documentation's own tooling.
@@ -15,7 +68,7 @@ WHOLE-WINDOW `lock_tree_duration()`, AND WHY THE ROADMAP ITEM WAS WRONG
 The first item on the roadmap for several releases, on the reasoning that the four CTEs each re-read
 the history and merging them into one pass should help. Three implementations were built and timed
 against `make bench-history`'s fixture: seven days, a ten second interval, twenty blocked sessions,
-1,209,620 rows in 187 MB, on PostgreSQL 18. Each was timed alternating with the shipped function so
+1,209,620 rows on PostgreSQL 18, a 187 MB heap and 266 MB including indexes, which is the figure `make bench-history` prints. Each was timed alternating with the shipped function so
 both saw the same cache, four runs, mean of the `root_wait` join, which is 43% of the function.
 
 | Version | Mean |
@@ -30,7 +83,7 @@ materialised set. Reading the table once is not the same as reading it cheaply, 
 an indexed table loses more than it saves.
 
 A covering index on `(sampled_at) INCLUDE (depth, query_id, root_pid, root_object, wait_age, pid)` was
-built and measured: 79 MB, 42% of the table it indexes, and no measurable gain. The planner used it for
+built and measured: 79 MB, 42% of the heap it indexes, and no measurable gain. The planner used it for
 one side of the join and the time did not move, so the cost is not the heap access. `work_mem` buys
 about ten percent, from 1,360 ms at 4 MB to 1,220 ms at 256 MB.
 

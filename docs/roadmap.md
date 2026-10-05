@@ -27,13 +27,13 @@ set, and the function went from 1,460 ms to 2,900 ms. Reading the table once is 
 it cheaply, and merging passes over an indexed table loses more than it saves.
 
 A **covering index** on `(sampled_at) INCLUDE (depth, query_id, root_pid, root_object, wait_age, pid)`
-was built and measured: 79 MB, 42% of the table it indexes, for no measurable gain. The planner used it
+was built and measured: 79 MB, 42% of the heap it indexes, for no measurable gain. The planner used it
 for one side of the join and the time did not move, because the cost is not the heap access.
 
 `work_mem` buys about 10%: 1,360 ms at 4 MB, 1,220 ms at 256 MB. Not a code change, not worth
 documenting as a requirement.
 
-So the remaining cost is the 187 MB scan and the aggregate over 1.15 million joined rows, and neither
+So the remaining cost is the 187 MB heap scan and the aggregate over 1.15 million joined rows, and neither
 is removable by restructuring. It stays the slowest read in the extension, and the thing that would
 change it is not a better query.
 
