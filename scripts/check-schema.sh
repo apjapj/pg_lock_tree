@@ -114,6 +114,22 @@ done
 # matched nothing; and matching the raw definition counts every sibling NAME in a -- comment, which
 # in lock_tree_sample() is three, because its body explains what it samples. Comments are stripped and
 # the lookbehind is gone, which was verified by planting an unqualified call and watching this fire.
+#
+# PROVEN, end to end, on 2026-10-05. The claim that this fires was previously reasoned about rather
+# than seen. The defect planted was one line in lock_tree_command()'s body:
+# FROM @extschema@.lock_tree_roots() became FROM lock_tree_roots(). It has to be reinstalled into
+# the catalog before either half can see it, which is the whole reason the earlier attempt found
+# nothing: the file was edited and the test read an unchanged catalog.
+#
+# With the defect installed, this reported
+#
+#     1 unqualified sibling calls in lt_check
+#     unreachable: SELECT count(*) FROM lt_check.lock_tree_command()
+#
+# and test/22_schema_install.sql reported tests 8 and 9 failing, with test 9 naming the function:
+# lock_tree_command(1). The other twenty test files and their 398 assertions passed unchanged, which
+# is the claim this file and that one are both making: in a public install the defect is invisible,
+# and only a private-schema install exposes it. Both were restored and re-verified afterwards.
 n=$("${PSQL[@]}" -d "$SCRATCH" -c "SELECT count(*)::text FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = '$SCHEMA' AND p.prokind = 'f'

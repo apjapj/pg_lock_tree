@@ -6,6 +6,93 @@ selects a release.
 
 ## Unreleased
 
+documentation: captured examples, and a check that had never been shown to fail
+
+Three things, none of which changes the extension. No SQL behaviour change, no control file change,
+and no version bump.
+
+`make scenarios` WAS SILENTLY DOING NOTHING
+
+`make scenarios` printed "make: 'scenarios' is up to date." and exited 0. make saw the scenarios/
+directory, found no prerequisites newer than it, and declined to run the recipe. The README,
+CONTRIBUTING.md and the Makefile's own comment all say it captures the eight scenarios, and it has not
+done so since the directory was added.
+
+Every target is now .PHONY. None of them produces a file of its own name, so all of them are
+procedural. `scripts/lint-docs.sh` checks that every target in the Makefile is .PHONY and names the
+consequence when one is not: if the target is also a path in the tree, make would report it up to date
+and do nothing. Proven by putting the bug back.
+
+GENERATED EXAMPLES, AND THE ONES THAT ARE NOT
+
+Every example in the documentation is either captured from a run or written by hand, and only the
+first kind can be checked. Both are now marked.
+
+Captured: `scripts/capture.sh` runs the code, masks what moves between runs, writes `docs/examples/`,
+and `scripts/lint-docs.sh` compares the documentation's copy against it. Two are wired up, chosen because
+they were the two hand-transcribed measurements: the coverage table in scenarios/README.md, which was
+eight rows of numbers copied out of scenarios/out/ by a person while run.sh derived them
+independently, and the order the demo prints.
+
+Written: the README's two transcripts are shortened for reading, with round pids and every wait 0s.
+They carry an `illustrative` marker and the README says what that means, including that `make demo`
+prints the same shape on a different table with one more reader. Nothing checks them, because there is
+nothing to check them against. The marker stops a hand-written example reading as evidence for itself.
+
+The mask covers pids standing alone, after a box-drawing glyph, inside brackets and inside arrays,
+waits in every form including 1m30s, and timestamps, each with a named replacement so a diff shows what
+was hidden. It deliberately does not mask the coverage numbers, because masking the thing under test is
+not a check. Proven sufficient by capturing twice on a live server and diffing: identical.
+
+FOUR BUGS IN THAT CHECK, EACH FOUND BY PLANTING
+
+  - the marker scan required a code fence, so a generated markdown table read as having no content
+  - markers were read from the whole file, so CONTRIBUTING.md documenting the marker syntax in a fence
+    demanded the placeholder filename in the middle of the page
+  - the marker scan took the file as its pattern and the pattern as its file, so every line mentioning
+    the file matched. An argument-order mistake that turns a check into noise rather than an error
+  - a markdown link label was read as a path, so a link whose label was a bare filename reported a
+    missing file that has been there all along
+
+TEST/22 IS NO LONGER VACUOUS
+
+It has been open since it was written: the header said the planted defect never reached the catalog, so
+its central assertion had never run against a defective function. It has now, and the reason it had not
+is mechanical rather than subtle. Both halves read the INSTALLED catalog, so editing the file changes
+nothing until `make install` and a fresh `CREATE EXTENSION`. The earlier attempt skipped that and read
+a passing test as evidence that the check was broken.
+
+The defect was one line in lock_tree_command()'s body: `FROM @extschema@.lock_tree_roots()` became
+`FROM lock_tree_roots()`, which is precisely the mistake the file exists to notice.
+
+  - `test/22_schema_install.sql` failed tests 8 and 9, and test 9 named the function rather than only
+    counting it: `have: lock_tree_command(1)`
+  - `scripts/check-schema.sh` reported `1 unqualified sibling calls in lt_check` and then
+    `unreachable: SELECT count(*) FROM lt_check.lock_tree_command()`
+  - the other twenty files and their 398 assertions passed unchanged
+
+That last line is the point of both files, and it is now measured rather than asserted: in a public
+install the defect is invisible, so only a private-schema install exposes it. Both files were restored
+and re-verified.
+
+CONTRIBUTING.md now has the plant-reinstall-run-restore recipe, because the step that gets skipped is
+the middle one and skipping it produces a false negative that looks like a broken check.
+
+VERIFIED
+
+  - 409 tests pass on PostgreSQL 18, and `make check-schema` end to end
+  - 415 documentation checks, up from 203
+  - two captures on a live server byte-identical across runs
+  - gitleaks clean on the staged tree and the history
+  - no em-dashes and no en-dashes in any document, including the captures
+
+STILL OPEN
+
+The examples that are hand-written stay unverified, and that is now said where a reader will see it
+rather than left to be discovered. The capture covers the two blocks that were measurements; making
+every transcript in the documentation come from a run would mean changing demo.sql to build exactly the
+incident the README illustrates, which is a judgement about which example is worth more than the other.
+
 documentation: the split, by when the reader arrives
 
 The README was 1,270 lines with fifteen sections and served four readers at once. It is now 151 lines

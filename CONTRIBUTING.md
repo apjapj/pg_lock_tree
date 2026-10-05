@@ -126,6 +126,43 @@ numbers in the scenarios table, because masking the thing under test is not a ch
 `make capture` needs a server with the extension installed, so it is not part of `make check`. Run it
 after changing anything that prints, and commit what it writes.
 
+## Proving a check fails
+
+A check that has never failed is not a check. This repository has three tests of its own tests, each
+because a check once passed on something it should have caught.
+
+**Plant the defect, reinstall, then run.** The step that gets skipped is the middle one. Every check
+that reads the installed catalog sees an unchanged catalog if you only edit the file, so:
+
+```bash
+# 1. break exactly one thing, and make the break small enough to name in a sentence
+$EDITOR pg_lock_tree--1.0.1.sql          # FROM @extschema@.lock_tree_roots()  ->  FROM lock_tree_roots()
+
+# 2. reinstall. Without this the next command tests nothing.
+docker exec lt bash -lc 'cd /src && make -s install'
+psql -X -c 'DROP EXTENSION pg_lock_tree;' -c 'CREATE EXTENSION pg_lock_tree;'
+
+# 3. run the check and watch it fail. A check that passes here tells you the plant did not land,
+#    which is worth knowing before you change the check.
+pg_prove --dbname postgres test/22_schema_install.sql
+
+# 4. restore, reinstall, and run it again to see it pass
+git checkout pg_lock_tree--1.0.1.sql
+```
+
+The trap this replaces: an earlier attempt planted the defect, skipped the reinstall, saw the test
+pass, and recorded that the check's non-vacuity was unproved. It was not unproved; the catalog had
+never changed. Every negative check in this repository needs all four steps, and "the test passed" is
+only evidence once step 2 has actually happened.
+
+**Two more shapes worth recognising:**
+
+- **An assertion count on an empty set.** `scripts/lint-docs.sh` counts the assertions it expects
+  against the ones it finds, and treats a shortfall as a note and an excess as a failure, because an
+  assertion that appeared without being counted is one nobody reviewed.
+- **A check at an ignored severity.** A `TODO` or `SKIP` records intent and verifies nothing, and is
+  worse than no check because it reads as coverage.
+
 ## Releasing
 
 Every release is additive: a new full-version script plus an update path from the version

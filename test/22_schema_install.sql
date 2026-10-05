@@ -26,6 +26,28 @@
 -- either a second \connect, which loses the plan, or dblink plus a CREATE DATABASE, which is a lot of
 -- machinery to fail for reasons that have nothing to do with the extension.
 --
+-- PROVEN NON-VACUOUS, on 2026-10-05. This file previously carried a note saying the planted defect
+-- had never reached the catalog, so the assertion had never run against a defective function. It has
+-- now. The defect was one line in lock_tree_command()'s body: FROM @extschema@.lock_tree_roots()
+-- became FROM lock_tree_roots(), which is exactly the mistake this file exists to notice.
+--
+-- Reinstalling the extension is the part that was missing before. Both halves read the INSTALLED
+-- catalog, so editing the file changes nothing until `make install` and a fresh CREATE EXTENSION. An
+-- earlier attempt skipped that and found a passing test, which read as "the check is broken" and was
+-- really "the catalog was unchanged".
+--
+-- With the defect installed, tests 8 and 9 fail, and test 9 names the function rather than only
+-- counting it:
+--
+--     Failed test 8: no function in the extension schema holds an unqualified call to a sibling
+--                    have: 1   want: 0
+--     Failed test 9: and any that did are named rather than only counted
+--                    have: lock_tree_command(1)   want:
+--
+-- The other twenty files and their 398 assertions passed unchanged. That is the claim in the header
+-- above, now measured rather than asserted: in a public install the defect is invisible, which is why
+-- this file and scripts/check-schema.sh exist. Both were restored and re-verified afterwards.
+
 -- The dblink attempt is recorded below, because everything it went wrong on is worth knowing and
 -- none of it was the extension's fault:
 --
