@@ -5,10 +5,37 @@ Work that has been done is in the last section, so this one is only ever about w
 
 ## Immediate, and in this order
 
-| # | Work | Why here | Size |
-|---|---|---|---|
-| 1 | **Whole-window `lock_tree_duration()`** | The slowest read in the extension. A seven day window is 60,481 instants and 1.2 million rows of real work, so no index removes it; the four CTEs each re-read the history and merging them is the obvious thing to try. `scripts/bench-history.sh` measures it, which is the only reason the number is knowable. | Untested idea |
-| 2 | **Generated examples, diffed on every run** | The examples in the documentation are copied from `make demo` and `make scenarios` output by hand, so nothing stops them drifting from what the code prints. Capturing the output and diffing it is mechanical once the masking of pids and timestamps is agreed. | Small |
+Nothing. The two items that were here are done, and both are in the record section at the end with
+what was actually built. That is a better position than a list of work nobody intends to do.
+
+## The whole-window duration read, measured rather than assumed
+
+This was the first item on the list for several releases, on the reasoning that the four CTEs each
+re-read the history and merging them into one pass should help. It does not. Three versions were built
+and timed against the same fixture, alternating with the shipped function so both saw the same cache.
+Every figure is a mean of four runs of the `root_wait` join, which is 43% of the function.
+
+| Version | Mean |
+|---|---|
+| Shipped: the root rows probe the same sample's waiter rows | **643.9 ms** |
+| The waiters aggregated once by (sample, root, object), then joined | 643.0 ms |
+| One materialised CTE, read once, all four CTEs derived from it | **worse than the whole function** |
+
+The third is the interesting failure, and it is the one the reasoning predicted would work. A CTE has
+no index, so the self-join degenerates from an index probe per root row into a scan of the materialised
+set, and the function went from 1,460 ms to 2,900 ms. Reading the table once is not the same as reading
+it cheaply, and merging passes over an indexed table loses more than it saves.
+
+A **covering index** on `(sampled_at) INCLUDE (depth, query_id, root_pid, root_object, wait_age, pid)`
+was built and measured: 79 MB, 42% of the table it indexes, for no measurable gain. The planner used it
+for one side of the join and the time did not move, because the cost is not the heap access.
+
+`work_mem` buys about 10%: 1,360 ms at 4 MB, 1,220 ms at 256 MB. Not a code change, not worth
+documenting as a requirement.
+
+So the remaining cost is the 187 MB scan and the aggregate over 1.15 million joined rows, and neither
+is removable by restructuring. It stays the slowest read in the extension, and the thing that would
+change it is not a better query.
 
 ## Considered and not planned
 
@@ -52,6 +79,16 @@ Work that has been done is in the last section, so this one is only ever about w
 Recorded here so the section is a record rather than a wish list. Each is one line because the
 changelog has the detail and a test has the proof.
 
+- **Generated examples** (`scripts/capture.sh` and `scripts/lint-docs.sh`), for the blocks that were
+  hand-transcribed measurements: the coverage table in scenarios/README.md, the lock tree in the README,
+  the actions block and the command beside it, and the order the demo prints. Each is captured with
+  pids, waits and timestamps masked, and compared on every run. The examples that remain written are
+  marked as written, and the demo now builds the incident the README illustrates so that the last of
+  the README's two could become a capture too.
+- **The whole-window `lock_tree_duration()` read**, investigated and then left alone. Three candidate
+  implementations were built and measured: one was twice as slow, one made no measurable difference, and
+  a covering index cost 79 MB for nothing. The section above has the numbers and why the reasoning
+  behind the item was wrong.
 - **Per-query blocking time** (0.12), and per-application (0.13), which invert each other depending on
   whether one application runs several statements or several applications run the same one.
 - **Recovery notices** (0.12), so an alert has an end and not only a start.

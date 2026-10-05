@@ -179,7 +179,9 @@ SELECT * FROM lock_tree_duration_by_application(interval '1 day');
 ```
 
 The seven day figures are still the slowest reads in the extension, because seven days of samples is
-genuinely 60,481 instants and 1.2 million rows of work.
+genuinely 60,481 instants and 1.2 million rows of work. Three ways of making that cheaper were built
+and measured, and none of them helped: [the roadmap](roadmap.md#the-whole-window-duration-read-measured-rather-than-assumed)
+has the numbers, including the one that made it twice as slow.
 
 **If you stored these numbers anywhere.** `blocked_sessions_peak` and `sessions_total` were one too
 high per sample until 0.15, because the root-to-waiter join matched each root to itself: a root

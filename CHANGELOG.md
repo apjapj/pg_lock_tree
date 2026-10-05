@@ -6,6 +6,84 @@ selects a release.
 
 ## Unreleased
 
+the whole-window read, measured and left alone; the demo now matches the README
+
+No SQL change, so no version bump. Two findings and one fix to the documentation's own tooling.
+
+WHOLE-WINDOW `lock_tree_duration()`, AND WHY THE ROADMAP ITEM WAS WRONG
+
+The first item on the roadmap for several releases, on the reasoning that the four CTEs each re-read
+the history and merging them into one pass should help. Three implementations were built and timed
+against `make bench-history`'s fixture: seven days, a ten second interval, twenty blocked sessions,
+1,209,620 rows in 187 MB, on PostgreSQL 18. Each was timed alternating with the shipped function so
+both saw the same cache, four runs, mean of the `root_wait` join, which is 43% of the function.
+
+| Version | Mean |
+|---|---|
+| Shipped: the root rows probe the same sample's waiter rows | **643.9 ms** |
+| The waiters aggregated once by (sample, root, object), then joined | 643.0 ms |
+| One materialised CTE, read once, all four CTEs derived from it | 2,900 ms, against 1,460 ms for the whole shipped function |
+
+The third is the failure the reasoning predicted would work, and the reason is worth keeping. A CTE has
+no index, so the self-join stops being an index probe per root row and becomes a scan of the
+materialised set. Reading the table once is not the same as reading it cheaply, and merging passes over
+an indexed table loses more than it saves.
+
+A covering index on `(sampled_at) INCLUDE (depth, query_id, root_pid, root_object, wait_age, pid)` was
+built and measured: 79 MB, 42% of the table it indexes, and no measurable gain. The planner used it for
+one side of the join and the time did not move, so the cost is not the heap access. `work_mem` buys
+about ten percent, from 1,360 ms at 4 MB to 1,220 ms at 256 MB.
+
+So the cost is the scan and the aggregate over 1.15 million joined rows, and neither is removable by
+restructuring. It stays the slowest read in the extension.
+
+Two false readings on the way, both of which would have gone in a commit message as results:
+
+  - the aggregated-then-joined version first measured 158 ms against 704 ms, which is a 4.4x
+    improvement. It was matching nothing: `USING` will not match a NULL `root_object`, which is most
+    rows, so it returned zero rows. With `coalesce` it returns 60,471 rows, identical to the shipped
+    version in both directions, and takes the same time. A 4x speedup that produces no rows is not a
+    speedup
+  - a 2,900 ms candidate was described as "worse" before noticing it is 2x the whole shipped function
+    rather than 2x the one query it replaced
+
+DEMO.SQL BUILDS THE INCIDENT THE README ILLUSTRATES
+
+The README's example and the demo's output were two different incidents: the README showed a table
+called ledger with one ALTER and two reads, the demo built demo_ledger with one ALTER and three reads,
+with different numbers. A reader who ran `make demo` saw something the README did not promise.
+
+Each waiter's `application_name` now goes in its own `dblink_exec`, before the query that is going to
+block. Sent as one string the recorded query is the whole string, so `lock_tree_text()` truncated
+"BEGIN; SET application_name='schema_change'; ALTER TABLE ..." and the tree showed the SET rather than
+the DDL the session exists to illustrate. The demo was printing the wrong statement.
+
+That exposed a hang. The cleanup collected the backends to terminate by asking each dblink connection
+for its own pid, which needs that connection to have no query in flight, and four of them do: they are
+blocked on the culprit's lock, which is not released until the next step terminates it. The collect
+step waited for a lock only the following step could release, and the demo exited 124 on every run. It
+collects from `pg_stat_activity` now, which needs no cooperation from the session it asks about and
+finds the deadlock sessions without a hard-coded name list. Verified: exit 0, and the demo's own
+leftover count reports zero.
+
+BOTH README TRANSCRIPTS ARE NOW CAPTURES
+
+The tree needed one thing psql will not give. psql right-aligns each column to its widest value, so a
+run where every pid is three digits lays out differently from one where a pid is four, and masking
+happens afterwards and cannot undo a choice psql has already made. Runs of two or more spaces become
+exactly two, which keeps the columns apart and is the same whatever the pids were; leading indentation
+is left alone because it is the depth; single spaces inside a statement are left alone because
+"SELECT sum(amount) FROM x" has one. Proven by feeding the extractor a narrow and a wide transcript:
+five lines each, identical.
+
+The second transcript was worse than a different example: hand-written, it said pid 166 and three
+blocked sessions, directly under a tree that said `<PID>` and four. Both now come from the same run.
+
+Four generated blocks are compared on every run. No illustrative blocks are left in the README.
+
+Verified: demo exits 0 leaving no sessions, 409 tests pass, check-schema and check-upgrade green, 421
+documentation checks, no em-dashes or en-dashes.
+
 the CI verdicts could not be read, so the gates were run locally instead
 
 No code change. This is what was found while trying to answer the one open question the API could
