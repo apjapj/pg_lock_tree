@@ -126,6 +126,32 @@ supposed to promise. Both are 1.0 business and neither is done.
 361 tests green on PG 14 to 19beta4, unchanged in count. All 16 upgrade paths to 1.0.0 match a fresh
 install, with the one unfixable difference classified and checked in both directions.
 
+THE SETTING, OBSERVED IN ALL SIX STATES
+
+  (unset)  ALTER ROLE app PASSWORD '<redacted>'
+  full     ALTER ROLE app PASSWORD 'secret2'
+  none     NULL
+  typo     ALTER ROLE app PASSWORD '<redacted>'
+  FULL     ALTER ROLE app PASSWORD '<redacted>'
+  empty    ALTER ROLE app PASSWORD '<redacted>'
+
+Three of those six are the interesting ones. 'typo' and 'FULL' both redact, so a misspelling and a
+wrong case fail in the safe direction, and '' redacts rather than behaving as unset-and-therefore-
+verbatim. That is the whole design of the setting: the only direction an unrecognised value is
+allowed to fail in is the one that does not store the password.
+
+Checked against the expression lifted out of lock_tree_sample()'s body rather than a reimplementation
+of it, so if the function changes, this stops describing what the function does.
+
+AND ONE LINTER BUG THIS FOUND
+
+scripts/lint-docs.sh found the newest release script with the pattern
+^pg_lock_tree--[0-9]+\.[0-9]+\.sql$, which requires EXACTLY two version components. The moment the
+version became 1.0.0 it matched nothing, `ls | grep` yielded an empty string, and the linter exited 2
+saying "no release script matching pg_lock_tree--X.Y.sql found" about a file that was sitting right
+there. A linter that goes blind on the project's own version numbering is worse than no linter,
+because the checks before it all pass first and the failure arrives as a missing file.
+
 ## 0.16 (2026-10-05)
 
 0.16: an index by measurement, query_id on the live view, and the grants a monitoring role needs
