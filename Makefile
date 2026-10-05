@@ -87,3 +87,8 @@ bench-history:
 # installed and would pass on an update path that had never been executed.
 check-upgrade:
 	./scripts/check-upgrade.sh
+
+# The non-public schema install. It creates and drops a scratch database, so it is a script and not a
+# pgTAP file, and it is not in `make prove`. test/22_schema_install.sql covers the structural half.
+check-schema:
+	./scripts/check-schema.sh

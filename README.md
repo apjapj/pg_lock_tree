@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 398 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 409 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -1068,7 +1068,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 398 pgTAP tests against the server your libpq env vars point at
+make prove              # 409 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -1077,6 +1077,8 @@ make check-alert        # prove a real NOTIFY reaches a real listening client
 make check-deadlock     # prove a real deadlock moves the counter and the sample records it
 make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the counter
 make bench-history      # time the read side against a synthetic 1.2M row history (truncates it)
+make check-upgrade      # every upgrade path ends in the same objects as a fresh install
+make check-schema       # install into a private schema, then use it from a caller that cannot see it
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
