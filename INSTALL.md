@@ -199,12 +199,48 @@ second grant every query fails with:
 ERROR:  permission denied for view lock_tree
 ```
 
-`lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()`,
-`lock_tree_command()`, `lock_tree_sample()`, `lock_tree_incidents()`, `lock_tree_prune()`,
-`lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_statements()`,
-`lock_tree_history_statements()`, `lock_tree_sampling_advice()`, `lock_tree_prune_alerts()` and the
-three formatting helpers are
-executable by `PUBLIC` by default. `lock_tree_notify()` is **not** granted to `PUBLIC`: it decides
+  **Some of those also read the history, and need a third grant.** Everything above the view is
+  `SECURITY INVOKER`, so a function runs as whoever called it, and the history is the caller's to read
+  or not. Seven of them read `lock_tree_history` and fail without this:
+
+  ```sql
+  GRANT SELECT ON lock_tree_history TO monitoring;   -- the two history tables
+  GRANT SELECT ON lock_tree_deadlock TO monitoring;
+  ```
+
+  The seven, so you can tell whether you need it rather than discovering it one error at a time:
+
+  | | |
+  |---|---|
+  | `lock_tree_replay()` | the tree at a past sample |
+  | `lock_tree_replay_text()` | the same, rendered |
+  | `lock_tree_incidents()` | the history grouped into incidents |
+  | `lock_tree_sampling_advice()` | a suggested sample interval |
+  | `lock_tree_duration()` | per-query blocking time |
+  | `lock_tree_duration_by_application()` | per-application blocking time |
+  | `lock_tree_history_statements()` | per-query session-samples |
+
+  Without it each fails with `ERROR: permission denied for table lock_tree_history`, which says
+  nothing about which grant is missing: the error names the table, and the table is not what you were
+  thinking about.
+
+  The extension does not paper over this by making them `SECURITY DEFINER`, and it should not. The
+  history holds the first 300 characters of blocked queries, which is application data, and a definer
+  function would hand it to every role with `EXECUTE` on it, which is `PUBLIC` by default. If that
+  text is not something `monitoring` may see, the answer is not to grant it and not to deny it, but to
+  leave `lock_tree_sample()` unscheduled so that there is no history to read.
+
+  **One inconsistency, stated rather than fixed.** `lock_tree_replay_samples` is a *view* over the
+  same table, and a view runs with the **definer's** rights in PostgreSQL, so `monitoring` can read it
+  with no grant at all. It exposes the shape of each sample and the application names and query ids at
+  the head. It does **not** expose query text, which is the part worth protecting. This is not changed
+  here, because `security_invoker` on a view needs PostgreSQL 15 and this extension supports 14.
+
+  Everything else is executable by `PUBLIC` by default, including `lock_tree_roots()`,
+  `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_actions()`, `lock_tree_command()`,
+  `lock_tree_sample()`, `lock_tree_prune()`, `lock_tree_wide()`, `lock_tree_summary()`,
+  `lock_tree_statements()`, `lock_tree_prune_alerts()`, `lock_tree_deadlocks()`,
+  `lock_tree_history_size()` and the three formatting helpers.
 what is important enough to page someone, which is not a decision an arbitrary role should make. and become usable once the view
 is readable. If you install into a non-public schema, grant against that schema instead:
 

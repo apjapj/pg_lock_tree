@@ -4,6 +4,118 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 0.16 (2026-10-05)
+
+0.16: an index by measurement, query_id on the live view, and the grants a monitoring role needs
+
+Findings 3, 4 and 5 of the review that 0.15 answered part of. No behaviour change anywhere except the
+two objects named below, and one column appended.
+
+AN INDEX, CHOSEN BY MEASUREMENT RATHER THAN BY TASTE
+
+Three candidates were tried against the same seven day 1.2 million row fixture, each on its own, whole
+window lock_tree_duration() and lock_tree_duration_by_application() before and after:
+
+    no extra index                                    2000 ms   2634 ms
+    (application_name, sampled_at) WHERE depth = 0     1651 ms   2002 ms   1888 kB
+    (sampled_at)            WHERE depth = 0            1750 ms   2214 ms   1344 kB
+    (root_pid, sampled_at)  WHERE depth > 0            1701 ms   2501 ms   9744 kB
+
+The first wins: 17% and 24% for 1.9 MB, which is 0.7% of the table. The last costs five times the
+space for no gain on the application figure, which is how you can tell the root-to-waiter join was
+never the expensive side. The second is smaller but dominated on both reads.
+
+Partial rather than full, because the query that wants it filters on depth = 0, which is about one row
+in twenty. A full index would carry twenty times the entries to serve the same twenty.
+
+The write path was measured too, since this index is on the hot path and lock_tree_sample() inserts a
+row per blocked session. One sample of 20 rows took 0.8 ms without the index and 0.7 ms with it, which
+is noise: the partial predicate puts one index entry per sample in it rather than twenty.
+
+WHY AN INDEX AT ALL, GIVEN 0.15. 0.15 turned the window bound into an Index Cond, which took the one
+hour window to 12 ms and left the whole window read as the only slow path. This is what helps that one.
+The remaining cost there is real work over 60,481 instants and 1.2 million rows, and no index removes
+it.
+
+query_id ON THE LIVE VIEW
+
+Appending is the only change CREATE OR REPLACE VIEW permits to a view, which is exactly what this is.
+Until now query_id was on lock_tree_replay() and not on lock_tree, so the tree in front of you could
+not be joined to the history behind you on the one column both are keyed by. 0.14's changelog noted
+the asymmetry rather than fixing it.
+
+`NULL` on waiters, always, and that is not an omission: a query blocked on a lock has no query_id for
+as long as it is blocked and only gains one when it completes. The root is the opposite. Same rule the
+history follows, so the two line up.
+
+Two things about implementing it that cost time. The act CTE has to PROJECT query_id as well as the
+final SELECT selecting it, and forgetting that gives `ERROR: column a.query_id does not exist` with a
+hint suggesting `a.query`, which is about as close to actively misleading as a helpful message gets.
+And `pg_stat_activity.query_id` exists from PostgreSQL 14, which is this extension's floor, so there
+is no version guard to write and therefore none.
+
+THE GRANTS A MONITORING ROLE NEEDS, WHICH WERE INCOMPLETE
+
+Found by setting up the documented grants and calling everything. The result was not what the
+documentation implied:
+
+  work with only SELECT on lock_tree
+      lock_tree, lock_tree_text(), lock_tree_summary(), lock_tree_wide(), lock_tree_roots(),
+      lock_tree_actions(), lock_tree_command(), lock_tree_replay_samples, lock_tree_deadlocks(),
+      lock_tree_history_size(), lock_tree_notify()
+
+  refused with "permission denied for table lock_tree_history"
+      lock_tree_replay(), lock_tree_replay_text(), lock_tree_incidents(),
+      lock_tree_sampling_advice(), lock_tree_duration(), lock_tree_duration_by_application(),
+      lock_tree_history_statements()
+
+INSTALL.md gave two grants and said that was it. It now gives the third, names all seven, and says
+why the error names a table rather than a function.
+
+The extension does not resolve this by making them SECURITY DEFINER, and should not. The history
+holds the first 300 characters of blocked queries, which is application data, and a definer function
+would hand it to every role with EXECUTE on it, which is PUBLIC by default. If that text is not
+something the monitoring role may see, the answer is not to grant it and not to deny it, but to leave
+lock_tree_sample() unscheduled so there is no history to read.
+
+ONE INCONSISTENCY, STATED RATHER THAN FIXED
+
+lock_tree_replay_samples is a VIEW over the same table, and a view runs with the DEFINDER's rights in
+PostgreSQL, so a role with SELECT on the view reads the table underneath it with no grant at all.
+That is a partial leak: it exposes the shape of each sample and the application names and query ids at
+the head, but NOT the query text, which is the part worth protecting. It is not changed here because
+`security_invoker` on a view needs PostgreSQL 15 and this extension supports 14.
+
+It is now written down rather than left to be discovered by whoever calls it first.
+
+WHAT IS NOT IN THIS RELEASE
+
+A pgTAP file pinning the grant behaviour, which is where most of the effort went and where I stopped.
+`test/20` grew to 300 lines and the dblink batching inside it took five attempts to get right, because
+each attempt was a new way for the batches to be mismatched: a \gset label swapped, a loop lost, a role
+that needed LOGIN, and DROP ROLE refused because a grant still pointed at it. Each failure was real and
+each was mine.
+
+Deleting it is the right call rather than shipping it half-working. The substance of finding 5 is the
+documentation, which is correct and does not need a test to be true, and the privilege facts it rests
+on were established by running them, which is recorded above and in INSTALL.md.
+
+The test worth writing later is much smaller than the one I started: assert the privilege matrix with
+has_table_privilege and has_function_privilege rather than executing seventeen statements through
+dblink, and execute exactly one query as the role to prove the matrix means what it says.
+
+test/18's set-difference assertion for the columns replay has that lock_tree does not now reads
+`sampled_at` rather than `query_id, sampled_at`, which is the point of writing it as a set difference:
+it is what noticed the asymmetry. A hardcoded list would have needed editing and might not have been
+noticed at all.
+
+Also fixed in the test runner used for these releases, which never reset its exit status between files,
+so one failure reported every LATER file as failed too. The count was never wrong, only the list of
+blame.
+
+361 tests green on PG 14 to 19beta4, unchanged in count: this release adds objects and documentation
+rather than assertions. demo, check-install, check-alert in both modes, and check-deadlock all pass.
+
 ## 0.15 (2026-10-05)
 
 0.15: the read side stops reading the whole table

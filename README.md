@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.15** (green on PG 14 to 19beta4) |
+| Current release | **v0.16** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -933,9 +933,15 @@ Four things worth knowing before you turn it on:
 
 ## Objects
 
+> **Monitoring roles.** Seven of the functions below read `lock_tree_history` and are
+> `SECURITY INVOKER`, so they need `GRANT SELECT ON lock_tree_history` on top of the two grants in
+> [INSTALL.md](INSTALL.md#grants). `lock_tree_replay_samples` is a view and works without it, because
+> a view runs with the definer's rights. That inconsistency is stated rather than fixed, and the
+> reasons are in INSTALL.md.
+
 | Object | Use |
 |---|---|
-| `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `root_object`, `depth` (0 is the root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, plus user, database, application and client. Ordered root first. `root_object` is what a prepared-transaction root holds, since `root_pid` is 0 for all of them. |
+| `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `root_object`, `depth` (0 is the root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, `query_id`, plus user, database, application and client. Ordered root first. `root_object` is what a prepared-transaction root holds, since `root_pid` is 0 for all of them. `query_id` was added in 0.16 so the live tree can be joined to `lock_tree_history` on it; it is `NULL` on waiters, because a blocked query has none until it completes. |
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
 | `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |

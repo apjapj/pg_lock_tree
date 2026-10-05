@@ -280,13 +280,15 @@ SELECT is(:absent::text,
           || 'mean widening the history for every future sample on every database, and it would not '
           || 'retroactively supply the past'::text);
 
--- Two, not one. query_id was forgotten when this assertion was written, and it is the column the
--- whole duration family is keyed on, so its absence from lock_tree is a live-tree gap rather than
--- anything to do with replay.
-SELECT is(:present_new::text, 'query_id, sampled_at'::text,
-          'the two columns replay has that lock_tree does not: sampled_at, so you can see which '
-          || 'sample you actually got, and query_id, which is what lock_tree_duration() is keyed on '
-          || 'and which the live view does not carry'::text);
+-- One, since 0.16. It was two until then, and the second is the reason this assertion is a set
+-- difference and not a constant: query_id was on replay and not on lock_tree, so the live tree could
+-- not be joined to the history on the column the whole duration family is keyed by. 0.16 appended it
+-- to the view, which is the only change CREATE OR REPLACE VIEW permits.
+SELECT is(:present_new::text, 'sampled_at'::text,
+          'the one column replay has that lock_tree does not, and it is there so you can see which '
+          || 'sample you actually got. The other was query_id until 0.16 appended it to the view, so '
+          || 'that this is a set difference rather than a constant is the point: it is what caught '
+          || 'the asymmetry'::text);
 
 -- ------------------------------------------------------------------ empty history
 
