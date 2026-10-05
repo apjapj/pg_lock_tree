@@ -52,7 +52,7 @@ TRUNCATE lock_tree_deadlock;
 \o
 \unset QUIET
 
-SELECT plan(29);
+SELECT plan(30);
 
 SELECT has_table('lock_tree_deadlock', 'lock_tree_deadlock table exists');
 
@@ -176,7 +176,14 @@ SELECT blocked_sessions AS n_blocked, observed_peak AS n_peak
 FROM lock_tree_sampling_advice(since => interval '1 minute') \gset
 TRUNCATE lock_tree_history;
 SELECT blocked_sessions AS q_blocked, observed_peak AS q_peak, live_blocked AS q_live,
-       (suggested_every = interval '5 seconds')::text AS q_is_5s
+       -- 1.0.2. The reason for a quiet database said "so sample rarely" beside 00:00:05, the
+       -- finest interval the function ever returns. The interval was always right and the
+       -- wording was not, so this asserts the wording rather than the interval, which the
+       -- assertion above already pins.
+       -- LIKE rather than = : a substring survives a reword, while still failing if the
+       -- word "rarely" ever comes back.
+       (suggested_every = interval '5 seconds')::text AS q_is_5s,
+       (reason LIKE '%rarely%')::text AS q_says_rarely
 FROM lock_tree_sampling_advice() \gset
 \o
 \set QUIET 0
@@ -207,6 +214,10 @@ SELECT is(:q_live::bigint, 0::bigint, 'nor a live queue');
 
 SELECT is(:q_is_5s, 'true',
           'so the finest interval comes back, for a database with nothing to carry');
+
+SELECT is(:q_says_rarely, 'false',
+            'and since 1.0.2 the reason for that does not tell the reader to sample rarely, '
+            || 'which contradicted the interval beside it');
 
 -- ---------------------------------------------------------------- prune
 

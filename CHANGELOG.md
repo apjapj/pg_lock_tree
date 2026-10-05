@@ -4,7 +4,83 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
-## Unreleased
+## 1.0.2 (2026-10-05)
+
+1.0.2: the sampling advice contradicted itself on a quiet database
+
+A patch release, and it changes one sentence. No function changes what it returns, no signature
+changes, no column and no grant changes.
+
+THE BUG
+
+`lock_tree_sampling_advice()` on a database with nothing blocked and an empty history returned:
+
+    suggested_every  00:00:05
+    reason           nothing blocked now and nothing in the window: the table stays empty at any
+                     interval, so sample rarely
+
+`00:00:05` is the **finest interval the function ever returns**. The reason told a reader to sample
+rarely, in the same row, beside the advice to sample five times more often than anything else it
+offers. Found in the 1.0.1 review, and unchanged since 1.0.0.
+
+The interval was right and the wording was wrong, so the interval is untouched. Nothing is blocked, a
+sample writes no rows at all, and 5 seconds costs one cheap query while catching the next incident in
+detail. The reason now says that:
+
+    nothing blocked now and nothing in the window: a sample writes nothing here, so 5 seconds costs
+    one cheap query and still catches the next incident in detail
+
+That is the review's suggested wording, with `a sample writes nothing here` rather than `a sample
+writes nothing`, because the second row of the example in `docs/alerting.md` describes an empty history
+rather than a quiet one, and the two now read differently on purpose.
+
+HOW IT IS SHIPPED
+
+`pg_lock_tree--1.0.1--1.0.2.sql` replaces the whole function, because the string is inside its body
+and a versioned script has no narrower way to change one. The body is byte-identical to 1.0.1's apart
+from that one line, verified by diffing the two files, and `look_back`, the seventh returned column,
+is present: it is the one a rewrite is most likely to drop.
+
+`scripts/check-upgrade.sh` is the real check. It compares the catalog a fresh 1.0.2 install produces
+against the catalog every upgrade path produces, so anything else that moved fails there rather than
+passing unnoticed. All 18 paths are verified.
+
+Also in this release, from the same review, with no version change of its own:
+
+  - the em-dash and en-dash checks had never run in CI. `printf '\u2014'` only emits the character in
+    a UTF-8 locale, and a bare container gives you POSIX, so both checks passed on a file full of
+    dashes. Reproduced: an injected em-dash gave "all 439 checks passed" under `LC_ALL=POSIX`. The
+    characters are now built from their UTF-8 bytes.
+  - outside a git checkout [`scripts/lint-docs.sh`](scripts/lint-docs.sh) failed on itself, because the no-git fallback lists paths
+    with a leading `./` that the self-exclusion did not match. The fallback exists for tarball users,
+    so they were the only people who hit it.
+  - the version classifier assumed two-part version numbers in two places, so it reported 16 release
+    scripts and 15 update paths where there are 18 and 17, and both 1.0.x update paths were checked as
+    releases. They passed only because the Makefile lists them in DATA, which its own comment says
+    update scripts must not be.
+  - the deadlock section said "Nothing in SQL does" name the two statements. It does, when a sample
+    lands while the cycle exists: verified on PostgreSQL 16 with `deadlock_timeout` at 15s, where a
+    sample during a real cycle put two rows in `lock_tree_history` at depth 0 with `waiting_for` set
+    and the query text. On the 60,481-root benchmark fixture, **zero** depth-0 rows have `waiting_for`
+    set, so the shape really is unique to a deadlock.
+  - the log format shown for a deadlock was not PostgreSQL's. The real entry has one `DETAIL` with
+    both participants as `Process N:` lines, which the client never sees, then `HINT`, `CONTEXT` and
+    `STATEMENT`. Verified on PG16 with `log_lock_waits=off` and `log_min_duration_statement=-1`.
+  - the sampling-advice example in `docs/alerting.md` showed output the function cannot produce: the
+    wrong reason for the first row, and `roots = 9` where the real value is 0. Both rows are now the
+    function's output on a seeded history.
+
+The review's own summary is that findings 1 to 3 are tooling and 4 to 6 are doc and text defects, and
+that none of them changes what the extension does to a database. That is the right reading, and the
+only behaviour change in this release is the sentence above.
+
+VERIFIED
+
+  - 414 tests pass on PostgreSQL 14, 15, 16, 17, 18 and 19beta4
+  - all 18 upgrade paths converge on a fresh install
+  - `make check-schema` green
+  - 446 documentation checks, under both `LC_ALL=POSIX` and `LC_ALL=C.UTF-8`
+  - gitleaks clean on the staged tree and the history
 
 a number that belonged to a different function, and every example now says whether it was checked
 

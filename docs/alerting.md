@@ -295,7 +295,7 @@ otherwise recommend the finest interval for a database that spends every weekday
 hundred sessions waiting. The advice was not wrong about the instant; it was answering the wrong
 question.
 
-<!-- illustrative: written by hand, then checked against lock_tree_sampling_advice() on PG16: one historical sample of 450 sessions with nothing blocked now, and an empty history. Reasons wrapped. -->
+<!-- illustrative: written by hand, then checked against lock_tree_sampling_advice() on PG18: one historical sample of 450 sessions with nothing blocked now, and an empty history. Reasons wrapped. The second row is 1.0.2's wording; 1.0.1 said "so sample rarely" beside 00:00:05, the finest interval the function ever returns. One line, because the classification check looks four lines up. -->
 
 ```
  blocked_sessions | roots | suggested_every |              reason              | observed_peak | live_blocked
@@ -305,9 +305,11 @@ question.
                   |       |                 | window, so sized for that rather |               |
                   |       |                 | than for now                     |               |
                 0 |     0 | 00:00:05        | nothing blocked now and nothing  |             0 |            0
-                  |       |                 | in the window: the table stays   |               |
-                  |       |                 | empty at any interval, so sample |               |
-                  |       |                 | rarely                           |               |
+                  |       |                 | in the window: a sample writes   |               |
+                  |       |                 | nothing here, so 5 seconds costs |               |
+                  |       |                 | one cheap query and still        |               |
+                  |       |                 | catches the next incident in     |               |
+                  |       |                 | detail                           |               |
 ```
 
 `observed_peak` and `live_blocked` are both returned, and the figure used is the greater of the two,

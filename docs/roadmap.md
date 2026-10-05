@@ -5,8 +5,53 @@ Work that has been done is in the last section, so this one is only ever about w
 
 ## Immediate, and in this order
 
-Nothing. The two items that were here are done, and both are in the record section at the end with
-what was actually built. That is a better position than a list of work nobody intends to do.
+Three items, from the 1.0.1 review. They are proposals, not commitments, and none has been built.
+In order, because the first is the only one that is obviously right and the third is the only one
+that needs a measurement before anyone can say whether it is worth doing.
+
+**A window parameter on `lock_tree_incidents()`.** It takes `max_gap` and nothing else:
+
+    lock_tree_incidents(max_gap interval DEFAULT '00:05:00')
+
+Its two neighbours both take one, and both default to seven days:
+
+    lock_tree_deadlocks(since interval DEFAULT '7 days')
+    lock_tree_sampling_advice(since interval DEFAULT '7 days')
+
+So the history functions that answer "what happened" can be bounded, and the one that segments the
+history into incidents cannot. On a database whose history has been kept for a year, that is the
+whole table scanned to answer a question about last Tuesday. Adding `since interval DEFAULT '7 days'`
+as a second parameter is additive, so every existing call site keeps working. It is not free: the
+segmenting reads `sampled_at` in order and the parameter has to participate in the gap test rather
+than sit in a `WHERE` that could change which rows are adjacent to which.
+
+**The two statements in `lock_tree_deadlocks()`.** `lock_tree_deadlocks()` reports *when* a deadlock
+happened, from the `pg_stat_database.deadlocks` counter, and names neither participant. Both are
+recoverable from the history, and this was measured rather than assumed. On PostgreSQL 16 with
+`deadlock_timeout` at 15s, a sample taken while a real two-session cycle existed wrote two rows into
+`lock_tree_history` at `depth = 0` with `waiting_for` set and the query text attached, and on the
+1,209,620-row benchmark fixture **zero** of the 60,481 `depth = 0` rows have `waiting_for` set. The
+shape is therefore unique to a deadlock, and a window join on `sampled_at` is what would surface it.
+
+The catch is stated in `docs/after-the-incident.md` and belongs here too: it works only if a sample
+happened to land while the cycle existed, which needs `deadlock_timeout` longer than the sampling
+interval. At the default one second it almost never will. A column that is usually empty is still
+worth having, but it must say so, or it will be read as a promise.
+
+**Measuring `INCLUDE (query_id)` on the application index.** The index is:
+
+    CREATE INDEX lock_tree_history_application_idx ON lock_tree_history
+    USING btree (application_name, sampled_at) WHERE depth = 0
+
+`lock_tree_statements()` reads that index and then visits the heap for `query_id`, `query` and the
+wait columns. Adding `INCLUDE (query_id)` would put the one column the grouping needs into the leaf,
+without making the index bigger by much, because it is dropped from the leaf on a non-leaf split.
+**This has not been measured.** The benchmark figure for `lock_tree_statements()` is 17.9 ms on the
+standard fixture, which is not slow, so the size of the win is unknown and the size of the cost is
+also unknown. Measure both before writing anything: the added index size, and the same function timed
+with and without it. A covering index for the `lock_tree_duration()` join was measured in the past and
+came to 79 MB for no gain, which is the reason to expect this to go badly and also the reason to
+measure rather than assume.
 
 ## The whole-window duration read, measured rather than assumed
 
