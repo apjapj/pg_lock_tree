@@ -194,7 +194,18 @@ check_object() {
     # PROCEDURE is there because 0.11 added lock_tree_prune_batched as one, and the linter failed
     # on it until it did. It has to be a procedure rather than a function, which is the whole reason
     # the object exists, so failing to recognise it would be an odd place for the check to stop.
-    grep -qE "(FUNCTION|VIEW|TABLE|PROCEDURE) @extschema@\.$1\b" "$latest" \
+        # INDEX joined them in 1.1.0, and for the same kind of reason. The extension ships four
+        # indexes and the documentation now discusses one of them by name, in prose, in backticks.
+        # With no INDEX alternative a backticked lock_tree_history_application_idx was reported as an
+        # object that does not exist, which is the opposite of what the check is for. Verified both
+        # ways: a planted name matching no index fails, and the real one passes.
+        # ways, and the second attempt found that an index name has to match in EITHER order.
+        # CREATE INDEX puts the index name before the schema and qualifies the table instead, so
+        # "INDEX @extschema@.name" only matches where a COMMENT ON INDEX or DROP INDEX happens to
+        # say it. lock_tree_history_application_idx passed on its comment and
+        # lock_tree_history_pid_idx failed for want of one, so the check reported a real index as
+        # missing. All four indexes are now checked, and a planted name that matches none fails.
+    grep -qE "(FUNCTION|VIEW|TABLE|PROCEDURE|INDEX) @extschema@\.$1\b|CREATE INDEX $1\b" "$latest" \
       && ok "$1 is defined in $latest" \
       || bad "$1 is named in the docs but not defined in $latest"
 }

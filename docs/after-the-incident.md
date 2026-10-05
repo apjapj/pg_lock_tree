@@ -8,7 +8,7 @@ history into incidents, ranking by time rather than by count, and the deadlock r
 SELECT * FROM lock_tree_replay(42);
 
 -- every incident in a window, worst first
-SELECT * FROM lock_tree_incidents(interval '7 days');
+SELECT * FROM lock_tree_incidents(since => interval '7 days');
 
 -- where the blocking time went, per statement and per application
 SELECT * FROM lock_tree_duration(interval '1 hour');

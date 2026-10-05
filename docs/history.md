@@ -98,6 +98,103 @@ table; it cannot reach into a backup already written.
 Neither says when the read side becomes the problem rather than the write side. That is a judgement
 and [docs/roadmap.md](roadmap.md) lists it as an open question rather than pretending it is answered.
 
+## Holding more than a few weeks
+
+The default window of every read function is 7 days, and on a big database that is not always long
+enough to be useful. **Retention and query window are two separate decisions**, and this section is
+about keeping them separate. Everything below was measured on PostgreSQL 18 against the standard
+fixture: 1,209,620 rows, 60,481 samples, seven days sampled every 10 seconds with 20 blocked sessions.
+
+### What a row costs
+
+| query text stored | bytes per row, heap |
+|---|---|
+| 300 characters, which is what production stores | 409.6 |
+| 100 characters | 190.5 |
+| `NULL` | 93.2 |
+
+The query text is **316 of those 410 bytes, 77% of the row**. Add about 68 bytes of index overhead and
+a row costs roughly 478 bytes with indexes. The published fixture figure of 266 MB for seven days is
+optimistic against real data by about two times, because the fixture stores 34-character queries.
+
+At a 10 second interval with 20 blocked sessions that is 172,800 rows a day:
+
+| retain | rows | on disk, at 478 bytes a row |
+|---|---|---|
+| 7 days | 1,209,600 | 0.5 GB |
+| 30 days | 5,184,000 | 2.3 GB |
+| 90 days | 15,552,000 | 6.9 GB |
+| 365 days | 63,072,000 | 28 GB |
+
+Storage is not the constraint. Query time is.
+
+### Reading is bounded by the window, not by the retention
+
+Five of the six history read functions take a `since`, so how much they cost depends on how much you
+ask for rather than how much you keep:
+
+| retain | `duration()` at the 7-day window | `by_application()` at the 7-day window | `incidents()` |
+|---|---|---|---|
+| 7 days | 1.6 s | 2.2 s | 0.2 s |
+| 90 days | 1.6 s | 2.2 s | **3.0 s** |
+| 365 days | 1.6 s | 2.2 s | **12 s** |
+
+The first two columns do not move, because they read the window you name. The third does, and until
+**1.1.0** there was nothing you could do about it: `lock_tree_incidents()` was the only history read
+function with no window parameter, so its cost followed your retention. It now takes one:
+
+```sql
+SELECT * FROM lock_tree_incidents(since => interval '30 days');
+```
+
+Its default is `NULL`, meaning the whole retained history, which is what it did in every earlier
+release. An existing call changes nothing. Measured on the fixture: no argument 2477 ms,
+`since => '1 day'` 315 ms, `since => '6 hours'` 124 ms.
+
+What asking for the **whole retained window** costs instead, which is the thing to avoid:
+
+| retain | `duration()` | `by_application()` | `incidents()` |
+|---|---|---|---|
+| 30 days | 6.7 s | 9.7 s | 30 s |
+| 90 days | 20.2 s | 29.1 s | 91 s |
+| 365 days | 82.0 s | 118 s | 364 s |
+
+Per row, measured rather than assumed: `duration()` 1.30 us, `by_application()` 1.87 us, and
+`incidents()` **1.95 us as a caller uses it**. That last figure is worth stating carefully, because
+`SELECT count(*) FROM lock_tree_incidents()` is ten times cheaper at 0.20 us. The three array columns
+are per-session aggregates that `count(*)` lets the planner drop entirely, so if you have ever timed
+this function with `count(*)` you have a number a tenth of the real one.
+
+### What to actually do
+
+1. **Keep as long as you need. Ask for less than you keep.** Pass an explicit `since` to every read
+   function and do not rely on the 7-day default once you hold more than a week.
+2. **Size the interval from `lock_tree_sampling_advice()` rather than from habit.** It has three
+   bands, and the 30 second one exists for a wide queue. At 30 seconds instead of 10 a year of
+   retention is 9.4 GB rather than 28 GB, and the queries above are correspondingly cheaper because
+   there are fewer samples to read.
+3. **Prune on a schedule, with the batched procedure.** See below.
+4. **Budget the disk at the high-water mark, not at your current retention.** See below.
+5. **If a year is genuinely the goal, stop storing query text for old samples.** A row would go from
+   410 to 93 bytes and a year from 28 GB to 6.4 GB. This is a trade rather than an optimisation: you
+   give up being able to see what statement was running months ago. It is the only change that
+   decouples storage from the length of a query.
+
+### Two operational facts that are easy to be surprised by
+
+**Plain `VACUUM` does not shrink the file.** After `SELECT lock_tree_prune(interval '1 day')` removed
+six of seven days, and after a plain `VACUUM`, the heap file was still 187 MB while holding one day
+of data. The space is reusable, and the file stays at its high-water mark until `VACUUM FULL`, which
+rewrites the table under `ACCESS EXCLUSIVE`. So size the disk for the largest retention you intend to
+run, not the one you are running now.
+
+**Keep autovacuum ahead of the sample rate.** The history is appended to continuously, and an
+index-only scan on it can only skip the heap where the visibility map is set. Measured on the
+fixture: with the table vacuumed, a covering scan reported `Heap Fetches: 0` and took 31.2 ms. After
+8,640 new rows were appended and not yet vacuumed, the same scan reported `Heap Fetches: 29719` and
+took 55.1 ms. It recovers on the next vacuum. This is worth watching on a busy table because the
+benefit is invisible until it degrades.
+
 ## Pruning it
 
 Two forms, and the difference is what happens to the write path.
@@ -120,6 +217,12 @@ Put the `CALL` on its own line. Inside `BEGIN`/`COMMIT` it is refused, and it ch
 [Why the history is not partitioned](roadmap.md#considered-and-not-planned).
 
 Pruning clears the deadlock table too, since the two are read together.
+
+Pruning does not return the disk to the operating system. A plain `VACUUM` marks the space reusable
+and leaves the file at its high-water mark; only `VACUUM FULL` truncates it, under an `ACCESS
+EXCLUSIVE` lock that blocks every write to the history for as long as it takes. On a table this size
+that is a decision, not a routine step. The figures are in
+[Holding more than a few weeks](#holding-more-than-a-few-weeks).
 
 ## Backups
 

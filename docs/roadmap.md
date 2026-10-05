@@ -9,21 +9,10 @@ Three items, from the 1.0.1 review. They are proposals, not commitments, and non
 In order, because the first is the only one that is obviously right and the third is the only one
 that needs a measurement before anyone can say whether it is worth doing.
 
-**A window parameter on `lock_tree_incidents()`.** It takes `max_gap` and nothing else:
-
-    lock_tree_incidents(max_gap interval DEFAULT '00:05:00')
-
-Its two neighbours both take one, and both default to seven days:
-
-    lock_tree_deadlocks(since interval DEFAULT '7 days')
-    lock_tree_sampling_advice(since interval DEFAULT '7 days')
-
-So the history functions that answer "what happened" can be bounded, and the one that segments the
-history into incidents cannot. On a database whose history has been kept for a year, that is the
-whole table scanned to answer a question about last Tuesday. Adding `since interval DEFAULT '7 days'`
-as a second parameter is additive, so every existing call site keeps working. It is not free: the
-segmenting reads `sampled_at` in order and the parameter has to participate in the gap test rather
-than sit in a `WHERE` that could change which rows are adjacent to which.
+**One item, from the 1.0.1 review, and it is the other two done.** The window parameter on
+`lock_tree_incidents()` shipped in 1.1.0, and `INCLUDE (query_id)` shipped with it. Both are written
+up in the record section at the end. What is left is the one that needs a design decision rather than
+a measurement.
 
 **The two statements in `lock_tree_deadlocks()`.** `lock_tree_deadlocks()` reports *when* a deadlock
 happened, from the `pg_stat_database.deadlocks` counter, and names neither participant. Both are
@@ -33,25 +22,20 @@ recoverable from the history, and this was measured rather than assumed. On Post
 1,209,620-row benchmark fixture **zero** of the 60,481 `depth = 0` rows have `waiting_for` set. The
 shape is therefore unique to a deadlock, and a window join on `sampled_at` is what would surface it.
 
-The catch is stated in `docs/after-the-incident.md` and belongs here too: it works only if a sample
-happened to land while the cycle existed, which needs `deadlock_timeout` longer than the sampling
-interval. At the default one second it almost never will. A column that is usually empty is still
-worth having, but it must say so, or it will be read as a promise.
+Why it is still open, and it is a decision rather than a difficulty: the population of the new column
+is a trade, not a feature. It works only if a sample happened to land while the cycle existed, which
+needs `deadlock_timeout` longer than the sampling interval. At the default one second it almost never
+will, so the column would be empty in most rows of the history that matters. A column that is usually
+empty is still worth having, but only alongside an honest statement of how often it is populated,
+because the alternative is a reader who sees NULL and concludes no deadlock happened.
 
-**Measuring `INCLUDE (query_id)` on the application index.** The index is:
-
-    CREATE INDEX lock_tree_history_application_idx ON lock_tree_history
-    USING btree (application_name, sampled_at) WHERE depth = 0
-
-`lock_tree_statements()` reads that index and then visits the heap for `query_id`, `query` and the
-wait columns. Adding `INCLUDE (query_id)` would put the one column the grouping needs into the leaf,
-without making the index bigger by much, because it is dropped from the leaf on a non-leaf split.
-**This has not been measured.** The benchmark figure for `lock_tree_statements()` is 17.9 ms on the
-standard fixture, which is not slow, so the size of the win is unknown and the size of the cost is
-also unknown. Measure both before writing anything: the added index size, and the same function timed
-with and without it. A covering index for the `lock_tree_duration()` join was measured in the past and
-came to 79 MB for no gain, which is the reason to expect this to go badly and also the reason to
-measure rather than assume.
+The other question is what the column should contain. `docs/after-the-incident.md` is careful about
+this already: the server log names both statements, the client never sees the `Process N:` lines that
+carry them, so anything this returns is second-hand and can be wrong in the case that matters. A
+window join on `sampled_at` gives the two rows that were waiting, with their query text. It does not
+prove those were the statements PostgreSQL named, only that they were the ones waiting when the
+cycle existed. That distinction has to survive into the documentation or the column will be read as
+the log.
 
 ## The whole-window duration read, measured rather than assumed
 
@@ -91,13 +75,19 @@ appears zero times in `scripts/bench-history.sh`. Measured against the same fixt
 
 | Function | Time | Reads |
 |---|---|---|
-| `lock_tree_statements()` | **17.9 ms** | the live tree, and `pg_stat_statements` |
-| `lock_tree_roots()` | 2.4 ms | the live tree |
-| `lock_tree_text()` | 12.8 ms | the live tree |
-| `lock_tree_duration()` | 1941.6 ms | the history |
-| `lock_tree_duration_by_application()` | 2629.6 ms | the history |
+| `lock_tree_statements()` | **15.8 ms** | the live tree, and `pg_stat_statements` |
+| `lock_tree_roots()` | 2.6 ms | the live tree |
+| `lock_tree_text()` | 11.4 ms | the live tree |
+| `lock_tree_duration()` | 1810.0 ms | the history |
+| `lock_tree_duration_by_application()` | 2163.5 ms | the history |
 
-Seventeen milliseconds against seven days of history, because it reads the tree as it is now and joins
+These are the figures [`scripts/bench-history.sh`](scripts/bench-history.sh) prints on PostgreSQL 18
+against the standard fixture: seven days, every 10 seconds, 20 blocked sessions, 1,209,620 rows. The
+two history rows changed in 1.1.0, and why is the subject of the next section: until then the script
+timed every read function as `SELECT count(*)`, which lets the planner drop output columns nobody
+selects, so it timed `lock_tree_duration_by_application()` without the `qids` CTE at all.
+
+Seventeen milliseconds against seven days of history, because it reads the tree as it is now and joi
 `pg_stat_statements`. It was never a candidate for review and the suggestion was wrong.
 
 The benchmark now times the live-tree reads as their own group, labelled as such, so that a reader does
@@ -121,11 +111,47 @@ function and that is worth correcting in public rather than quietly dropping.
 - **Cross-database.** The extension lives in each database, as all extensions do, so a queue on
   `reporting` is invisible from `production`. Deliberately not here: this is a per-database
   diagnostic, and a fan-out sampler is a separate tool wearing this one's name.
-- **`lock_tree_history` partitioned by month**, so `lock_tree_prune()` becomes a DETACH rather than a
-  DELETE. The shape suits partitioning and PostgreSQL has no `ALTER TABLE ... SET PARTITIONED BY`, and
-  the copy-and-swap cannot be done from outside the extension because the table is a member.
-  Measured, and the reasoning is in the 0.11 changelog. `lock_tree_history_size()` and
-  `lock_tree_prune_batched()` are what replaced it.
+- **`lock_tree_history` partitioned by month**, so `lock_tree_prune()` becomes a DETACH rather than
+  a DELETE. The shape suits partitioning and the retention argument is real, and it is still not
+  worth doing, because the access side gets **worse**, not better. Re-measured in 1.1.0 against a
+  range-partitioned clone of the standard fixture, daily partitions plus a DEFAULT, carrying the same
+  four indexes, with the function bodies copied from the shipped ones by substituting the table name
+  and nothing else. Cold `shared_buffers` for every measurement, because a warm-cache pass made
+  partitioning look three times worse than it is.
+
+  | window | `duration()` flat | partitioned | `by_application()` flat | partitioned |
+  |---|---|---|---|---|
+  | 7 days | 1606 ms | 2224 ms (**+38%**) | 2249 ms | 3324 ms (**+48%**) |
+  | 1 day | 257 ms | 233 ms (−9%) | 308 ms | 933 ms (**+203%**) |
+  | 6 hours | 61 ms | 67 ms (+10%) | 69 ms | 77 ms (+11%) |
+
+  Partition pruning does work: at a one-day window the plan touches two daily partitions instead of
+  eight. Pruning is not the problem. The problem is that the planner does not choose a partition-wise
+  join for the `root_wait` self-join, and without one the inner side of a nested loop loses its
+  pruning qual and becomes an eight-way `Append` executed once per outer row:
+
+  ```
+  ->  Append (actual rows=19.00 loops=8610)
+        ->  Index Scan using lock_tree_history_p_20260928_sampled_at_...
+        ->  Index Scan using lock_tree_history_p_20260929_sampled_at_...
+        ... all eight partitions
+  ```
+
+  8,610 loops times eight partitions is 68,880 partition index scans, reading 1,149,139 rows to answer
+  a 172,320-row question. That single node is the 203%. Two smaller costs ride along: `Merge Append`
+  replaces one ordered scan and adds an 886 ms sort above it, and the DEFAULT partition is
+  sequentially scanned on every query even when it holds nothing.
+
+  Two structural reasons remain, independent of performance. PostgreSQL has no `ALTER TABLE ... SET
+  PARTITIONED BY`, so this cannot be adopted in place. And a DEFAULT partition is **not optional**:
+  the test suite inserts history rows up to nine days old, so without one those inserts fail outright,
+  and with one, anything older than the earliest partition accumulates where it can never be pruned.
+
+  What partitioning *would* buy is retention, not access: `DROP TABLE` on a partition is instant
+  where `lock_tree_prune_batched()` deletes in committed batches and leaves dead tuples. If pruning
+  is the operational pain, the answer is a documented pruning cadence, not a schema change. The
+  measurements behind the original decision are in the 0.11 changelog, and
+  `lock_tree_history_size()` and `lock_tree_prune_batched()` are what shipped instead.
 - **Registering the tables for `pg_dump`.** Decided against, with reasons per table, and the decision
   is now pinned by a test and written up in [INSTALL.md](INSTALL.md#backups-and-restores). The short
   version: `lock_tree_history` grows without bound and describes pids and timestamps that mean
@@ -158,6 +184,20 @@ function and that is worth correcting in public rather than quietly dropping.
 Recorded here so the section is a record rather than a wish list. Each is one line because the
 changelog has the detail and a test has the proof.
 
+- **A window on `lock_tree_incidents()`** (1.1.0), the last history read function whose cost followed
+  retention rather than the question. Measured at 1.95 us per row as a caller uses it, so a month of
+  history is about 30 seconds with no way to ask about less; `since` takes it to 315 ms for a day.
+  The default is `NULL` rather than seven days precisely so that no existing call changes.
+- **`INCLUDE (query_id)` on `lock_tree_history_application_idx`** (1.1.0), which turns the `qids` step
+  from a bitmap heap scan fetching 24,133 pages into an Index Only Scan with `Heap Fetches: 0` and
+  300, taking that step from 117.0 to 31.2 ms for 528 kB on a 1.9 MB index. A four percent win on a
+  two-second function, and recorded as such rather than as a fix.
+- **A benchmark that measured less work than it claimed** (1.1.0). [`scripts/bench-history.sh`](scripts/bench-history.sh) timed every read
+  function as `SELECT count(*)`, which lets the planner drop any output column nobody looks at. For
+  `lock_tree_duration_by_application()` that dropped the whole `qids` CTE: 2048 ms against 2249 ms for
+  `SELECT *`, a published figure a tenth light for `lock_tree_incidents()`. The script now times
+  `SELECT *`, vacuums the fixture first, and asserts in its own output that the aggregation it is
+  timing is still in the plan, with the half of the check that shows `count(*)` still drops it.
 - **Generated examples** (`scripts/capture.sh` and `scripts/lint-docs.sh`), for the blocks that were
   hand-transcribed measurements: the coverage table in scenarios/README.md, the lock tree in the README,
   the actions block and the command beside it, and the order the demo prints. Each is captured with

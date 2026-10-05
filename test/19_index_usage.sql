@@ -54,7 +54,7 @@ SELECT now() - interval '2 hours' + k.n * interval '30 seconds',
   FROM generate_series(1, 120) AS k(n)
   CROSS JOIN generate_series(0, 4) AS d(d);
 
-SELECT plan(15);
+SELECT plan(18);
 
 -- ------------------------------------------------------ the source, which is the real claim
 
@@ -201,6 +201,30 @@ SELECT ok(:replayed_far::int >= :replayed::int,
           'and a target before the first sample replays the first sample rather than nothing, which '
           || 'is what the two index seeks buy: max(sampled_at) under an empty range is NULL, so the '
           || 'earliest one wins');
+
+-- The INCLUDE column added in 1.1.0, asserted structurally rather than by timing. indnkeyatts is
+-- the number of KEY attributes and indnatts the total including INCLUDEd ones, so 2 and 3 says the
+-- index keys on (application_name, sampled_at) and carries query_id along without ordering by it.
+--
+-- A time bound would be the wrong way to pin this: the benefit is 117.0 -> 31.2 ms for one CTE and
+-- only 2249 -> 2146 ms for the whole function, so a threshold wide enough to catch a regression
+-- would also pass on a loaded machine. The catalog says whether the column is there.
+\set QUIET 1
+\o /dev/null
+SELECT (SELECT indnkeyatts::text FROM pg_index WHERE indexrelid = 'lock_tree_history_application_idx'::regclass) AS app_key,
+       (SELECT indnatts::text   FROM pg_index WHERE indexrelid = 'lock_tree_history_application_idx'::regclass) AS app_all,
+       (SELECT count(*)::text   FROM pg_index WHERE indexrelid = 'lock_tree_history_application_idx'::regclass) AS app_found
+\gset
+\o
+\set QUIET 0
+
+SELECT is(:app_found::int, 1, 'the partial application index exists by that name');
+
+SELECT is(:app_key::int, 2,
+          'and it keys on two columns, so query_id is included rather than part of the ordering');
+
+SELECT is(:app_all::int, 3,
+          'while carrying a third attribute in the leaf, which is what lets the qids step be an Index Only Scan');
 
 SELECT * FROM finish();
 

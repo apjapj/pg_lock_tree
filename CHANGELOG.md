@@ -4,6 +4,183 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.0 (2026-10-06)
+
+1.1.0: the last read function you could not bound, and a benchmark that measured less work than it claimed
+
+A minor release. Two changes to the extension and one to the tooling, all measured before they were
+written. No function changes what it returns for the arguments it already accepted.
+
+THE WINDOW ON `lock_tree_incidents()`
+
+It was the only history read function with no `since`, so its cost followed how much history you had
+retained rather than how much of it you were asking about. Measured at 1.95 microseconds per row as a
+caller uses it, which is about 1.2 seconds per million rows: a month of history is roughly 30
+seconds, and there was no way to ask it about less.
+
+    lock_tree_incidents(max_gap interval DEFAULT '5 minutes', since interval DEFAULT NULL)
+
+Two details that are easy to get wrong, and both are deliberate.
+
+**`since` goes after `max_gap`, not before.** `test/07_history.sql` and `docs/after-the-incident.md`
+both call this positionally. A new first parameter would have reinterpreted their argument:
+`lock_tree_incidents(interval '7 days')` would have become a window rather than a gap threshold, and
+would have returned one incident per sample.
+
+**The default is `NULL`, not `interval '7 days'`.** NULL means the whole retained history, which is
+what the function did in every release before this one, so an existing call changes nothing. A seven
+day default would have matched its neighbours and would have quietly returned fewer incidents than
+before on any database holding more than a week. That is a behaviour change wearing an additive
+change's clothes, and it is invisible in review and visible in production.
+
+Verified by fingerprinting rather than by argument: 1.0.2 installed into its own database, the same
+fixture generated into both from one captured anchor, and the rows compared. Byte-identical for both
+the no-argument call and the same-`max_gap` call, with the two fixture fingerprints asserted equal
+first so a difference could not be blamed on the data. The first attempt at that comparison reported a
+false DIFFERENT because each database called `now()` separately, which is why the anchor is captured
+once and the fixtures are checked.
+
+The filter is `WHERE sampled_at >= coalesce(statement_timestamp() - since, '-infinity'::timestamptz)`
+rather than `WHERE since IS NULL OR sampled_at >= ...`, because the `OR` form cannot become an
+`Index Cond` and would make even a call with no arguments scan the whole index. Confirmed in the plan:
+with no window it is still an `Index Cond`, on `-infinity`.
+
+`INCLUDE (query_id)` ON THE APPLICATION INDEX
+
+`lock_tree_duration_by_application()` aggregates `DISTINCT query_id` per application. Without the
+column in the leaf, that step was a bitmap heap scan fetching 24,133 pages to answer a question the
+index already held.
+
+| | plan | buffers | Heap Fetches | the step | the whole function |
+|---|---|---|---|---|---|
+| 1.0.2 | Bitmap Heap Scan | 24,133 | n/a | 117.0 ms | 2249 ms |
+| 1.1.0 | Index Only Scan | 300 | **0** | **31.2 ms** | 2146 ms |
+
+Measured cold, `shared_buffers` emptied by a server restart before every measurement, A/B/A/B:
+2249.4 / 2225.7 ms flat against 2146.0 / 2157.2 ms with the column, so 103 ms cold and 87 ms warm.
+The index grows 1,888 kB to 2,416 kB, which is 528 kB and 27% of a partial index holding one entry per
+sample. One row per sample enters it, so the insert path measured flat: 15.4 ms against 14.8 ms for
+one `lock_tree_sample()` with a real five-row chain up.
+
+**This is a four percent win on a two-second function and is not a fix for that function.** The
+remaining cost is aggregation, not access.
+
+One caveat that comes with it. `Heap Fetches: 0` is the best case, on a table vacuumed once.
+`lock_tree_history` is appended to by design, and new tuples are never all-visible on arrival. After
+8,640 new root rows were added without vacuuming, the same scan reported `Heap Fetches: 29719` and took
+55.1 ms. It recovers on the next vacuum. Still better than the 117 ms it replaces, but the headline
+number assumes autovacuum is keeping up.
+
+THE BENCHMARK WAS MEASURING LESS WORK THAN IT CLAIMED
+
+`scripts/bench-history.sh` timed every read function as `SELECT count(*)`. `count(*)` asks only how many
+rows came back, so the planner is free to drop any output column nobody looks at, and for
+`lock_tree_duration_by_application()` that dropped the entire `qids` CTE: the plan contained no
+`query_id` aggregation at all. Six of the seven read functions produced a different plan under
+`count(*)`.
+
+    SELECT count(*) FROM lock_tree_duration_by_application()   2048.3 ms, no ids aggregation
+    SELECT *      FROM lock_tree_duration_by_application()   2249.1 ms, with it
+
+For `lock_tree_incidents()` the understatement was tenfold. The three array columns are per-session
+aggregates that `count(*)` drops, so any figure ever taken that way is a tenth of the real one:
+
+| what is asked for | time |
+|---|---|
+| `count(*)` | 235.4 ms |
+| `incident`, or `samples`, or `peak_sessions` | 233 to 254 ms |
+| `longest_wait` | 494.2 ms |
+| `root_objects` | 620.3 ms |
+| `roots` | 831.1 ms |
+| `applications` | 1125.9 ms |
+| all ten columns | **2469.1 ms** |
+
+So `lock_tree_incidents()` is the slowest function in the extension at 2.5 seconds, not the 0.24
+seconds the benchmark had been reporting, and that is what put the window parameter first.
+
+The script now times `SELECT *`, and asserts in its own output that the work it is timing is still in
+the plan, including the half of the check that shows `count(*)` still drops it. That assertion is
+structural rather than a time bound, because a time bound passes vacuously on a warm cache.
+
+It also now vacuums the fixture before timing, which it never did. A fixture loaded by one big INSERT
+has no visibility map, so every index-only scan was fetching every page: `lock_tree_incidents()`
+measured 2660.5 ms before the vacuum and 233.3 ms after, an order of magnitude, same data and same
+query. The script prints the all-visible page count so a reader can see the state the numbers were
+taken in.
+
+Corrected figures, PostgreSQL 18, the standard fixture, vacuumed:
+
+| Function | Time | Reads |
+|---|---|---|
+| `lock_tree_statements()` | 15.8 ms | the live tree |
+| `lock_tree_roots()` | 2.6 ms | the live tree |
+| `lock_tree_text()` | 11.4 ms | the live tree |
+| `lock_tree_history_statements()` | 245.5 ms | the history |
+| `lock_tree_sampling_advice()` | 161.3 ms | the history |
+| `lock_tree_history_size()` | 157.1 ms | the history |
+| `lock_tree_replay_samples` | 1413.1 ms | the history |
+| `lock_tree_duration()` | 1810.0 ms | the history |
+| `lock_tree_duration_by_application()` | 2163.5 ms | the history |
+| `lock_tree_incidents()` | 2476.8 ms | the history |
+
+DOCUMENTATION
+
+`docs/history.md` gains a section on holding more than a few weeks, because 7 days is not always
+enough and nothing said what to do instead. The measurements behind it: a row costs 409.6 bytes with
+the 300-character query text production stores and 93.2 bytes without it, so the query text is 77% of
+the row and a year of retention is either 6.4 GB or 28 GB depending on it; the five bounded read
+functions cost the same at a 7-day window however much you retain, while `lock_tree_incidents()` did
+not; and plain `VACUUM` does not shrink the file, so the disk you need is the high-water mark of your
+largest retention rather than your current one.
+
+`docs/after-the-incident.md` had `lock_tree_incidents(interval '7 days')`, which passed a week as the
+**gap threshold**, so every gap smaller than a week counted as no gap and the answer was a single
+incident spanning everything. It now says `since => interval '7 days'`, which is what the surrounding
+examples meant. Pre-existing, and invisible until the function had a second parameter to confuse.
+
+`scripts/lint-docs.sh` learned to recognise an index. It checks that every `lock_tree_*` name in the
+documentation is defined in the release SQL, for functions, views, tables and procedures, and 1.1.0
+discusses `lock_tree_history_application_idx` by name in prose, which the check reported as an object
+that does not exist. The name has to match in either order, because `CREATE INDEX` puts it before the
+schema and qualifies the table instead. Verified by planting all four real index names, which pass, and
+a name matching nothing, which fails.
+
+PARTITIONING `lock_tree_history`, RE-MEASURED AND STILL NO
+
+Not a change, a measurement that closes an old question with better numbers. The 0.11 decision not to
+partition the history is still right, and the access argument is now stronger than it was. Against a
+range-partitioned clone carrying the same four indexes, cold `shared_buffers` per measurement:
+
+| window | `duration()` flat | partitioned | `by_application()` flat | partitioned |
+|---|---|---|---|---|
+| 7 days | 1606 ms | 2224 ms (+38%) | 2249 ms | 3324 ms (+48%) |
+| 1 day | 257 ms | 233 ms (−9%) | 308 ms | 933 ms (+203%) |
+| 6 hours | 61 ms | 67 ms (+10%) | 69 ms | 77 ms (+11%) |
+
+Pruning does work, at a one-day window touching two partitions instead of eight. The problem is that
+the planner does not choose a partition-wise join for the `root_wait` self-join, so the inner side of a
+nested loop keeps no pruning qual and becomes an eight-way `Append` run once per outer row: 8,610
+loops over eight partitions, reading 1,149,139 rows for a 172,320-row question. That node is the 203%.
+
+What partitioning would buy is retention rather than access, and that is a different argument from the
+one that has been made.
+
+VERIFIED
+
+  - 423 tests pass on PostgreSQL 18, 413 of them unchanged from 1.0.2
+  - all 19 upgrade paths converge on a fresh install
+  - `make check-schema` green
+  - 455 documentation checks
+  - the new window assertions proven non-vacuous by removing the filter from the shipped function and
+    watching three of them fail, and the index assertions proven the same way
+  - gitleaks clean on the staged tree
+
+Not run here: the other five PostgreSQL versions, which is stated rather than implied.
+
+Not verified: the Forgejo Actions verdicts. Every API endpoint answers 403 from this host and no token
+is available, so the gates were run locally with CI's exact commands instead. That is not the same as
+the workflow being green, and it is not claimed to be.
+
 ## 1.0.2 (2026-10-05)
 
 1.0.2: the sampling advice contradicted itself on a quiet database

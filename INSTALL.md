@@ -382,6 +382,18 @@ ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.14--0.15.sql
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
 [Troubleshooting](#troubleshooting).
 
+**Updating to 1.1.0 rebuilds one index, and that takes a lock.** It replaces
+`lock_tree_history_application_idx` with the same partial index plus `INCLUDE (query_id)`. PostgreSQL
+14, the oldest version supported here, has no `ALTER INDEX ... ADD INCLUDE`, so the index is dropped
+and rebuilt. That is a 1.9 MB index on the standard fixture, but it grows with the number of samples,
+and the rebuild holds a lock that blocks writes to the history for its duration. `lock_tree_sample()`
+will queue behind it. On a large history, build the replacement under another name and swap, rather
+than doing it in the same transaction as everything else.
+
+Nothing else in 1.1.0 touches the table. `lock_tree_incidents()` gains a `since` parameter that
+defaults to `NULL`, which means the whole retained history, so a call that does not pass it behaves
+exactly as it did in 1.0.2 and earlier.
+
 **What 0.10 changes:** adds `lock_tree_deadlock` (a table) and `lock_tree_deadlocks()`, so the
 `pg_stat_database.deadlocks` counter is sampled and you can see **when** deadlocks happened. It does
 name the two statements involved only when a sample lands while the cycle exists; otherwise they are in the server log. See

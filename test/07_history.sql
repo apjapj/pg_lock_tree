@@ -97,12 +97,13 @@ SELECT lock_tree_sample() AS quiet_rows \gset
 \o
 \unset QUIET
 
-SELECT plan(24);
+SELECT plan(30);
 
 SELECT has_table('lock_tree_history', 'lock_tree_history table exists');
 SELECT has_function('lock_tree_sample', 'lock_tree_sample() exists');
 SELECT has_function('lock_tree_prune', ARRAY['interval'], 'lock_tree_prune(interval) exists');
-SELECT has_function('lock_tree_incidents', ARRAY['interval'], 'lock_tree_incidents(interval) exists');
+SELECT has_function('lock_tree_incidents', ARRAY['interval','interval'],
+                    'lock_tree_incidents(interval, interval) exists since 1.1.0');
 
 -- ------------------------------------------------------------------ the sample itself
 
@@ -187,6 +188,37 @@ SELECT is((SELECT longest_wait FROM lock_tree_incidents() ORDER BY started_at LI
 
 SELECT is((SELECT roots FROM lock_tree_incidents() ORDER BY started_at LIMIT 1),
           ARRAY[900]::int[], 'and the root pid that caused it is named');
+
+-- ------------------------------------------------------------------ the window, added in 1.1.0
+--
+-- The fixture above holds samples at 40, 38, 36, 5 and 4 minutes ago. That makes the assertions below
+-- exact rather than approximate: a 10 minute window keeps the 5 and 4 minute samples and drops the
+-- three that are 36 minutes and older, so the older incident disappears entirely.
+--
+-- since defaults to NULL rather than to a week on purpose. NULL means the whole retained history, which
+-- is what this function did in every release before 1.1.0, so a caller who never passes it sees no
+-- change at all. A default of '7 days' would have matched its neighbours and would have quietly changed
+-- what every existing call returned on any database holding more than a week, which is a behaviour
+-- change dressed as an additive one.
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents(since => NULL))::int, 2,
+          'since => NULL is the whole retained history, which is what the no-argument call means');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents(since => interval '10 minutes'))::int, 1,
+          'a 10 minute window keeps the recent incident and drops the one 36 minutes old');
+
+SELECT is((SELECT sum(samples) FROM lock_tree_incidents(since => interval '1 minute'))::int, 1,
+          'a 1 minute window sees only the sample this file took of the live tree, and nothing older');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents(since => interval '-1 hour'))::int, 0,
+          'a window containing no sample at all returns no rows rather than erroring');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents(interval '40 minutes',
+                                                    interval '10 minutes'))::int, 1,
+          'both arguments positionally: the gap threshold still works with a window beside it');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents(interval '40 minutes'))::int, 1,
+          'and a one-argument positional call still binds to max_gap, which is why since goes second');
 
 -- ------------------------------------------------------------------ pruning
 

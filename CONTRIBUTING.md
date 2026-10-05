@@ -145,7 +145,7 @@ that reads the installed catalog sees an unchanged catalog if you only edit the 
 
 ```bash
 # 1. break exactly one thing, and make the break small enough to name in a sentence
-$EDITOR pg_lock_tree--1.0.2.sql          # FROM @extschema@.lock_tree_roots()  ->  FROM lock_tree_roots()
+$EDITOR pg_lock_tree--1.1.0.sql          # FROM @extschema@.lock_tree_roots()  ->  FROM lock_tree_roots()
 
 # 2. reinstall. Without this the next command tests nothing.
 docker exec lt bash -lc 'cd /src && make -s install'
@@ -156,7 +156,7 @@ psql -X -c 'DROP EXTENSION pg_lock_tree;' -c 'CREATE EXTENSION pg_lock_tree;'
 pg_prove --dbname postgres test/22_schema_install.sql
 
 # 4. restore, reinstall, and run it again to see it pass
-git checkout pg_lock_tree--1.0.2.sql
+git checkout pg_lock_tree--1.1.0.sql
 ```
 
 The trap this replaces: an earlier attempt planted the defect, skipped the reinstall, saw the test

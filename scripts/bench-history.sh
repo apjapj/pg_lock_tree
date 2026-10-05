@@ -95,6 +95,24 @@ SELECT '  rows', count(*),
        'size', pg_size_pretty(pg_total_relation_size('lock_tree_history'))
   FROM lock_tree_history" | sed 's/^/ /'
 
+# VACUUM, and not ANALYZE alone, because a fixture loaded by one big INSERT has no visibility map at
+# all. Without one, an index-only scan cannot skip the heap and falls back to fetching every page, so
+# the timings below would describe a table no real one ever looks like: a real history is appended to
+# continuously and autovacuum maintains its visibility map, and an index-only scan on it is the common
+# case rather than the exception.
+#
+# Measured on this fixture, PG18: lock_tree_incidents() 2660.5 ms before the vacuum and 233.3 ms
+# after, an order of magnitude, same data and same query. ANALYZE alone does not do it, because the
+# visibility map is what vacuum sets.
+psql -X -q -c 'VACUUM (ANALYZE) lock_tree_history' >/dev/null 2>&1
+
+# The state the timings are taken in, printed because a benchmark that reports timings should report
+# that too. relallvisible counts pages known all-visible; it is 0 before the vacuum above.
+psql -X -tA -c "
+SELECT '  all-visible pages ' || relallvisible || ' of ' || relpages ||
+       '   (0 would mean no index-only scan can skip the heap)'
+  FROM pg_class WHERE relname = 'lock_tree_history'" | sed 's/^/ /'
+
 # Each timing is a separate psql so nothing is cached between them in a way the caller did not ask
 # for, and EXPLAIN ANALYZE is used rather than \timing so the server reports its own number.
 # The live-tree reads, timed separately and labelled as such.
@@ -126,17 +144,29 @@ print(round(d[0]['Execution Time'], 1))")
 done
 printf '\n'
 
-printf '\n  \033[1mread functions\033[0m, whole window\n\n'
+# SELECT * and not SELECT count(*), and the difference is not cosmetic.
+#
+# count(*) asks only how many rows came back, so the planner is free to drop any output column whose
+# value nobody looks at. lock_tree_duration_by_application() computes an ids column from a CTE that
+# aggregates DISTINCT query_id per application, and count(*) drops that CTE entirely: the plan it
+# produces contains no query_id aggregation at all. Measured on the standard fixture, cold, same
+# session: count(*) 2048.3 ms, SELECT * 2249.1 ms, and the published figure was the smaller one. Six
+# of the seven read functions below produce a different plan under count(*).
+#
+# So these are timed the way a caller runs them. The check further down proves the aggregation is
+# still in the plan, because a timing that quietly measured less work is exactly the kind of number
+# that gets quoted for years.
+printf '\n  \033[1mread functions\033[0m, whole window, timed as SELECT * because count(*) drops columns\n\n'
 for fn in \
-  "SELECT count(*) FROM lock_tree_history_statements()" \
-  "SELECT count(*) FROM lock_tree_incidents()" \
-  "SELECT count(*) FROM lock_tree_sampling_advice()" \
-  "SELECT count(*) FROM lock_tree_deadlocks()" \
-  "SELECT count(*) FROM lock_tree_history_size()" \
-  "SELECT count(*) FROM lock_tree_replay_samples" \
-  "SELECT count(*) FROM lock_tree_duration()" \
-  "SELECT count(*) FROM lock_tree_duration_by_application()" \
-  "SELECT count(*) FROM lock_tree_replay(now() - interval '1 hour')"
+  "SELECT * FROM lock_tree_history_statements()" \
+  "SELECT * FROM lock_tree_incidents()" \
+  "SELECT * FROM lock_tree_sampling_advice()" \
+  "SELECT * FROM lock_tree_deadlocks()" \
+  "SELECT * FROM lock_tree_history_size()" \
+  "SELECT * FROM lock_tree_replay_samples" \
+  "SELECT * FROM lock_tree_duration()" \
+  "SELECT * FROM lock_tree_duration_by_application()" \
+  "SELECT * FROM lock_tree_replay(now() - interval '1 hour')"
 do
     ms=$(psql -X -tA -c "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) $fn" 2>/dev/null \
          | python3 -c "
@@ -154,9 +184,9 @@ done
 # planner cannot turn into an index bound shows up, because the cost is the WHOLE history either way.
 printf '\n  \033[1mnarrow window\033[0m, one millisecond, which matches no sample at all\n\n'
 for fn in \
-  "SELECT count(*) FROM lock_tree_duration(interval '1 millisecond')" \
-  "SELECT count(*) FROM lock_tree_duration_by_application(interval '1 millisecond')" \
-  "SELECT count(*) FROM lock_tree_history_statements(interval '1 millisecond')"
+  "SELECT * FROM lock_tree_duration(interval '1 millisecond')" \
+  "SELECT * FROM lock_tree_duration_by_application(interval '1 millisecond')" \
+  "SELECT * FROM lock_tree_history_statements(interval '1 millisecond')"
 do
     ms=$(psql -X -tA -c "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) $fn" 2>/dev/null \
          | python3 -c "
@@ -179,6 +209,31 @@ if printf '%s' "$plan" | grep -q 'Index Cond'; then
 else
     say_bad "no Index Cond: the window bound is still a filter over the whole index"
     printf '%s\n' "$plan" | sed 's/^/        /' | head -12
+fi
+
+# The timings above are only meaningful if the plan they ran still contains the work. This is the
+# check that says so, and it is here because a timing can be quietly wrong: count(*) is cheaper
+# because it computes less, and nothing in the output would say so.
+#
+# The marker is the grouping, not the word array_agg, which the plan never spells. Two of the three
+# GroupAggregates in this function group on aliases r and r_1; only the ids CTE groups the base table
+# itself, so only it appears as "Group Key: lock_tree_history.application_name".
+byapp_star=$(psql -X -tA -c "EXPLAIN SELECT * FROM lock_tree_duration_by_application()" 2>/dev/null)
+byapp_count=$(psql -X -tA -c "EXPLAIN SELECT count(*) FROM lock_tree_duration_by_application()" 2>/dev/null)
+
+if printf '%s' "$byapp_star" | grep -q 'Group Key: lock_tree_history.application_name'; then
+    say_ok "lock_tree_duration_by_application() still computes its ids column, so its timing is real"
+else
+    say_bad "the ids aggregation is missing from the SELECT * plan, so the timing measured less work"
+    printf '%s\n' "$byapp_star" | sed 's/^/        /' | head -14
+fi
+
+# The other half, and the reason the check is worth having: count(*) drops exactly that CTE. If this
+# ever stops being true the timings have stopped meaning what the comment above claims they mean.
+if printf '%s' "$byapp_count" | grep -q 'Group Key: lock_tree_history.application_name'; then
+    say_bad "count(*) now computes the ids column too, so the reason for SELECT * is gone; re-measure"
+else
+    say_ok "and discriminating: count(*) still drops the ids CTE, which is why the timings use SELECT *"
 fi
 
 # Two separate things to be true, and both are checked structurally rather than by timing, because
