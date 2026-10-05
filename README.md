@@ -10,7 +10,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v0.14** (green on PG 14 to 19beta4) |
+| Current release | **v0.15** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 
@@ -19,7 +19,7 @@ New here, start with **[INSTALL.md](INSTALL.md)**.
 - **[INSTALL.md](INSTALL.md)**: install, grants, update, uninstall, troubleshooting
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
-- **[test/](test/)**: 347 pgTAP tests, and what each one pins down
+- **[test/](test/)**: 361 pgTAP tests, and what each one pins down
 
 ## Quick start
 
@@ -579,6 +579,25 @@ spent blocking under two different services". The per-application figure answers
 service cost", and comes out lower because a handover between two services is not attributable to
 either. `test/17_duration_by_application.sql` pins both directions.
 
+### Before you query a week of history
+
+Every windowed function takes a `since` and, since 0.15, seeks rather than scanning. On a seven day
+history of 1.2 million rows and 264 MB, measured with `make bench-history`:
+
+```sql
+SELECT * FROM lock_tree_duration(interval '1 hour');        -- not interval '7 days'
+SELECT * FROM lock_tree_duration_by_application(interval '1 day');
+```
+
+Before 0.15 the window was a filter over the whole index, so the cost tracked the size of the
+**history** rather than the window you asked for, and a dashboard asking about the last hour paid for
+the last week. It now does not. The seven day figures are still the slowest reads in the extension,
+because seven days of samples is genuinely 60,481 instants and 1.2 million rows of work.
+
+One thing changed in 0.15 that you may have built something on top of: `blocked_sessions_peak` and
+`sessions_total` in both duration functions were **one too high per sample**, because the
+root-to-waiter join matched each root to itself. A root blocking three sessions reported four.
+
 ### One fix worth knowing about
 
 0.12 reported three columns of `lock_tree_duration()` that could not be right, and 0.13 corrects
@@ -1043,7 +1062,7 @@ Full write-up, including the reasoning behind the coverage metric, in
 ## Development
 
 ```bash
-make prove              # 347 pgTAP tests against the server your libpq env vars point at
+make prove              # 361 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -1051,6 +1070,7 @@ make lint-docs          # the docs still match the code
 make check-alert        # prove a real NOTIFY reaches a real listening client
 make check-deadlock     # prove a real deadlock moves the counter and the sample records it
 make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the counter
+make bench-history      # time the read side against a synthetic 1.2M row history (truncates it)
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix

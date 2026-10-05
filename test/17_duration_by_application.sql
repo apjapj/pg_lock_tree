@@ -86,7 +86,7 @@ SELECT lock_tree_sample();
 \o
 \set QUIET 0
 
-SELECT plan(22);
+SELECT plan(21);
 
 SELECT has_function('lock_tree_duration_by_application', ARRAY['interval'],
                     'lock_tree_duration_by_application(interval) exists');
@@ -100,13 +100,19 @@ SELECT has_function('lock_tree_duration_by_application', ARRAY['interval'],
 CREATE TEMP TABLE truth AS
 SELECT r.application_name,
        r.sampled_at,
+       -- w.depth > 0, and it is the whole point. Without it this subquery matched the root row to
+       -- ITSELF and agreed with the very bug it was written to check, which is how a peak that was
+       -- one too high survived a test that asserted it. An expectation derived from the expression
+       -- under test is not an expectation.
        (SELECT count(*) FROM lock_tree_history w
          WHERE w.sampled_at = r.sampled_at
            AND w.root_pid = r.root_pid
+           AND w.depth > 0
            AND coalesce(w.root_object, '') = coalesce(r.root_object, '')) AS waiters,
        (SELECT max(w.wait_age) FROM lock_tree_history w
          WHERE w.sampled_at = r.sampled_at
            AND w.root_pid = r.root_pid
+           AND w.depth > 0
            AND coalesce(w.root_object, '') = coalesce(r.root_object, '')) AS longest
   FROM lock_tree_history r
  WHERE r.depth = 0;
@@ -124,10 +130,10 @@ SELECT is(:instants::int, 4, 'four sample instants, so gaps exist to sum');
 
 SELECT is(:n_apps::int, 2, 'and two applications standing at once');
 
-SELECT is(:truth_peak::int, 3,
-          'the truth from the samples: three sessions were blocked behind each root');
-
-SELECT is(:duration_rows::int, 2, 'lock_tree_duration() returns one row per query id, so two');
+SELECT is(:truth_peak::int, 2,
+          'the truth from the samples: TWO sessions were blocked behind nightly_job''s root, w1 and'
+          || ' w2, while reporting''s root has only w3. It read 3 until 0.15 fixed the self-join, because'
+          || ' the root was counted among its own waiters');
 
 -- Take reporting's root away now and keep sampling. Without this both applications have held for
 -- exactly the same instants and "ranked worst first" is an assertion about a tie.
@@ -151,7 +157,9 @@ SELECT is(:dur_peak::int, :truth_peak::int,
           || ' 1 for this fixture no matter what it contained');
 
 SELECT is(:dur_total::int, :truth_peak::int * :instants::int,
-          'sessions_total is that peak summed over the instants, not a second copy of samples');
+          'sessions_total is that peak summed over the instants, not a second copy of samples. Both '
+          || 'figures were one too high per sample until 0.15, because the root row was counted '
+          || 'among its own waiters');
 
 SELECT is(:dur_wait_rows::int, :dur_all_rows::int,
           'every row has a non-NULL longest_wait. In 0.12 it was always NULL, because query_id is on '
@@ -295,27 +303,26 @@ SELECT is(:narrow::int, 0, 'a window excluding every sample reports no rows');
 -- two real sessions to produce that would add flakiness without testing anything more.
 \set QUIET 1
 \o /dev/null
+-- Roots AND their waiters together, each waiter at its own root's instant. The first version put all
+-- four waiters at ONE instant, which is where the last root was, so only that root's waiter matched
+-- and only one of the two applications appeared. service_alpha holds first and then hands the same
+-- statement to service_beta, so the gap between them is a handover of ONE statement between two
+-- services, which is the case where the two duration functions invert.
 WITH base AS (SELECT max(sampled_at) + interval '20 minutes' AS at FROM lock_tree_history),
--- Two instants each, so each application has a gap to be measured on. service_alpha holds first,
--- then hands the statement to service_beta, so the gap between them is a handover of the SAME
--- statement between two different applications.
-k(n, off) AS (VALUES (0, interval '0'), (1, interval '1 second'),
-                     (2, interval '2 seconds'), (3, interval '3 seconds'))
+k(n, off, app) AS (VALUES (0, interval '0', 'service_alpha'),
+                           (1, interval '1 second', 'service_alpha'),
+                           (2, interval '2 seconds', 'service_beta'),
+                           (3, interval '3 seconds', 'service_beta')),
+roots AS (SELECT b.at + k.off AS at, k.n, k.app FROM base b CROSS JOIN k)
 INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, wait_age,
                                application_name, query, query_id, root_object)
-SELECT b.at + k.off, 90000 + k.n, 0, 90000 + k.n, 'idle in transaction', interval '0',
-       CASE WHEN k.n < 2 THEN 'service_alpha' ELSE 'service_beta' END,
-       'UPDATE ledger SET amount = amount WHERE id = 1',
-       7770000000000000001, NULL
-  FROM base b CROSS JOIN k;
--- A waiter, so the rows are not root-only and the longest_wait join has something to find.
-WITH base AS (SELECT max(sampled_at) AS at FROM lock_tree_history WHERE depth = 0 AND query_id IS NOT NULL),
-k(n) AS (VALUES (0), (1), (2), (3))
-INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, wait_age,
-                               application_name, query, root_object)
-SELECT b.at, 90000 + k.n, 1, 95000 + k.n, 'active', make_interval(secs => k.n * 3),
-       'api', 'SELECT 1', NULL
-  FROM base b CROSS JOIN k;
+SELECT at, 90000 + n, 0, 90000 + n, 'idle in transaction', interval '0', app,
+       'UPDATE ledger SET amount = amount WHERE id = 1', 7770000000000000001, NULL
+  FROM roots
+UNION ALL
+SELECT at, 90000 + n, 1, 95000 + n, 'active', make_interval(secs => n * 3), 'api', 'SELECT 1',
+       NULL, NULL
+  FROM roots;
 SELECT count(*) AS shared_query_rows FROM lock_tree_duration() WHERE query_id = 7770000000000000001 \gset
 SELECT count(*) AS alpha_rows FROM lock_tree_duration_by_application()
  WHERE application_name = 'service_alpha' AND 7770000000000000001 = ANY(query_ids) \gset
@@ -364,19 +371,19 @@ SELECT ok(:shared_seconds::numeric > :split_seconds::numeric,
 -- TWO instants, not one. A gap is keyed on the application being rooted at its NEAR end, so a
 -- single isolated sample is never a blocker by this measure and would not appear at all. That is
 -- the same rule that discards the trailing interval everywhere else.
+-- TWO roots at two instants, each with its own waiter at that same instant. The first version had
+-- one row at depth 0 and one at depth 1, which put the application at a single instant; a gap is
+-- keyed on the application being rooted at its NEAR end, so one instant means no gap and no row.
+-- The assertion below failed with zero, which read like a bug in the function and was a bug here.
 WITH base AS (SELECT max(sampled_at) + interval '10 minutes' AS at FROM lock_tree_history),
-k(n, off) AS (VALUES (0, interval '0'), (1, interval '2 seconds'))
+k(n, off, depth) AS (VALUES (0, interval '0', 0), (1, interval '2 seconds', 0),
+                           (2, interval '0', 1), (3, interval '2 seconds', 1))
 INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, wait_age,
                                application_name, query, root_object)
-SELECT b.at + k.off,
-       99991 + k.n,
-       CASE WHEN k.n = 0 THEN 0 ELSE 1 END,
-       99991 + k.n,
-       CASE WHEN k.n = 0 THEN 'idle in transaction' ELSE 'active' END,
-       CASE WHEN k.n = 0 THEN interval '0' ELSE interval '7 seconds' END,
-       '',
-       CASE WHEN k.n = 0 THEN 'VACUUM' ELSE 'SELECT 1' END,
-       NULL
+SELECT b.at + k.off, 99991, k.depth, 99991 + k.n,
+       CASE WHEN k.depth = 0 THEN 'idle in transaction' ELSE 'active' END,
+       CASE WHEN k.depth = 0 THEN interval '0' ELSE interval '7 seconds' END,
+       '', CASE WHEN k.depth = 0 THEN 'VACUUM' ELSE 'SELECT 1' END, NULL
   FROM base b CROSS JOIN k;
 SELECT count(*) AS unlabelled FROM lock_tree_duration_by_application()
  WHERE application_name = '' \gset

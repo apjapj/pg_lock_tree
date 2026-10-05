@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--0.10.sql pg_lock_tree--0.11.sql pg_lock_tree--0.11--0.12.sql pg_lock_tree--0.12.sql pg_lock_tree--0.12--0.13.sql pg_lock_tree--0.13.sql pg_lock_tree--0.13--0.14.sql pg_lock_tree--0.14.sql
+DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--0.10.sql pg_lock_tree--0.11.sql pg_lock_tree--0.11--0.12.sql pg_lock_tree--0.12.sql pg_lock_tree--0.12--0.13.sql pg_lock_tree--0.13.sql pg_lock_tree--0.13--0.14.sql pg_lock_tree--0.14.sql pg_lock_tree--0.14--0.15.sql pg_lock_tree--0.15.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
@@ -76,3 +76,7 @@ explain-alert:
 # server and superuser.
 check-deadlock:
 	./scripts/check-deadlock.sh $(if $(DEADLOCK_TIMEOUT),--deadlock-timeout=$(DEADLOCK_TIMEOUT),)
+# The read-side benchmark. It TRUNCATEs lock_tree_history to build a known fixture, so it
+# passes --force itself rather than relying on you having read this comment. Needs a server.
+bench-history:
+	./scripts/bench-history.sh --force $(if $(DAYS),--days=$(DAYS),) $(if $(EVERY),--every=$(EVERY),) $(if $(SESSIONS),--sessions=$(SESSIONS),) $(if $(KEEP),--keep,)

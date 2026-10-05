@@ -4,6 +4,122 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 0.15 (2026-10-05)
+
+0.15: the read side stops reading the whole table
+
+Two performance defects, one correctness defect the first of them exposed, and a benchmark so the
+numbers can be re-checked instead of taken on trust.
+
+THE DEFECTS
+
+Fifteen window bounds on a stored column used clock_timestamp(). It is VOLATILE, and the planner
+cannot make a volatile expression an index bound, so every one of them silently degraded from a seek
+into a filter over the entire index:
+
+    sampled_at >= clock_timestamp()     - interval '1 hour'
+      Index Only Scan, Filter, 165740 rows removed,  18.5 ms
+    sampled_at >= statement_timestamp() - interval '1 hour'
+      Index Only Scan, Index Cond,                      0.777 ms
+
+Same index, same query, same rows. The cost scaled with the size of the WHOLE history rather than
+with the window asked for, which is the wrong way round for something a dashboard runs.
+
+statement_timestamp() is STABLE, so it becomes an Index Cond, and it is constant for the statement,
+so there is no consistency argument against it either.
+
+Measured on a seven day history of 1.2 million rows, 264 MB:
+
+                                    0.14        0.15
+    lock_tree_duration(1ms)         980 ms      78 ms
+    lock_tree_duration_by_app(1ms) 1001 ms      75 ms
+    lock_tree_history_statements(1ms) 198 ms   0.3 ms
+    lock_tree_replay(one sample)     987 ms     0.3 ms
+
+The whole-window figures move much less, 3366 to 2606 ms for lock_tree_duration(), because a seven
+day window legitimately touches 60,481 instants and 1.2 million rows. That work is real and no index
+removes it. It is still the slowest read path in the extension and it remains the obvious next thing
+to look at.
+
+THE THREE clock_timestamp() USES IN THE LIVE VIEW ARE NOT CHANGED
+
+They compute wait_age, xact_age and state_age, which are genuinely per-row instants of now.
+Replacing those wholesale would be the obvious and wrong move, and test/19 asserts both halves: that
+the pattern appears nowhere in any windowed function, and that it still appears exactly three times
+in lock_tree with statement_timestamp() appearing nowhere in it.
+
+lock_tree_replay() found its sample by computing the distance to every row and sorting. 987 ms to
+replay one sample out of 1.2 million, against 0.556 ms for two index seeks: max(sampled_at) under the
+target, then min(sampled_at) over it, then the nearer of the two. It had been written that way to
+get around PostgreSQL refusing to let a SELECT DISTINCT order by an expression outside its select
+list, and the way round that restriction was worse than the restriction.
+
+THE CORRECTNESS FIX, WHICH THE ABOVE EXPOSED RATHER THAN CAUSED
+
+lock_tree_duration() and lock_tree_duration_by_application() counted the ROOT among its own waiters,
+so blocked_sessions_peak and sessions_total came out one too high per sample. A root row carries its
+own pid in root_pid, so the root-to-waiter join matched every root to itself:
+
+    a root with two waiters behind it reported blocked_sessions_peak = 3
+
+Fixed by requiring w.depth > 0 in the join.
+
+It survived two releases because test/17 computed its expected peak with the SAME self-matching
+join, so the test agreed with the bug and passed. An expectation derived from the expression under
+test is not an expectation. test/19's fixture is built from depth values directly, never from a join,
+and it is what caught this on its first run.
+
+FOUR BUGS IN THE UPDATE SCRIPT, NONE OF WHICH A GREEN TEST WOULD HAVE CAUGHT
+
+The 0.14 to 0.15 update replaces nine objects. Getting that list right took four attempts, and every
+mistake left the script looking complete:
+
+  span extraction by SUBSTRING rather than by name. 'lock_tree_prune' is a substring of
+    'lock_tree_prune_alerts' and 'lock_tree_replay' of 'lock_tree_replay_samples', so the script
+    replaced prune_alerts twice and the samples VIEW, and applied NEITHER lock_tree_prune nor the
+    replay rewrite.
+
+  slicing the header on the substring 'CREATE OR REPLACE', which also occurs in the header's own
+    prose. The comment was cut in half and the server refused with "unterminated /* comment".
+
+  asserting the file ended in a semicolon, which it does not: a span runs to the next CREATE and
+    so absorbs the prose comment block introducing that object. Valid SQL, and a wrong assertion.
+
+  and then rebuilding the header from the already-truncated file, which cannot work.
+
+What caught all four was comparing md5(pg_get_functiondef) for every function on an updated 0.14
+against a fresh 0.15 install. Identical is the only acceptable answer, and it is now the check.
+Install-from-tag would have passed regardless: a fresh install reads pg_lock_tree--0.15.sql and never
+looks at the update path.
+
+Also fixed there, and worth writing down: pg_proc holds AGGREGATES as well as functions, and
+pg_get_functiondef raises '"array_agg" is an aggregate function' on one. Any query walking pg_proc
+without filtering on prokind has to cope with that.
+
+scripts/bench-history.sh
+
+A number in a changelog is a claim nobody can check in eighteen months, so the claims above are now
+measurable. It builds a fixture of a stated shape, times every read function, and checks the two
+structural facts. It refuses to run without --force because it truncates the history, and says so on
+every run rather than relying on you having read the header.
+
+The structural checks were verified NON-VACUOUS: run against the v0.14 tag, both of the checks that
+discriminate FAIL, with the old plans printed. One of the three passes on 0.14 as well and is labelled
+as not being evidence. The first version of that check grepped for 'Aggregate|max(|min(', which
+matches every plan in the extension.
+
+The plan assertions are in the script rather than in a test file, and that is deliberate. The first
+draft of test/19 asserted that five query plans used an Index Cond, and it failed CORRECTLY: on a six
+hundred row fixture a sequential scan is cheaper and the planner is right to choose it. The
+assertion was not detecting the bug, it was demanding a worse plan. Plan shape also depends on table
+size and planner version, so it does not belong in a test that has to pass on six PostgreSQL
+versions. test/19 asserts the SOURCE, which is deterministic, and test/19 needs no dblink at all.
+
+test/19_index_usage.sql, 15 assertions.
+361 tests green on PG 14 to 19beta4; the 0.14 to 0.15 update verified by catalog diff against a fresh
+install; the full 0.2 to 0.15 chain; demo, check-install, check-alert in both modes, check-deadlock,
+and bench-history on both 0.14 and 0.15.
+
 ## 0.14 (2026-10-05)
 
 0.14: replay, so the history can be looked at rather than only queried
