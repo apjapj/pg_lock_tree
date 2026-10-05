@@ -251,10 +251,18 @@ VERIFIED
   - no em-dashes and no en-dashes in any document
   - the version check fires when the README and the control file disagree, in both directions
 
-The first attempt at the 19beta4 run reported every file as having no plan, which reads like a
-failure. It was my runner: the container accepts connections while its init scripts are still
-running, so the suite ran against a database that was not finished. With a settle delay, 19beta4
-passes like the rest.
+The first two attempts at the 19beta4 run reported every file as having no plan, which reads exactly
+like a failure in the extension. Both were the runner, and the first diagnosis was also wrong.
+
+  - first guess: the container accepts connections while its init scripts are still running, so the
+    suite ran against a database that was not finished. Waiting for a query rather than for the port
+    did not help, which is what showed the first guess was wrong.
+  - the actual cause: the runner mapped that version to image tag 19 rather than 19beta4, so no
+    container ever started and pg_prove was reporting against nothing.
+
+Set up by hand, 19beta4 passed throughout, which is what kept the wrong diagnosis looking plausible for
+longer than it deserved. A symptom that reads like a product bug is worth assuming is the harness
+until the harness has been read line by line. All six versions pass in one sweep.
 
 NOT DONE
 
