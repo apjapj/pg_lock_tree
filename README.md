@@ -64,11 +64,11 @@ postgres=# SELECT * FROM lock_tree_text();
 postgres=# SELECT root_pid, application_name, blocked_sessions FROM lock_tree_roots();
  root_pid | application_name | blocked_sessions
 ----------+------------------+------------------
-      166 | nightly_batch    |                4
+      166 | nightly_batch    |                3
 
 postgres=# SELECT * FROM lock_tree_actions();
 -- 1 root blocker(s). Most sessions unblocked first.
--- 1. nightly_batch: idle in transaction, blocks 4 session(s), chain depth 2, longest wait 0s
+-- 1. nightly_batch: idle in transaction, blocks 3 session(s), chain depth 2, longest wait 0s
 -- Descriptions, not commands. Every line here is a comment. For statements you can run: SELECT command FROM lock_tree_command().
 -- Terminating a session rolls back its transaction. Re-run the tree afterwards.
 
@@ -705,7 +705,7 @@ each its own root, because there is no root in the usual sense.
 
 What the extension could not do was say anything about them afterwards.
 
-`pg_stat_database.deadlocks` is a counter, present since PostgreSQL 13 and therefore on every
+`pg_stat_database.deadlocks` is a counter, present since PostgreSQL 9.2 and therefore on every
 version supported here. `lock_tree_sample()` now records it, and `lock_tree_deadlocks()` reports
 when it moved.
 
@@ -753,23 +753,44 @@ at a deploy or a cron job rather than at a mystery.
 To get the statements, enable the log entry and correlate:
 
 ```conf
-# postgresql.conf, then restart
+# postgresql.conf, then SELECT pg_reload_conf() -- both of these are reloadable, no restart
 log_lock_waits = on
-log_min_duration_statement = 0     # optional: every statement, so the CONTEXT lines are there too
 ```
 
-Deadlock messages are logged at `ERROR` and do not need `log_lock_waits`; that setting is for
-lock *waits*, which is the other half of this problem and the one `log_lock_waits` makes visible.
+**You do not need `log_min_duration_statement = 0`, and you should not set it.** A deadlock is logged
+at `ERROR` and the entry names both processes with the statement each was running, at default logging:
+
+```
+ERROR:  deadlock detected
+DETAIL:  Process 633 waits for ShareLock on transaction 574; blocked by process 634.
+DETAIL:  Process 634 waits for ShareLock on transaction 573; blocked by process 633.
+CONTEXT:  while updating tuple (1,1) in relation "ledger"
+STATEMENT:  UPDATE ledger SET amount = amount WHERE id = 1
+```
+
+Setting `log_min_duration_statement = 0` logs every statement the server runs, which on a busy database
+is a large volume of log for information the deadlock entry already carries.
+
+Both settings have context `superuser` in `pg_settings`, which is how to tell a reloadable setting from
+one needing a restart:
+
+```sql
+SELECT name, context FROM pg_settings WHERE name IN ('log_lock_waits', 'log_min_duration_statement');
+```
+
+`log_lock_waits` is for lock *waits*, which is the other half of this problem and not the same thing:
+deadlock messages are logged whether or not it is on.
 
 ### Counter resets
 
-`pg_stat_database.deadlocks` can go **backwards**: `pg_stat_reset_shared('db')` sets it to zero.
-A naive delta would then be negative, which is not a number of anything. So:
+`pg_stat_database.deadlocks` can go **backwards**: `pg_stat_reset()` sets it to zero. A naive delta
+would then be negative, which is not a number of anything. So:
 
 | | |
 |---|---|
 | `delta` | never negative, because a falling counter is not negative deadlocks |
 | `counter_reset` | set when the counter fell, so the timeline admits the discontinuity |
+| | |
 | `total_in_window` | sums the deltas **after** any reset, so a reset cannot silently understate it |
 
 ### Sampling it
@@ -865,9 +886,9 @@ and the live tree look the same:
 
 ```
 4821  idle in transaction  nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1
- └─4822  3m12s  for AccessExclusiveLock on public.ledger  SELECT count(*) FROM ledger
-   └─4823  3m10s  for AccessShareLock on public.ledger   INSERT INTO audit VALUES (1)
-   └─4824  3m09s  for AccessShareLock on public.ledger   INSERT INTO audit VALUES (2)
+ └─4822  3m12s  for AccessShareLock on public.ledger   SELECT count(*) FROM ledger
+   └─4823  3m10s  for RowExclusiveLock on public.ledger  INSERT INTO audit VALUES (1)
+   └─4824  3m09s  for RowExclusiveLock on public.ledger  INSERT INTO audit VALUES (2)
 ```
 
 Two things to know before you rely on it:
@@ -945,6 +966,7 @@ Four things worth knowing before you turn it on:
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
 | `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
+| `lock_tree_lines(query_width int, short boolean)` | The renderer behind `lock_tree_text()` and `lock_tree_text_short()`. Exposed so the width comparison in `scenarios/s4` can attribute the saving to each abbreviation separately, which is the only way to tell a shorter mode from a shorter column |
 | `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
 | `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
 | `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. `query_id` on root rows only, since a blocked query has none. |
@@ -1106,6 +1128,12 @@ terminate backends rather than mocking anything:
 | `test/13_prepared_roots.sql` | two prepared transactions are two roots, which is the 0.8 bug: the waiters attach to the right object, every aggregate counts two roots, and alerting tracks them separately |
 | `test/14_deadlocks.sql` | the deadlock counter: a sample on a quiet tree still records it, a delta is a subtraction and never negative, a reset is reported as a reset, and the sampling advice is sized on the history's peak rather than on the instant |
 | `test/15_history_size.sql` | the sizing report (zeros and NULLs on an unsampled database, a real rate when there is one), and that a `CALL` inside a transaction block is refused **having deleted nothing** |
+| `test/16_duration_resolved.sql` | the resolution notices: nothing on a quiet database, one when an alerted root leaves the tree, and that a root which never alerted produces nothing |
+| `test/17_duration_by_application.sql` | per-application blocking time, and the two directions in which it and the per-query figure invert: different statements in one application, and the same statement across two applications. Its expectations are derived from the sample rows rather than from the function under test, because a version that computed them from the same join agreed with a bug in it |
+| `test/18_replay.sql` | replaying an incident that has ended: the nearest-sample rule, tie-breaking, a target before the first sample, and the columns replay carries that the live view does not, asserted **by name** so adding one is noticed |
+| `test/19_index_usage.sql` | the read side SEEKS rather than filtering over the whole index. Reads the installed function definitions, so it holds for an extension installed from a tarball as well as from git. A first draft asserted on query plans here and failed CORRECTLY: on a 600 row fixture a sequential scan is the better plan, so the assertion was demanding a worse one |
+| `test/21_redaction.sql` | the credentials `lock_tree_redact()` must catch, including the five it missed in 1.0.0: a real SCRAM verifier with its iteration count, an empty dollar tag, a newline inside the literal, a statement truncated by `track_activity_query_size`, and `U&'x'` or a comment before the literal. Plus all six states of `lock_tree.history_query`, and which of them fail safe |
+| `test/22_schema_install.sql` | installed in a private schema: nothing lands in `public`, the two `search_path`-pinned functions qualify every sibling, and no object sits outside the schema the extension was installed into. The end-to-end half is `scripts/check-schema.sh`, because that needs a second database |
 
 CI runs the same suite on all six versions. Three files each need a server setting the matrix
 images provide (`max_prepared_transactions`, `shared_preload_libraries` for `pg_cron` and
@@ -1129,7 +1157,7 @@ order**, of:
 
 | Group | Objects |
 |---|---|
-| Incident | `lock_tree` (view), `lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_actions()`, `lock_tree_command()` |
+| Incident | `lock_tree` (view), `lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_lines()`, `lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_actions()`, `lock_tree_command()` |
 | History | `lock_tree_history` (table), `lock_tree_sample()`, `lock_tree_prune()`, `lock_tree_prune_batched()` (procedure), `lock_tree_history_size()`, `lock_tree_incidents()`, `lock_tree_statements()`, `lock_tree_history_statements()`, `lock_tree_sampling_advice()` |
 | Analysis | `lock_tree_duration()`, `lock_tree_duration_by_application()`, `lock_tree_replay()`, `lock_tree_replay_text()`, `lock_tree_replay_samples` (view), `lock_tree_replay(as_of)`, `lock_tree_deadlocks()` |
 | Alerting | `lock_tree_notify()`, `lock_tree_notify_resolved()`, `lock_tree_alert` (table), `lock_tree_prune_alerts()` |

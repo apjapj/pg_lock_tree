@@ -258,14 +258,38 @@ if [ -f README.md ]; then
     done
 fi
 
-# A test file on disk that the README never mentions is usually a test nobody
-# knows the purpose of. Warn rather than fail: the README does not have to
-# list everything.
-for t in test/*.sql; do
-    [ -f "$t" ] || continue
-    grep -q "$(basename "$t")" README.md \
-      || printf '  \033[33mnote\033[0m  %s exists but the README does not describe it\n' "$t"
-done
+  # The other direction, and it is a FAILURE where it used to be a note. The README has a table of
+  # what each test file covers, so a file missing from it is a test whose purpose nobody can find, and
+  # a note is exactly the wrong severity for that. The review of 0.14 found files 16 to 18 absent from
+  # the table while this note printed on every run of the script, every day, to nobody. A check that
+  # reports a real problem at a severity that gets ignored is worse than no check, because it teaches
+  # the reader that the output is not worth reading.
+  unlisted=0
+  for t in test/*.sql; do
+      [ -f "$t" ] || continue
+      if ! grep -q "$(basename "$t")" README.md; then
+          bad "$t exists but the README test table does not describe it"
+          unlisted=$((unlisted + 1))
+      fi
+  done
+  [ "$unlisted" -eq 0 ] && ok "every test file on disk is in the README test table"
+
+  # The same drift one level up: a function in the release that the Objects table does not mention. A
+  # function added and not documented is invisible in review, and the review of 0.14 asked for this.
+  rel=$(ls pg_lock_tree--*.sql 2>/dev/null | grep -E '^pg_lock_tree--[0-9]+(\.[0-9]+)*\.sql$' | sort -V | tail -1)
+  if [ -n "$rel" ] && [ -f README.md ]; then
+      undocumented=0
+      for f in $(grep -oE '^CREATE (OR REPLACE )?FUNCTION @extschema@\.lock_tree_[a-z_]+' "$rel" \
+                   | sed 's/.*\.//' | sort -u); do
+          if ! grep -qE "(^|[^a-z_])${f}([^a-z_]|$)" README.md; then
+              bad "$f() is in $rel but not the README Objects table"
+              undocumented=$((undocumented + 1))
+          fi
+      done
+      [ "$undocumented" -eq 0 ] \
+        && ok "every function in $rel appears in the README Objects table" \
+        || bad "$undocumented function(s) in $rel are not in the README Objects table"
+  fi
 
 # plan(N) must match the number of assertions on the path that actually runs, or
 # pg_prove reports a bad plan instead of a real failure. pgTAP's own answer is
