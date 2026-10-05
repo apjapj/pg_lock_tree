@@ -137,7 +137,7 @@ What the extension could not do was say anything about them afterwards.
 version supported here. `lock_tree_sample()` now records it, and `lock_tree_deadlocks()` reports
 when it moved.
 
-```sql
+```
 postgres=# SELECT * FROM lock_tree_deadlocks(interval '7 days');
 ```
 

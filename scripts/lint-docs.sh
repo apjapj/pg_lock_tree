@@ -257,8 +257,19 @@ for f in $DOCS_ALL; do
     # skipped every path containing that letter, which is most of them.
     # Comments cannot sit inside the $( ) above a continuation line without ending
     # the command, so this one lives here.
-    paths=$(grep -oE '\]\(([A-Za-z0-9_./-]+)\)|`[A-Za-z0-9_][A-Za-z0-9_./-]*\.(sql|md|sh|control)`' "$f" \
-            | sed -E 's/^\]\(//; s/\)$//; s/^`//; s/`$//' \
+    # A markdown link is extracted as its target, and a bare backticked name is extracted from the text
+    # with the links blanked out first. The label is not a path: [`lint-docs.sh`](../scripts/lint-docs.sh)
+    # carries a bare filename in the label, which resolves neither from the repo root nor from the
+    # linking document, and it was reported as a missing file that has been there all along.
+    #
+    # A lookbehind was the first attempt and it was on the wrong side of the label: the label comes
+    # before `](`, not after, so there was nothing to look behind. Blanking the links is plainer and
+    # needs no PCRE.
+    link_targets=$(grep -oE '\]\([A-Za-z0-9_./-]+\)' "$f" | sed -E 's/^\]\(//; s/\)$//')
+    without_links=$(sed -E 's/\[[^][]*\]\([^)]*\)/@LINK@/g' "$f")
+    bare_names=$(printf '%s\n' "$without_links" \
+                 | grep -oE '`[A-Za-z0-9_][A-Za-z0-9_./-]*\.(sql|md|sh|control)`' | tr -d '`')
+    paths=$(printf '%s\n%s\n' "$link_targets" "$bare_names" \
             | grep -vE '^(https?:|[0-9]+$|[^ ]*[?*<>][^ ]*$|[^ ]*[0-9]\.x[^ ]*$)' | sort -u)
     for p in $paths; do
         if [ -e "$p" ]; then
@@ -509,6 +520,200 @@ for t in $targets; do
   fi
 done
 [ "$missing" -eq 0 ] && ok "every make target named in the docs exists in the Makefile"
+
+# ---------------------------------------------------------------- generated examples
+#
+# An example in the documentation is either captured from a run or written by hand, and the two drift
+# apart at very different rates. A captured one is only captured once: someone runs the code, copies
+# the output into a markdown file, and from then on it is a copy that nobody updates.
+#
+# So a captured example is fenced by a marker naming its source, and the source is written by
+# scripts/capture.sh. This compares them after masking the volatile parts, which is the same masking
+# capture.sh applies, so the two cannot disagree about what is allowed to vary.
+#
+#   <!-- generated: docs/examples/scenarios-coverage.md#table -->
+#   ...
+#   <!-- /generated -->
+#
+# Three failures, all of them silent otherwise:
+#
+#   - the block drifted from what the code prints
+#   - a block is marked generated but its source is missing, so the block is trusted on nothing
+#   - a captured file exists that no block references, so it is rotting and nobody reads it
+# Markers are read from prose only. A marker inside a fenced block is documentation *about* markers,
+# which is how CONTRIBUTING.md explains the syntax, and treating that as a live marker made the check
+# demand the placeholder filename in the middle of the page.
+#
+# awk, not grep: awk is what can see the fence boundaries. Two passes would also work and would be
+# easier to read, but this is one pass over one stream and the fence state is a single variable.
+#
+# The pattern is the second argument, not the first. It was the first, so the "pattern" was the
+# filename and every line mentioning the file matched: the check reported four blocks generated from
+# sentences that contain the word "generated". An argument-order mistake that turns a check into noise
+# rather than into an error.
+# Call as: markers_in <file> <awk-regex>. The file is $1 and the pattern is $2.
+markers_in() {
+    awk -v pat="$2" '
+        /^```/ { inside = !inside; next }
+        !inside && $0 ~ pat { print }
+    ' "$1"
+}
+
+step "every generated example matches its capture"
+
+# The mask, kept byte-identical to scripts/capture.sh. Two copies of a masking rule is one copy too
+# many, so this one is generated from the capture script rather than typed.
+MASKS=$(sed -n '/^MASKS=(/,/^)/p' scripts/capture.sh | sed -e '1d' -e '$d' \
+        | sed -e "s/^ *'//" -e "s/'$//")
+if [ -z "$MASKS" ]; then
+    bad "could not read the mask out of scripts/capture.sh, so no example can be checked"
+else
+    mask_text() {
+        local -a args=()
+        local e
+        for e in "$@"; do args+=(-e "$e"); done
+        sed -E "${args[@]}"
+    }
+    # Split the mask into one expression per line, then per argument. Written as a function so the
+    # same loop serves both the comparison and the "unreferenced capture" report.
+    mapfile -t MASK_EXPRS < <(printf '%s\n' "$MASKS")
+
+    gen_ok=0; gen_bad=0; gen_seen=0
+    for f in $DOCS_ALL; do
+        [ -f "$f" ] || continue
+        # Pull each marked block out with awk: the marker line, the fence, the body, the fence.
+        while IFS= read -r spec; do
+            [ -z "$spec" ] && continue
+            gen_seen=$((gen_seen + 1))
+            src=${spec%%#*}
+            blk=${spec#*#}
+            if [ ! -f "$src" ]; then
+                bad "$f marks a block generated from $src, which does not exist"
+                gen_bad=$((gen_bad + 1))
+                continue
+            fi
+            if [ ! -d docs/examples ]; then
+                bad "no docs/examples directory, so $src cannot have been captured"
+                gen_bad=$((gen_bad + 1))
+                continue
+            fi
+            # The block from the documentation.
+            # Everything between the markers, fenced or not. The first generated block is a markdown
+            # table rather than a code block, and requiring a fence reported it as missing.
+            # Leading and trailing fence lines are dropped, and only those: a block may be fenced in
+            # the documentation and bare in the capture, and the fences are formatting rather than
+            # content. A fence in the middle would be a fence inside captured output, which is left
+            # alone because dropping it would be guessing.
+            doc_block=$(awk -v s="<!-- generated: $spec -->" '
+                $0 == s { grab = 1; next }
+                grab && /^<!-- \/generated -->/ { grab = 0; next }
+                grab { n++; line[n] = $0 }
+                END {
+                    lo = 1; hi = n
+                    while (lo <= hi && (line[lo] ~ /^```/ || line[lo] ~ /^[[:space:]]*$/)) lo++
+                    while (hi >= lo && (line[hi] ~ /^```/ || line[hi] ~ /^[[:space:]]*$/)) hi--
+                    for (i = lo; i <= hi; i++) print line[i]
+                }
+            ' "$f")
+            if [ -z "$doc_block" ]; then
+                bad "$f marks $spec generated but has nothing under the marker"
+                gen_bad=$((gen_bad + 1))
+                continue
+            fi
+            # The block from the capture. A capture file is either one block, or several under
+            # @block markers.
+            cap_block=$(awk -v want="$blk" '
+                $0 == "@block " want { grab = 1; next }
+                grab && /^@block / { exit }
+                grab && /^# generated by/ { exit }
+                grab { print }
+            ' "$src")
+            if [ -z "$cap_block" ]; then
+                if [ "$blk" = "table" ] || [ "$blk" = "all" ]; then
+                    # Only the provenance comment is stripped. The table keeps its own header and its
+                # separator row, because the documentation's copy has them too.
+                cap_block=$(sed -e '/^# generated by/d' "$src")
+                else
+                    bad "$f wants $blk from $src, and that file has no such block"
+                    gen_bad=$((gen_bad + 1))
+                    continue
+                fi
+            fi
+            # Mask both, then compare. Masking the capture as well as the documentation means a
+            # volatile number cannot be the reason the two agree.
+            a=$(printf '%s\n' "$doc_block" | mask_text "${MASK_EXPRS[@]}")
+            b=$(printf '%s\n' "$cap_block" | mask_text "${MASK_EXPRS[@]}")
+            # Blank lines are not a difference: an editor that trims trailing blanks is not a change
+            # of meaning, and the docs are read by people who reflow them.
+            a=$(printf '%s\n' "$a" | sed -e '/^[[:space:]]*$/d')
+            b=$(printf '%s\n' "$b" | sed -e '/^[[:space:]]*$/d')
+            if [ "$a" = "$b" ]; then
+                ok "$f: $spec matches its capture"
+                gen_ok=$((gen_ok + 1))
+            else
+                bad "$f: $spec does not match $src. Diff, capture first:"
+                printf '%s\n' "$a" > /tmp/lt-doc.$$
+                printf '%s\n' "$b" > /tmp/lt-cap.$$
+                diff /tmp/lt-doc.$$ /tmp/lt-cap.$$ | sed 's/^/        /' | head -12
+                rm -f /tmp/lt-doc.$$ /tmp/lt-cap.$$
+                gen_bad=$((gen_bad + 1))
+            fi
+        done < <(markers_in "$f" '<!-- generated: [^ ]+ -->' | sed -e 's/<!-- generated: //' -e 's/ -->//')
+    done
+
+    [ "$gen_seen" -gt 0 ] && ok "$gen_seen generated example(s) declared"
+    [ "$gen_seen" -eq 0 ] && ok "no generated examples declared, which is allowed but means none are checked"
+    [ "$gen_bad" -eq 0 ] && ok "every generated example matches its capture"
+
+    # An illustrative marker is a claim that the block is NOT captured. Nothing here verifies the
+    # numbers, because there is nothing to verify them against; what it does is stop an illustrative
+    # block reading as a capture, which is how a hand-written example becomes evidence for itself.
+    ill=0
+    for f in $DOCS_ALL; do
+        [ -f "$f" ] || continue
+        while IFS= read -r note; do
+            [ -z "$note" ] && continue
+            ok "$f marks a block illustrative: $note"
+            ill=$((ill + 1))
+        done < <(markers_in "$f" '<!-- illustrative: [^>]+>' | sed -e 's/<!-- illustrative: //' -e 's/ -->//')
+    done
+    if [ "$ill" -eq 0 ]; then
+        ok "no illustrative blocks marked, which is allowed but means every example claims to be a capture"
+    fi
+
+    # A block must not be both. A generated block is checked against a capture and an illustrative one
+    # is not, so marking one as both means the marker that does nothing is the one a reader trusts.
+    for f in $DOCS_ALL; do
+        [ -f "$f" ] || continue
+        both=$(grep -cE '<!-- (generated|illustrative)' "$f")
+        [ "$both" -gt 0 ] || continue
+        g=$(grep -c '<!-- generated:' "$f" || true)
+        i=$(grep -c '<!-- illustrative:' "$f" || true)
+        # One file legitimately holds both kinds. What cannot happen is one block claiming both, so
+        # the counts only have to be checked where a file has a single example.
+        if [ "$g" -gt 0 ] && [ "$i" -gt 0 ]; then
+            ok "$f has $g generated and $i illustrative block(s), which is allowed"
+        fi
+    done
+
+    # And the other direction: a capture nobody references is a file that rots unread.
+    if [ -d docs/examples ]; then
+        for c in docs/examples/*; do
+            [ -f "$c" ] || continue
+            rel=${c#./}
+            if grep -q "generated: $rel" $DOCS_ALL 2>/dev/null; then
+                ok "$c is referenced by a generated block"
+            elif grep -qF "($rel)" $DOCS_ALL 2>/dev/null; then
+                # Linked rather than inlined, which is what a transcript too long to embed wants.
+                ok "$c is linked from the documentation"
+            else
+                bad "$c is captured but nothing in the documentation refers to it"
+                gen_bad=$((gen_bad + 1))
+            fi
+        done
+        [ "$gen_bad" -eq 0 ] && ok "every captured file is referred to by the documentation"
+    fi
+fi
 
 # ---------------------------------------------------------------- prose references to moved sections
 #

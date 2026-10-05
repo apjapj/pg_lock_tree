@@ -34,7 +34,7 @@ prove:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema
+.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -59,6 +59,12 @@ scenarios:
 # is cheap enough to run before every commit.
 lint-docs:
 	./scripts/lint-docs.sh
+
+# Write the documentation examples that are captured rather than written, and apply the mask that
+# makes two runs comparable. Needs a server with the extension installed, so it is not part of
+# 'make check': run it after changing anything that prints, and commit what it writes.
+capture:
+	./scripts/capture.sh
 
 # The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
 # since they need a live PostgreSQL with the extension installed.

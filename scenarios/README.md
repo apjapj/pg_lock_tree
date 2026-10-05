@@ -36,6 +36,8 @@ these could have produced flattering nonsense.
 
 Coverage: sessions genuinely waiting, and how many of them each approach reported.
 
+<!-- generated: docs/examples/scenarios-coverage.md#table -->
+
 | scenario | waiting | published CTE | pg_lock_tree |
 |---|---|---|---|
 | 1 nightly batch | 4 | 4 | 4 |
@@ -46,6 +48,13 @@ Coverage: sessions genuinely waiting, and how many of them each approach reporte
 | 6 deadlock | 2 | 2 | 2 |
 | 7 prepared transaction | 2 | **0** | 2 |
 | 8 many roots | 66 | 66 | 66 |
+
+<!-- /generated -->
+
+**This table is not written by hand.** [`scripts/capture.sh`](../scripts/capture.sh) derives it from
+the coverage block each scenario prints, and [`lint-docs.sh`](../scripts/lint-docs.sh) compares the
+block above against the captured file. A scenario that stops reporting its coverage produces a `?`
+here rather than a `0`, because a missing measurement and a measurement of zero are different facts.
 
 **Read that honestly: on plain coverage the two tie almost everywhere.** The differences are
 not in finding sessions. They are these:

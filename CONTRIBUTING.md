@@ -87,6 +87,45 @@ was never going to work. None is a runtime requirement: `pg_lock_tree` itself ne
 PostgreSQL 14 reaches end of life on 2026-11-12, which removes the bottom of the matrix. That is a
 scheduling fact rather than a code change, and [INSTALL.md](INSTALL.md) records it.
 
+## Examples: captured or written
+
+Every example in the documentation is one of two things, and the difference matters because only one of
+them can be checked.
+
+**Captured.** `scripts/capture.sh` runs the code, masks the parts that move between runs, and writes
+the result to `docs/examples/`. The documentation holds a copy fenced by
+
+```
+<!-- generated: docs/examples/<file>#<block> -->
+```
+
+and [`lint-docs.sh`](scripts/lint-docs.sh) compares the two. Change what the code prints and the documentation fails. There are
+two: the demo's section list in the README, and the coverage table in `scenarios/README.md`, which was
+the last hand-transcribed set of numbers in the repository.
+
+**Written.** Shortened for reading: round pids, every wait `0s`, statements trimmed to the part that
+matters. These are fenced by
+
+```
+<!-- illustrative: ... -->
+```
+
+and nothing checks them, because there is nothing to check them against. The marker exists so that a
+hand-written example cannot be read as evidence for itself. The README says which of its two
+transcripts is which, and notes that `make demo` prints the same shape with different numbers.
+
+Adding a third kind is the thing to avoid. If an example can be made to come from a real run, make it
+come from a real run: a written example of something the code can print is an example that will
+eventually be wrong.
+
+The mask is in `scripts/capture.sh` and is read out of that file by `scripts/lint-docs.sh`, so
+there is one copy. Every substitution has a named replacement, `<PID>`, `<PIDS>`, `<AGE>`, `<TIMESTAMP>`, so a diff
+shows what was hidden rather than that something was. It deliberately does not mask the coverage
+numbers in the scenarios table, because masking the thing under test is not a check.
+
+`make capture` needs a server with the extension installed, so it is not part of `make check`. Run it
+after changing anything that prints, and commit what it writes.
+
 ## Releasing
 
 Every release is additive: a new full-version script plus an update path from the version

@@ -213,7 +213,7 @@ A prepared transaction holds its locks until `COMMIT PREPARED` or `ROLLBACK PREP
 no session for the whole of that time. `pg_stat_activity` has no row for it, and `pg_locks.pid` is
 `NULL` for every lock it holds.
 
-```sql
+```
 postgres=# SELECT gid, prepared, owner FROM pg_prepared_xacts;
 ```
 

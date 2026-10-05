@@ -75,6 +75,8 @@ SELECT * FROM lock_tree_text();
 
 ## What it looks like
 
+<!-- illustrative: written by hand, not captured. See the note under it. -->
+
 ```
 postgres=# SELECT * FROM lock_tree_text();
  166  idle in transaction  0s  nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1
@@ -87,9 +89,18 @@ One root, `166`, a nightly job that has been `idle in transaction` since its UPD
 sessions behind it: an `ALTER TABLE` and two reads. Nothing here is a guess, and nothing here needs
 `log_min_duration_statement` turned on.
 
+**Those two transcripts are written by hand, not captured.** They are shortened: the pids are round
+numbers, the waits are all `0s`, and the statements are trimmed to the part that matters. `make demo`
+prints the same shape on a table it creates called `demo_ledger`, with one more reader behind the
+`ALTER TABLE` so the per-application figures have something to separate. Run it and compare: the format
+is the same, the numbers are not, and that is expected. The captured order of what the demo prints is
+in [Seeing it work](#seeing-it-work), and that one is checked.
+
 ### Reading it, then running it
 
-Nothing in the tree is a suggestion to act. Get from "I can see it" to "I have decided":
+Nothing in the tree is a suggestion to act. Get from "I can see it" to "I have decided".
+
+<!-- illustrative: written by hand, not captured. -->
 
 ```
 postgres=# SELECT root_pid, application_name, blocked_sessions FROM lock_tree_roots();
@@ -119,12 +130,39 @@ no backend. A deadlock that is happening now is in
 
 ## Seeing it work
 
-The eight scenarios in [scenarios/](scenarios/) each build a real chain, sample it, and print the
-tree next to the usual hand-written query, so you can see what the extra gives you:
-
 ```bash
-make scenarios        # all eight, both tools, output captured
+make demo             # one incident, start to finish, on a scratch table it creates and drops
+make scenarios        # eight incidents, each queried two ways, output captured
 ```
+
+The demo builds a real chain with dblink, waits for the lock queue to form, prints it four ways, and
+cleans up after itself. This is the order it prints, captured from a run rather than described:
+
+<!-- generated: docs/examples/demo-sections.md#all -->
+
+```
+# 0. Install
+# 1. A quiet database: the tree is empty
+# 2. Build the incident
+# 3. lock_tree_text(): the queue, top to bottom
+# 4. lock_tree: who blocks whom, and for how long
+# 5. lock_tree_roots(): the one session to act on
+# 6. What the operator reads, and what they run
+# 7. Bonus: a deadlock has no head of the queue
+# 8. Bonus: what it looked like while you were not looking
+# 9. Cleanup
+```
+
+<!-- /generated -->
+
+The [full transcript](docs/examples/demo.out) is captured too, with pids, waits and timestamps
+replaced by `<PID>`, `<AGE>` and `<TIMESTAMP>` so two runs differ nowhere. `make capture` writes both.
+
+The eight scenarios in [scenarios/](scenarios/) are the harder version: each builds a real chain,
+samples it, and prints the tree next to the usual hand-written query on the same data at the same
+moment. Scenario 7 is the one to read, because it is the only case where the usual query reports
+nothing at all. The numbers are in [scenarios/README.md](scenarios/README.md), and the coverage table
+there is generated rather than written.
 
 ## Compared with the usual query
 
