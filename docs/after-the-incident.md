@@ -152,7 +152,7 @@ This is the part worth understanding, and it is not tidiness.
 `lock_tree_history` only has rows while something is **blocked**. PostgreSQL resolves a deadlock by
 killing one participant. So by the time your sampler runs, the cycle is over, the tree is empty,
 and there is no history row to hang a counter on. Measured, on the run in
-`scripts/check-deadlock.sh`:
+[`scripts/check-deadlock.sh`](../scripts/check-deadlock.sh):
 
 ```
  the counter moved, from 15 to 16
@@ -253,10 +253,10 @@ sample rate for no benefit. The deadlock rows are still deleted.
 ### Checking it works
 
 ```bash
-[scripts/check-deadlock.sh](scripts/check-deadlock.sh)
+scripts/check-deadlock.sh
 ```
 
-A script rather than a test file, for the same reason as [`scripts/check-alert.sh`](scripts/check-alert.sh) and for a more annoying
+A script rather than a test file, for the same reason as [`scripts/check-alert.sh`](../scripts/check-alert.sh) and for a more annoying
 reason: the increment lands when the server breaks the cycle, which is `deadlock_timeout` after the
 wait began. Three separate attempts to observe that inside a single psql session all failed, each
 differently. Building the deadlock from dblink connections belonging to the session that was also
@@ -270,13 +270,13 @@ scenario has moved on. So the two lived in different places, until the parameter
 them became a parameter:
 
 ```bash
-[scripts/check-deadlock.sh](scripts/check-deadlock.sh)                              # default 1s, waits for the move
-[scripts/check-deadlock.sh](scripts/check-deadlock.sh) --deadlock-timeout=15s        # s6's timeout, proves both halves
-[scripts/check-deadlock.sh](scripts/check-deadlock.sh) --deadlock-timeout=2s         # breaks it promptly
+scripts/check-deadlock.sh                              # default 1s, waits for the move
+scripts/check-deadlock.sh --deadlock-timeout=15s        # s6's timeout, proves both halves
+scripts/check-deadlock.sh --deadlock-timeout=2s         # breaks it promptly
 ```
 
 With `15s` the script builds the cycle, observes it in `pg_stat_activity`, and checks that the
-counter has **still not moved**. That is the state [`scenarios/s6_deadlock.sql`](scenarios/s6_deadlock.sql) photographs, proved rather
+counter has **still not moved**. That is the state [`scenarios/s6_deadlock.sql`](../scenarios/s6_deadlock.sql) photographs, proved rather
 than assumed, and it is the answer to the question that sends people to the source: *I can see a
 deadlock but `deadlocks` has not moved, is something broken?* Nothing is broken. The counter moves
 when the server breaks the cycle, and not before.

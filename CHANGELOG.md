@@ -2111,7 +2111,7 @@ An alert arrives as a JSON payload with no instructions attached. The recipient 
 means and what to run, at whatever hour it arrived.
 
 ```bash
-[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,"root_object":"AccessExclusiveLock on public.ledger", …}'
+scripts/check-alert.sh --explain '{"root_pid":0,"root_object":"AccessExclusiveLock on public.ledger", …}'
 ```
 
 prints what the payload says, what it means, and the queries to run in order. It **needs no database

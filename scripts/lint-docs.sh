@@ -276,22 +276,141 @@ for f in $DOCS_ALL; do
     # A lookbehind was the first attempt and it was on the wrong side of the label: the label comes
     # before `](`, not after, so there was nothing to look behind. Blanking the links is plainer and
     # needs no PCRE.
-    link_targets=$(grep -oE '\]\([A-Za-z0-9_./-]+\)' "$f" | sed -E 's/^\]\(//; s/\)$//')
+      # '#' is IN the class, and until 1.1.1 it was not. So [Backups and restores]
+      # (INSTALL.md#backups-and-restores), the link that was reported broken, never matched this
+      # pattern at all and was never checked: every link carrying an anchor had been invisible. The
+      # fragment is split off below and the file part is tested on its own.
+      link_targets=$(grep -oE '\]\([A-Za-z0-9_./#-]+\)' "$f" | sed -E 's/^\]\(//; s/\)$//')
     without_links=$(sed -E 's/\[[^][]*\]\([^)]*\)/@LINK@/g' "$f")
     bare_names=$(printf '%s\n' "$without_links" \
                  | grep -oE '`[A-Za-z0-9_][A-Za-z0-9_./-]*\.(sql|md|sh|control)`' | tr -d '`')
+      # A fragment is tested against the headings of the file it points at, because a link to a file
+      # that exists but a heading that does not renders fine and scrolls nowhere. Anchor targets are
+      # GitHub-style slugs of the heading text: lower case, spaces to hyphens, punctuation dropped.
+      for p in $link_targets; do
+          case "$p" in
+              *'#'*) ;;
+              *) continue ;;
+          esac
+          frag=${p##*#}
+          file=${p%%#*}
+          [ -n "$file" ] && tgt="$dir/$file" || tgt="$f"
+          [ -e "$tgt" ] || continue
+          if awk -v want="$frag" '
+              function slug(line,   s) {
+                  s = tolower(line)
+                  gsub(/[^a-z0-9 -]/, "", s)
+                  gsub(/ /, "-", s)
+                  return s
+              }
+              /^#+[[:space:]]/ {
+                  h = $0
+                  sub(/^#+[[:space:]]*/, "", h)
+                  if (slug(h) == want) { found = 1 }
+              }
+              END { exit(found ? 0 : 1) }' "$tgt"; then
+              ok "$f -> $p (anchor exists)"
+          else
+              bad "$f links to $p, and $tgt has no heading that slugifies to that anchor"
+          fi
+      done
     paths=$(printf '%s\n%s\n' "$link_targets" "$bare_names" \
             | grep -vE '^(https?:|[0-9]+$|[^ ]*[?*<>][^ ]*$|[^ ]*[0-9]\.x[^ ]*$)' | sort -u)
-    for p in $paths; do
-        if [ -e "$p" ]; then
-            ok "$f -> $p"
-        elif [ -e "$dir/$p" ]; then
-            ok "$f -> $p (relative to $dir)"
-        else
-            bad "$f mentions $p, which exists neither at the repo root nor in $dir"
-        fi
-    done
+      # Two categories, and they are not the same kind of thing, so they get different rules.
+      #
+      #   link_targets  a real markdown link, [label](target). A renderer resolves it relative to the
+      #                 containing file and nowhere else. Getting that wrong is invisible to grep and
+      #                 obvious in a browser: docs/reference.md linked to INSTALL.md, which passes
+      #                 every existence test because INSTALL.md exists at the repo root, and then 404s
+      #                 in Forgejo. Seven links did that, two of them added by 1.1.0. Found by opening
+      #                 the rendered page rather than by running this script.
+      #
+      #                 The earlier version of this check tested the repo root FIRST, which is what
+      #                 let all seven through.
+      #
+      #   bare_names    a backticked path in prose, `test/06_cron.sql`. Not a link at all: it renders
+      #                 as code. It only has to exist somewhere, and the repo root is the sensible
+      #                 place to look. Applying the renderer's rule to these reported 24 false
+      #                 failures the first time, which is why the two are separated rather than merged.
+      for p in $paths; do
+          # The fragment is not part of the filename. INSTALL.md#grants is INSTALL.md; testing it as
+          # written reported 48 links missing that all exist.
+          t=${p%%#*}
+          [ -z "$t" ] && continue
+          # Membership is an exact whole-line match, not a substring test. `case " $link_targets " in
+          # *" $p "*)` was the first attempt and it never matched anything, because link_targets is
+          # newline separated: the characters around a target are newlines, not the spaces the pattern
+          # asks for. Every link therefore fell through to the bare-name branch and the two rules
+          # collapsed into one, which is the bug this whole change set was about.
+          if printf '%s\n' "$link_targets" | grep -qxF -- "$p"; then
+              if [ "$dir" = "." ]; then
+                      if [ -e "$t" ]; then
+                          ok "$f -> $t"
+                      else
+                          bad "$f links to $t, which does not exist at the repo root"
+                      fi
+                  elif [ -e "$dir/$t" ]; then
+                      ok "$f -> $t (relative to $dir)"
+                  elif [ -e "$t" ]; then
+                      bad "$f links to $t, which exists at the repo root but not beside the document, \
+so a renderer will not find it"
+                  else
+                      bad "$f links to $t, which exists neither beside the document nor at the repo root"
+              fi
+          else
+              if [ -e "$t" ] || [ -e "$dir/$t" ]; then
+                  ok "$f names $t"
+              else
+                  bad "$f names $t, which exists neither at the repo root nor in $dir"
+              fi
+          fi
+      done
 done
+
+# ---------------------------------------------------------------- link syntax inside code fences
+
+step "no markdown link syntax inside a fenced shell block, where it is neither a link nor shell"
+
+# [scripts/check-alert.sh](scripts/check-alert.sh) inside a bash block is not a link: a fence renders
+# as code, so nothing is clickable. It is also not runnable, because [ is the test command and the
+# shell would try to run x](x). Nine lines of the documentation were like this, including commands a
+# reader would reasonably copy and paste.
+#
+# Restricted to shell-ish fence languages. Inside an md block, showing link syntax is the whole point,
+# and a general check would fail it. An UNTAGGED fence is not checked either, because the language is
+# genuinely unknown: one transcript here was untagged and had to be tagged console before the check
+# could see it. Recorded rather than hidden.
+fence_tmp=$(mktemp)
+for f in $DOCS_ALL; do
+    [ -f "$f" ] || continue
+    : > "$fence_tmp"
+    awk -v out="$fence_tmp" '
+        /^[[:space:]]*(`{3,}|~{3,})/ {
+            if (inside) { inside = 0; lang = "" }
+            else {
+                inside = 1
+                t = $0
+                sub(/^[[:space:]]*`{3,}/, "", t); sub(/~{3,}.*$/, "", t)
+                gsub(/[[:space:]]/, "", t)
+                lang = tolower(t)
+            }
+            next
+        }
+        inside {
+            if (lang ~ /^(bash|sh|shell|zsh|console)$/ && index($0, "](") > 0) {
+                printf "%s:%d: %s\n", FILENAME, FNR, $0 >> out
+            }
+        }
+    ' "$f"
+    if [ -s "$fence_tmp" ]; then
+        while IFS= read -r line; do
+            bad "link syntax inside a shell fence, which is neither a link nor runnable: $line"
+        done < "$fence_tmp"
+    else
+        ok "$f has no markdown link syntax inside a shell fence"
+    fi
+done
+rm -f "$fence_tmp"
 
 # ---------------------------------------------------------------- the test suite
 

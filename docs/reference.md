@@ -8,7 +8,7 @@ creates, the stability statement, and the NOTIFY payload keys.
 
 > **Monitoring roles.** Seven of the functions below read `lock_tree_history` and are
 > `SECURITY INVOKER`, so they need `GRANT SELECT ON lock_tree_history` on top of the two grants in
-> [INSTALL.md](INSTALL.md#grants). `lock_tree_replay_samples` is a view and works without it, because
+> [INSTALL.md](../INSTALL.md#grants). `lock_tree_replay_samples` is a view and works without it, because
 > a view runs with the definer's rights. That inconsistency is stated rather than fixed, and the
 > reasons are in INSTALL.md.
 
@@ -102,7 +102,7 @@ does not recognise, and this is the one place where that is a requirement rather
 ### Also not a promise
 
 - **The three tables are not registered for `pg_dump`.** That is a decision with reasons in
-  [Backups and restores](INSTALL.md#backups-and-restores), pinned by a test, and a future release may
+  [Backups and restores](../INSTALL.md#backups-and-restores), pinned by a test, and a future release may
   register them behind a documented option.
 - **Cross-database visibility.** Each database has its own history. A fan-out sampler is a separate
   tool; see the [roadmap](roadmap.md).

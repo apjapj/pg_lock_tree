@@ -223,12 +223,12 @@ is worth calling from the same cron entry as the sample if you care. It is not l
 
 ## Checking it works
 
-Two ways, and they check different things.
+Two ways, and they check different things. Both are in [`scripts/check-alert.sh`](../scripts/check-alert.sh), which takes the flags below.
 
 ```bash
-[`scripts/check-alert.sh`](scripts/check-alert.sh)              # builds a chain, notifies, and reads the notification back
-[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain    # the same, then explains the payload it received
-[`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,...}'
+scripts/check-alert.sh              # builds a chain, notifies, and reads the notification back
+scripts/check-alert.sh --explain    # the same, then explains the payload it received
+scripts/check-alert.sh --explain '{"root_pid":0,...}'
 ```
 
 That verifies the delivery path end to end, which no assertion can: `psql` prints notifications to
@@ -249,8 +249,8 @@ per cleared root, none while the incident is still standing, and the state forgo
 to do. It needs **no database**, which is the point: the first thing you do at 3am should be
 something that cannot fail because the database is the thing that is broken.
 
-```
-$ [`scripts/check-alert.sh`](scripts/check-alert.sh) --explain '{"root_pid":0,
+```console
+$ scripts/check-alert.sh --explain '{"root_pid":0,
     "root_object":"AccessExclusiveLock on public.ledger","application_name":"",
     "blocked_sessions":12,"max_depth":1,"longest_wait":"9m05s",
     "waiting_for":"AccessShareLock on public.ledger"}'

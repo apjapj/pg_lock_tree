@@ -81,7 +81,7 @@ appears zero times in `scripts/bench-history.sh`. Measured against the same fixt
 | `lock_tree_duration()` | 1810.0 ms | the history |
 | `lock_tree_duration_by_application()` | 2163.5 ms | the history |
 
-These are the figures [`scripts/bench-history.sh`](scripts/bench-history.sh) prints on PostgreSQL 18
+These are the figures [`scripts/bench-history.sh`](../scripts/bench-history.sh) prints on PostgreSQL 18
 against the standard fixture: seven days, every 10 seconds, 20 blocked sessions, 1,209,620 rows. The
 two history rows changed in 1.1.0, and why is the subject of the next section: until then the script
 timed every read function as `SELECT count(*)`, which lets the planner drop output columns nobody
@@ -153,7 +153,7 @@ function and that is worth correcting in public rather than quietly dropping.
   measurements behind the original decision are in the 0.11 changelog, and
   `lock_tree_history_size()` and `lock_tree_prune_batched()` are what shipped instead.
 - **Registering the tables for `pg_dump`.** Decided against, with reasons per table, and the decision
-  is now pinned by a test and written up in [INSTALL.md](INSTALL.md#backups-and-restores). The short
+  is now pinned by a test and written up in [`INSTALL.md`](../INSTALL.md#backups-and-restores). The short
   version: `lock_tree_history` grows without bound and describes pids and timestamps that mean
   nothing on the server a restore lands on; `lock_tree_alert` is hysteresis for roots that exist only
   on the source; `lock_tree_deadlock` is a counter baseline whose target starts again from zero.
@@ -192,7 +192,7 @@ changelog has the detail and a test has the proof.
   from a bitmap heap scan fetching 24,133 pages into an Index Only Scan with `Heap Fetches: 0` and
   300, taking that step from 117.0 to 31.2 ms for 528 kB on a 1.9 MB index. A four percent win on a
   two-second function, and recorded as such rather than as a fix.
-- **A benchmark that measured less work than it claimed** (1.1.0). [`scripts/bench-history.sh`](scripts/bench-history.sh) timed every read
+- **A benchmark that measured less work than it claimed** (1.1.0). [`scripts/bench-history.sh`](../scripts/bench-history.sh) timed every read
   function as `SELECT count(*)`, which lets the planner drop any output column nobody looks at. For
   `lock_tree_duration_by_application()` that dropped the whole `qids` CTE: 2048 ms against 2249 ms for
   `SELECT *`, a published figure a tenth light for `lock_tree_incidents()`. The script now times
