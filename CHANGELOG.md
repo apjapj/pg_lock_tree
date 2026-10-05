@@ -6,6 +6,71 @@ selects a release.
 
 ## Unreleased
 
+a number that belonged to a different function, and every example now says whether it was checked
+
+No SQL change, so no version bump.
+
+`lock_tree_statements()` WAS NOT THE SLOW ONE, AND WAS NOT IN THE BENCHMARK
+
+I suggested reviewing it for being slow, on the strength of a 3026 ms figure in the benchmark table.
+That figure is `lock_tree_duration_by_application()`. `lock_tree_statements()` appears **zero times** in
+`scripts/bench-history.sh`, so the number I quoted was for a function that had never been measured.
+
+Measured, against the same 1.2 million row fixture:
+
+| Function | Time | Reads |
+|---|---|---|
+| `lock_tree_statements()` | **17.9 ms** | the live tree, and `pg_stat_statements` |
+| `lock_tree_roots()` | 2.4 ms | the live tree |
+| `lock_tree_text()` | 12.8 ms | the live tree |
+| `lock_tree_duration()` | 1941.6 ms | the history |
+| `lock_tree_duration_by_application()` | 2629.6 ms | the history |
+
+Seventeen milliseconds against seven days of history, because it reads the tree as it is now. It was
+never a candidate.
+
+The benchmark now times the live-tree reads as a separate group, labelled as not touching the history.
+That is the actual fix: the omission is what let a number be attributed to the wrong function, and a
+reader should not have to know which of these reads the history to know which will be slow.
+
+THE 688 ms IS A FIFTH SCAN, AND THE SCAN IS REQUIRED
+
+The per-application variant has an extra CTE, `qids`, collecting the distinct `query_id`s an application
+was root for, worth 100 to 160 ms on its own. The obvious cheaper shape derives it from `rooted`, which is
+already filtered to `depth = 0` and grouped by application, and that would remove a scan. It would also be
+wrong: `rooted` is at the grain `(sampled_at, application_name)`, and adding `query_id` to that grain
+takes it from 23,036 rows to 150,485 on the fixture, because one application can be root for several
+queries at one instant. `rooted` is joined at both ends of every gap, so the wider grain double-counts the
+gaps for exactly the applications that were busiest. Measured, not reasoned: that is the row count.
+
+So it is not a defect, and it is recorded because the number was quoted at the wrong function.
+
+EVERY EXAMPLE NOW SAYS WHETHER IT WAS CHECKED
+
+The scheme only works if an example is one or the other. An unmarked block is indistinguishable from a
+capture, and a reader has no way to know whether anybody checked it. Four blocks were unmarked, and two of
+them were a psql prompt with no output under it, which reads like a transcript that got truncated. There
+is no capture for either: no scenario runs `lock_tree_deadlocks()` and none lists `pg_prepared_xacts`, so
+both now show the query rather than a fake transcript of it.
+
+The other six are marked written, each with why it is not a capture: the replay block shows a longer
+incident than the demo's by-hand samples produce, the incidents table selects `started_at` where the
+demo's does not, and the escalation timeline and the pid-0 tables are drawn to make a point that
+scenarios 4 and 7 print for real.
+
+[`scripts/lint-docs.sh`](scripts/lint-docs.sh) now checks every fenced block which looks like output carries a marker. The test for
+"looks like output" is deliberately loose: a psql prompt, a table header starting with a column name, a
+numeric row, a box-drawing glyph, a rule of dashes. A false positive costs one comment; a false negative
+costs a reader's trust. `CHANGELOG.md` is exempt, for the same reason the object check exempts it: a
+changelog records what was true at the time.
+
+Proven in both directions. Removing one marker fails with the file and line. Removing a marker *and*
+replacing the block's body with a single plain query passes, so the check is not asking for a comment on
+every code block.
+
+Verified: 413 tests pass on PostgreSQL 18, `make check-schema` and `make check-upgrade` green, the demo
+exits 0, the captures are byte-identical across runs, 439 documentation checks, gitleaks clean.
+
 documentation review: one real omission, and the checks that would have caught it
 
 Every claim in the ten documentation files checked against the release, the tests or a live server.

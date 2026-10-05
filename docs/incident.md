@@ -27,6 +27,8 @@ at several hundred lines. `lock_tree_wide()` aggregates instead:
 SELECT * FROM lock_tree_wide();
 ```
 
+<!-- illustrative: written by hand. scenarios/s4 prints a real wide queue; this is a short version of it. -->
+
 ```
  root_pid |    application_name    |        state        | blocked_sessions | max_depth | longest_wait |      wait_events      |   first_waiting_for
 ----------+------------------------+---------------------+------------------+-----------+--------------+-----------------------+------------------------
@@ -183,6 +185,11 @@ genuinely 60,481 instants and 1.2 million rows of work. Three ways of making tha
 and measured, and none of them helped: [the roadmap](roadmap.md#the-whole-window-duration-read-measured-rather-than-assumed)
 has the numbers, including the one that made it twice as slow.
 
+**Only the functions that read the history are ever slow.** Everything that reads the live tree is
+milliseconds whatever the history holds: `lock_tree_statements()` at 17.9 ms, `lock_tree_text()` at
+12.8 ms, `lock_tree_roots()` at 2.4 ms against the same 1.2 million row fixture.
+`make bench-history` prints the two groups separately so you do not have to know which is which.
+
 **If you stored these numbers anywhere.** `blocked_sessions_peak` and `sessions_total` were one too
 high per sample until 0.15, because the root-to-waiter join matched each root to itself: a root
 blocking three sessions reported four. The changelog has the entry.
@@ -215,8 +222,8 @@ A prepared transaction holds its locks until `COMMIT PREPARED` or `ROLLBACK PREP
 no session for the whole of that time. `pg_stat_activity` has no row for it, and `pg_locks.pid` is
 `NULL` for every lock it holds.
 
-```
-postgres=# SELECT gid, prepared, owner FROM pg_prepared_xacts;
+```sql
+SELECT gid, prepared, owner FROM pg_prepared_xacts;
 ```
 
 This is the one thing the usual recursive query cannot do at all, because it walks
@@ -234,6 +241,8 @@ holds four sessions when nothing holds four sessions.
 **Group by the object, not the pid.** That is what `root_object` is for, and it is why
 `lock_tree_summary()` counts roots by `(root_pid, root_object)` rather than by pid:
 
+<!-- illustrative: written by hand, to make the point about pid 0. scenarios/s7 prints the real thing. -->
+
 ```
  three prepared transactions and four waiters, grouped by pid alone
 
@@ -242,6 +251,8 @@ holds four sessions when nothing holds four sessions.
 ```
 
 The same incident, grouped by pid and object:
+
+<!-- illustrative: written by hand, the same point as the table above it in the grouped form. -->
 
 ```
  root_pid | root_object                         | blocked_sessions

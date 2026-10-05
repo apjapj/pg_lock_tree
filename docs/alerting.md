@@ -68,6 +68,8 @@ exact failure `lock_tree_alert` exists to prevent, reached by a different route.
 So the age comparison is against **the wait recorded at the last notification**, and it fires only
 once the wait has doubled. A chain that never gets wider or deeper, and simply ages, produces:
 
+<!-- illustrative: written by hand. It is a timeline the thresholds produce, drawn out; no sample prints it. -->
+
 ```
  30s    1m    2m    4m    8m    16m   32m
   |     |     |     |     |      |      |
@@ -292,6 +294,8 @@ whole point, and getting it wrong is easy: a cron entry that runs at 3am on a qu
 otherwise recommend the finest interval for a database that spends every weekday morning with four
 hundred sessions waiting. The advice was not wrong about the instant; it was answering the wrong
 question.
+
+<!-- illustrative: written by hand. No sample prints this table; the row is built to show what the advice says. -->
 
 ```
  blocked_sessions | roots | suggested_every |             reason              | observed_peak | live_blocked

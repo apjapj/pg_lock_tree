@@ -57,6 +57,8 @@ SELECT * FROM lock_tree_replay_text(now() - interval '2 hours');
 `lock_tree_replay_text(as_of, query_width)` renders them in `lock_tree_text()`'s layout, so a replay
 and the live tree look the same:
 
+<!-- illustrative: written by hand. The demo replays a sample it took by hand, and this is a longer incident than that produces. -->
+
 ```
 4821  idle in transaction  nightly_batch  UPDATE ledger SET amount = amount WHERE id = 1
  └─4822  3m12s  for AccessShareLock on public.ledger   SELECT count(*) FROM ledger
@@ -98,6 +100,8 @@ in front of you right now. See
 [Which query is costing the most time](incident.md#which-query-is-costing-the-most-time) for why the two
 disagree and which one to reach for.
 
+<!-- illustrative: written by hand. The demo's incidents table does not select started_at, so this is not a capture. -->
+
 ```
  incident |          started_at          | samples | peak_sessions | depth | longest_wait |  roots  |     applications
 ----------+----------------------------+---------+---------------+-------+--------------+---------+---------------------
@@ -137,8 +141,8 @@ What the extension could not do was say anything about them afterwards.
 version supported here. `lock_tree_sample()` now records it, and `lock_tree_deadlocks()` reports
 when it moved.
 
-```
-postgres=# SELECT * FROM lock_tree_deadlocks(interval '7 days');
+```sql
+SELECT * FROM lock_tree_deadlocks(interval '7 days');
 ```
 
 ### Why the counter is sampled into its own table

@@ -559,6 +559,73 @@ markers_in() {
     ' "$1"
 }
 
+# ---------------------------------------------------------------- every example is classified
+#
+# The scheme is that an example is either captured and compared, or written and marked as such. That
+# only works if every example is one or the other: an unmarked block is indistinguishable from a
+# capture, and a reader has no way to know whether anybody checked it. Four blocks were unmarked when
+# this check was written, including two that showed a psql prompt with no output under it.
+#
+# The test for "looks like output" is deliberately loose. It catches a psql prompt, a table whose
+# header starts with a column name, a row that starts with a number and a pipe, and the extension's own
+# box-drawing. A false positive costs one marker comment; a false negative costs a reader's trust.
+step "every example is either captured or marked as written"
+
+# The marker may sit above the fence, as generated markers do, or inside it. Both count.
+classified() {
+    local f=$1 lo=$2 hi=$3
+    sed -n "${lo},${hi}p" "$f" \
+        | grep -qE '<!-- (generated|illustrative):' && return 0
+    # and the four lines above the block, for a marker followed by a blank line
+    local start=$(( lo > 4 ? lo - 4 : 1 ))
+    sed -n "${start},$(( lo - 1 ))p" "$f" | grep -qE '<!-- (generated|illustrative):'
+}
+
+looks_like_output() {
+    # $1 is the block body
+    printf '%s\n' "$1" | grep -qE 'postgres=#|^\s*[a-z_][a-z_ ]*\|' \
+        || printf '%s\n' "$1" | grep -qE '^\s*\|?\s*[0-9]+\s*\|' \
+        || printf '%s\n' "$1" | grep -qE '^\s*[├└│]' \
+        || printf '%s\n' "$1" | grep -qE '^\s*\|[-= ]{3,}'
+}
+
+# CHANGELOG.md is excluded, for the reason check_object excludes it: a changelog is a record of what
+# was true at the time, so its quoted output is historical and marking it would be noise. Two blocks
+# in there trip this check and neither is an example anyone follows.
+unclassified=0
+for f in $DOCS_ALL; do
+    [ -f "$f" ] || continue
+    [ "$f" = CHANGELOG.md ] && continue
+    # Collect fence spans, then test each body.
+    awk '
+        /^```/ { if (inside) { print start "\t" NR; inside = 0 } else { inside = 1; start = NR } }
+    ' "$f" | while IFS=$'\t' read -r lo hi; do
+        # The opening fence line is $lo and the closing one is $hi.
+        body=$(sed -n "$(( lo + 1 )),$(( hi - 1 ))p" "$f")
+        [ -z "$body" ] && continue
+        if looks_like_output "$body"; then
+            if classified "$f" "$lo" "$hi"; then
+                ok "$f block at line $lo looks like output and is classified"
+            else
+                echo "UNCLASSIFIED $f $lo $hi"
+            fi
+        fi
+    done
+done > /tmp/lt-examples.$$
+n_unclass=$(grep -c '^UNCLASSIFIED' /tmp/lt-examples.$$ || true)
+grep -v '^UNCLASSIFIED' /tmp/lt-examples.$$ | while read -r line; do ok "$(echo "$line" | cut -d' ' -f2-)"; done
+n_classified=$(grep -c 'looks like output and is classified' /tmp/lt-examples.$$ || true)
+[ "$n_classified" -gt 0 ] && ok "$n_classified example block(s) in the documentation are classified"
+if [ "$n_unclass" -gt 0 ]; then
+    while read -r _ f lo hi; do
+        bad "$f has an unmarked block at line $lo that looks like output. Either mark it <!-- illustrative: ... --> or capture it with scripts/capture.sh"
+    done < <(grep '^UNCLASSIFIED' /tmp/lt-examples.$$)
+    unclassified=$n_unclass
+else
+    ok "no unmarked output-shaped block, so every example says whether it was checked"
+fi
+rm -f /tmp/lt-examples.$$
+
 step "every generated example matches its capture"
 
 # The mask, kept byte-identical to scripts/capture.sh. Two copies of a masking rule is one copy too

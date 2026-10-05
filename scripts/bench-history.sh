@@ -97,6 +97,35 @@ SELECT '  rows', count(*),
 
 # Each timing is a separate psql so nothing is cached between them in a way the caller did not ask
 # for, and EXPLAIN ANALYZE is used rather than \timing so the server reports its own number.
+# The live-tree reads, timed separately and labelled as such.
+#
+# They were missing from the loop below until someone read this script to check a number and could not
+# find the function in it: lock_tree_statements() was reported as taking 3026 ms, and the 3026 ms in the
+# table belongs to lock_tree_duration_by_application(). lock_tree_statements() reads the LIVE tree, not
+# the history, so it is milliseconds however big the history is.
+#
+# A reader should not have to know which of these touches the history to know which will be slow. Two
+# groups, and the group says so.
+printf '\n  \033[1mlive-tree reads\033[0m, not the history: milliseconds however big it is\n\n'
+for fn in \
+  "SELECT count(*) FROM lock_tree_statements()" \
+  "SELECT count(*) FROM lock_tree_roots()" \
+  "SELECT count(*) FROM lock_tree_wide()" \
+  "SELECT count(*) FROM lock_tree_summary()" \
+  "SELECT count(*) FROM lock_tree_text()" \
+  "SELECT count(*) FROM lock_tree_actions()" \
+  "SELECT count(*) FROM lock_tree_command()"
+do
+    ms=$(psql -X -tA -c "EXPLAIN (ANALYZE, TIMING OFF, FORMAT JSON) $fn" 2>/dev/null \
+         | python3 -c "
+import json,sys
+try:    d = json.load(sys.stdin)
+except Exception: print('?'); sys.exit()
+print(round(d[0]['Execution Time'], 1))")
+    printf '  %10s ms  %s\n' "$ms" "$fn"
+done
+printf '\n'
+
 printf '\n  \033[1mread functions\033[0m, whole window\n\n'
 for fn in \
   "SELECT count(*) FROM lock_tree_history_statements()" \

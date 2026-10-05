@@ -37,6 +37,40 @@ So the remaining cost is the 187 MB heap scan and the aggregate over 1.15 millio
 is removable by restructuring. It stays the slowest read in the extension, and the thing that would
 change it is not a better query.
 
+## `lock_tree_duration_by_application()`, and a number that belonged to something else
+
+This started as a suggestion to review `lock_tree_statements()` for being slow, on the strength of a
+3026 ms figure in a benchmark table. **That figure is not `lock_tree_statements()`.** It belongs to
+`lock_tree_duration_by_application()`, and `lock_tree_statements()` was not in the benchmark at all: it
+appears zero times in `scripts/bench-history.sh`. Measured against the same fixture:
+
+| Function | Time | Reads |
+|---|---|---|
+| `lock_tree_statements()` | **17.9 ms** | the live tree, and `pg_stat_statements` |
+| `lock_tree_roots()` | 2.4 ms | the live tree |
+| `lock_tree_text()` | 12.8 ms | the live tree |
+| `lock_tree_duration()` | 1941.6 ms | the history |
+| `lock_tree_duration_by_application()` | 2629.6 ms | the history |
+
+Seventeen milliseconds against seven days of history, because it reads the tree as it is now and joins
+`pg_stat_statements`. It was never a candidate for review and the suggestion was wrong.
+
+The benchmark now times the live-tree reads as their own group, labelled as such, so that a reader does
+not have to know which function touches the history to know which will be slow. That is the whole fix,
+and the omission is what let the wrong number be quoted.
+
+**The 688 ms difference is a fifth scan, and the fifth scan is required.** The per-application variant
+has an extra CTE, `qids`, that collects the distinct `query_id`s an application was root for, and it
+costs 100 to 160 ms on its own. The obvious cheaper shape is to derive it from `rooted`, which is already
+filtered to `depth = 0` and grouped by application, and that would remove a scan. It would also be wrong:
+`rooted` is at the grain `(sampled_at, application_name)`, and adding `query_id` to that grain takes it
+from 23,036 rows to 150,485 on the fixture, because one application can be the root of several queries
+at one instant. `rooted` is joined at both ends of every gap, so the wider grain double-counts the gaps
+for exactly the applications that were busiest. Measured, not reasoned: that is the row count.
+
+So this is not a defect either, and it is recorded here because the number was quoted at the wrong
+function and that is worth correcting in public rather than quietly dropping.
+
 ## Considered and not planned
 
 - **Cross-database.** The extension lives in each database, as all extensions do, so a queue on
