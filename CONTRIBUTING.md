@@ -189,21 +189,27 @@ installation therefore never has to reinstall to get a fix.
    because `ALTER TABLE ADD COLUMN` appends, and it is a named exception that is checked in both
    directions so the list cannot rot into a permanent exemption.
 4. **The full suite on every version**, `scripts/matrix.sh`, not one version.
-5. **`make lint-docs`**, which is the documentation, the objects it names, the paths it links to, the
+5. **`make check-examples`.** The SQL examples in the documentation are planned against the release
+   being shipped, which needs a server with the extension installed, so it is not in `make check`
+   (that runs `lint-docs` alone). It is on the list because `SELECT * FROM lock_tree_replay(42)` sat in
+   `docs/after-the-incident.md` from 0.14 onwards, calling a function that takes a `timestamptz` and
+   has never taken anything else. A wrong example is as wrong as a wrong function, and this is the
+   only thing that notices.
+6. **`make lint-docs`**, which is the documentation, the objects it names, the paths it links to, the
    links and anchors, the test table and the version the README claims against the control file. The
    secrets are two separate CI jobs rather than a make target: gitleaks over the history and
    detect-secrets over the tree at HEAD, and gitleaks also runs as a fail-closed pre-commit hook. So a
    secret stops the commit and a broken anchor stops the pipeline, and neither depends on the other.
-6. **Run the demonstrations**, `make demo` and `make scenarios`, and compare them against what the
+7. **Run the demonstrations**, `make demo` and `make scenarios`, and compare them against what the
    documentation claims. The scenario demos print the popular standard DBA query beside this
    extension's output, and the captured output is the proof that the two agree.
-7. **Commit, push, tag, push the tag.** Push the commit before the tag, never in the same command:
+8. **Commit, push, tag, push the tag.** Push the commit before the tag, never in the same command:
    `git push --tags` in a command whose commit was rejected by a hook pushes a tag that points at
    the previous release, and that happened at 1.0.0.
-8. **Never amend a pushed tag.** If a tag is wrong, delete it, push the deletion, and tag again, and
+9. **Never amend a pushed tag.** If a tag is wrong, delete it, push the deletion, and tag again, and
    say so in the changelog with the `git fetch --tags --force` that anyone who already fetched the
    bad tag needs.
-9. **Record what could not be verified.** A claim that was taken from someone else's testing is
+10. **Record what could not be verified.** A claim that was taken from someone else's testing is
    written as such, in the same words, until someone has run it. That has already happened once at
    1.0.1 for the deadlock log line, and the changelog records both the original claim and how it was
    finally checked.
