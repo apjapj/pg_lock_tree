@@ -4,6 +4,92 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.3 (2026-10-06)
+
+1.1.3: the release notes contradicted the reference documentation, and one documented
+behaviour was asserted nowhere
+
+No SQL object changes. Both items were found by reviewing 1.1.2 against the rest of the tree,
+and both are things a reader would have been misled by rather than broken by.
+
+**1. The cost projection in the release script was wrong by about 2.8 times.**
+
+`pg_lock_tree--1.1.2.sql` said of `lock_tree_incidents()`:
+
+> Measured at 1.95 us per row as a caller uses it, which is 1.2 seconds per million rows: a
+> month of history is about 30 seconds
+
+`docs/history.md`, in the same release, said 1.55 us per row and put a month at 9.1 seconds.
+One of them was wrong and both shipped. The per-row measurement was sound; the error was doing
+the projection twice over, having taken 1.95 us with all three array columns present and then
+multiplying by three again as though it covered one column rather than all of them.
+
+The corrected figures, cold and best of three on the `scripts/bench-history.sh` fixture at one
+sample per 10 seconds and 20 blocked sessions per sample:
+
+| retain | rows | `incidents()` |
+|---|---|---|
+| 7 days | 1,209,620 | 1.8 s |
+| 30 days | 5,184,020 | 9.1 s |
+| 90 days | 15,552,020 | 25.6 s |
+| 365 days | 63,072,020 | 110.5 s |
+
+That is 1.55 us per row, or 1.55 seconds per million. The old note put a month of history at
+half a minute when it is nearer a tenth of one, and it did so in the paragraph whose whole
+purpose was to stop people being daunted by a large `lock_tree_history`.
+
+The note now also says the thing that made the original mistake easy to repeat: `SELECT
+count(*)` on this function is about eight times cheaper, at 0.20 us per row, because the
+planner drops all three array columns. Timing this function with `count(*)` measures something
+the documentation never claimed.
+
+**2. The NULL asymmetry between two array columns is now asserted, in both directions.**
+
+`lock_tree_incidents()` returns `applications` and `root_objects`. They treat NULL
+differently, and the 1.1.2 notes described the difference without anything enforcing it:
+
+- `applications` **keeps** a NULL element, because a session with no `application_name` is a
+  real thing worth reporting, and `array_agg` does not skip NULLs.
+- `root_objects` **drops** NULLs, because there a NULL means a prepared root whose object
+  could not be resolved, and an empty element would be indistinguishable from an empty string.
+
+This was not a hypothetical. While writing the 1.1.2 change, adding `IS NOT NULL` to
+`applications` to make the two columns look consistent was tried, measured as a different
+result, and discarded. The behaviour was load-bearing and unpinned, so the next person to
+tidy it would have had no test to stop them.
+
+`test/07_history.sql` now pins both halves. Each is a count of NULL elements rather than an
+equality against a literal array, because an array containing a NULL cannot be compared with
+`=` and a test written that way would error or quietly pass. The fixture plants a session with
+no `application_name` and a root whose object is unresolvable, two minutes after an existing
+sample so it folds into the incident already there rather than opening a third one.
+
+Proven to fail in both directions, not merely to pass:
+
+| build | result |
+|---|---|
+| as shipped | `Tests=35, Result: PASS` |
+| `applications` filtered with `IS NOT NULL` | assertions 20 and 24 fail: `have: 0, want: 1` |
+| `root_objects` no longer filtering NULLs | assertions 22 and 23 fail: `have: 2, want: 0` |
+
+Five assertions added, `test/07_history.sql` from `plan(30)` to `plan(35)`. Three row-count
+assertions in the same file moved from 15 to 17 because the fixture plants two rows, and the
+comment describing the window's sample times was corrected to list the new sample.
+
+**Not in this release, and still open.** `lock_tree_deadlocks()` does not name the two
+participants of a deadlock. And `.forgejo/workflows/test.yml` still loads the release SQL by
+piping it into `psql` rather than using `CREATE EXTENSION`, which is not equivalent: measured
+on PostgreSQL 18, a proper install runs 423 of 423 tests and the piped load runs 364 with 59
+failures across six files, because `CREATE EXTENSION` reads from the server's extension
+directory, baked into the container image. That needs the test images rebuilt per commit, and
+is recorded in `docs/roadmap.md`.
+
+**Checks.** 428 tests pass on PostgreSQL 14, 15, 16, 17, 18 and 19beta4. All seven upgrade
+paths to 1.1.3 end in exactly the objects a fresh install produces. 554 documentation checks
+pass, including that every test file's `plan()` matches its assertions. And the empty update
+script does what it exists for: one row in `lock_tree_history` before `ALTER EXTENSION pg_lock_tree
+UPDATE`, one row after.
+
 ## 1.1.2 (2026-10-06)
 
 1.1.2: lock_tree_incidents() stops sorting every row to find a few distinct values

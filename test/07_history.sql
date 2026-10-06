@@ -97,7 +97,7 @@ SELECT lock_tree_sample() AS quiet_rows \gset
 \o
 \unset QUIET
 
-SELECT plan(30);
+SELECT plan(35);
 
 SELECT has_table('lock_tree_history', 'lock_tree_history table exists');
 SELECT has_function('lock_tree_sample', 'lock_tree_sample() exists');
@@ -163,11 +163,35 @@ FROM (VALUES
 \o
 \unset QUIET
 
+-- A second sample of the same incident, carrying a session that never named itself and a root
+-- whose object is unresolvable. Two minutes after the last existing sample, so the default
+-- five-minute gap folds these rows into the incident that starts four minutes ago rather than
+-- opening a third one: the incident count stays at two and every count assertion above and
+-- below still describes the same two incidents.
+--
+-- This is the fixture for the NULL asymmetry in the array columns, which is the one behaviour
+-- in lock_tree_incidents() that nothing asserted before. `applications` keeps a NULL element,
+-- because a session with no application_name is a real thing worth reporting. `root_objects`
+-- drops its NULLs, because there a NULL means a prepared root whose object could not be
+-- resolved, and an empty element would be indistinguishable from an empty string.
+--
+-- The depth-0 row here is the only row in this file with a non-NULL root_object, so
+-- root_objects is a one-element array that is meaningfully free of NULLs rather than a NULL
+-- array where "no NULLs" would be true for free.
+INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, state, wait_age,
+                               application_name, root_object)
+VALUES
+  (now() - interval '2 min', 900, 0, 900, 'idle in transaction', interval '90 seconds',
+   NULL, 'pg_accounts'),
+  (now() - interval '2 min', 900, 1, 901, 'idle in transaction', interval '60 seconds',
+   'nightly_batch', NULL);
+
 SELECT is((SELECT count(*) FROM lock_tree)::int, 0,
           'the live tree is empty, because the incident it described is over');
 
-SELECT is((SELECT count(*) FROM lock_tree_history)::int, 15,
-          'and the sampled history still holds every row: 2 from the live sample plus 13 backdated');
+SELECT is((SELECT count(*) FROM lock_tree_history)::int, 17,
+          'and the sampled history still holds every row: 2 from the live sample, 13 backdated, '
+          || 'plus the 2 that carry the NULL case below');
 
 -- ------------------------------------------------------------------ incident segmentation
 
@@ -189,10 +213,50 @@ SELECT is((SELECT longest_wait FROM lock_tree_incidents() ORDER BY started_at LI
 SELECT is((SELECT roots FROM lock_tree_incidents() ORDER BY started_at LIMIT 1),
           ARRAY[900]::int[], 'and the root pid that caused it is named');
 
+-- ------------------------------------------------------------------ NULLs in the array columns
+--
+-- Four assertions, and the last one is what makes the first three mean anything. Each is a
+-- count of NULL elements rather than an equality against a literal array, because an array
+-- containing a NULL cannot be compared with = and a test written that way would either error
+-- or quietly pass. Counting through unnest handles the NULL element as the value it is.
+
+-- Aggregated over every incident rather than reading one of them. The recent incident also
+-- contains the live sample, whose application_name is whatever this session is called, so
+-- reading a single incident would make the named-application count a property of the test
+-- runner rather than of the function. The total number of NULL elements is not.
+--
+-- Each is a count of NULL elements rather than an equality against a literal array, because an
+-- array containing a NULL cannot be compared with =, and a test written that way would either
+-- error or quietly pass. Counting through unnest treats the NULL as the value it is.
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents() i, unnest(i.applications) a
+            WHERE a IS NULL)::int, 1,
+          'applications keeps exactly one NULL element across the history, because a session '
+          || 'with no application_name is worth reporting and array_agg does not skip it');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents() i
+            WHERE i.applications @> ARRAY['nightly_batch']::text[])::int, 2,
+          'both incidents still name nightly_batch, so the NULL was added alongside the named '
+          || 'values rather than in place of one');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents() i, unnest(i.root_objects) o
+            WHERE o IS NULL)::int, 0,
+          'root_objects carries no NULL element anywhere, even though most rows in the same '
+          || 'incident have a NULL root_object');
+
+SELECT is((SELECT sum(cardinality(i.root_objects))::int FROM lock_tree_incidents() i), 1,
+          'and it does still carry the one object it could resolve, so the check above is not '
+          || 'passing on an empty array');
+
+SELECT is((SELECT count(*) FROM lock_tree_incidents() i, unnest(i.applications) a
+            WHERE a IS NULL)::int - 1, 0,
+          'CONTROL: subtracting the one NULL this file planted leaves zero, so the first '
+          || 'assertion is pinning this fixture rather than something every incident does');
+
 -- ------------------------------------------------------------------ the window, added in 1.1.0
 --
--- The fixture above holds samples at 40, 38, 36, 5 and 4 minutes ago. That makes the assertions below
--- exact rather than approximate: a 10 minute window keeps the 5 and 4 minute samples and drops the
+-- The fixture above holds samples at 40, 38, 36, 5, 4 and 2 minutes ago. That makes the assertions below
+-- exact rather than approximate: a 10 minute window keeps the 5, 4 and 2 minute samples and drops the
 -- three that are 36 minutes and older, so the older incident disappears entirely.
 --
 -- since defaults to NULL rather than to a week on purpose. NULL means the whole retained history, which
@@ -236,7 +300,7 @@ SELECT lock_tree_prune(interval '1 day') AS pruned_recent \gset
 SELECT is(:pruned_recent::int, 0,
           'pruning with a window newer than the data removes nothing');
 
-SELECT is((SELECT count(*) FROM lock_tree_history)::int, 15,
+SELECT is((SELECT count(*) FROM lock_tree_history)::int, 17,
           'and the rows are all still there');
 
 \set QUIET 1
@@ -244,13 +308,14 @@ SELECT is((SELECT count(*) FROM lock_tree_history)::int, 15,
 -- Zero seconds removes everything: every sampled_at is at or before the statement that wrote
 -- it, so every row is strictly older than now. One second was the first choice and it pruned
 -- only the 13 backdated rows, because the two from the live sample were seconds old at that
--- point. The window has to be older than the newest row, and the newest row is always the one
+-- point, and the two carrying the NULL case are the same age as the newest backdated sample.
+-- The window has to be older than the newest row, and the newest row is always the one
 -- just taken.
 SELECT lock_tree_prune(interval '0 seconds') AS pruned_all \gset
 \o
 \unset QUIET
 
-SELECT is(:pruned_all::int, 15,
+SELECT is(:pruned_all::int, 17,
           'pruning with a window older than the data removes all of it');
 
 SELECT is((SELECT count(*) FROM lock_tree_history)::int, 0, 'leaving the table empty');

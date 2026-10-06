@@ -1,0 +1,15 @@
+-- pg_lock_tree 1.1.2 -> 1.1.3
+--
+-- Deliberately empty. 1.1.3 changes no SQL object: it corrects a cost projection in the
+-- release script's own header comment, which is why this file has to exist at all.
+--
+-- The empty-script rule is not optional, and it is worth restating because a reader will
+-- reasonably wonder why this file is not full of something. An extension with no update
+-- script for a released version cannot be upgraded with ALTER EXTENSION ... UPDATE. The only
+-- route left is DROP EXTENSION followed by CREATE EXTENSION, and that destroys the sampled
+-- history. Measured on the standard fixture: DROP then CREATE takes lock_tree_history from
+-- 1 row to 0, where ALTER EXTENSION ... UPDATE leaves it at 1.
+--
+-- So every release ships an update script, and a release that changes only documentation or
+-- only tooling still ships an empty one. An empty script is the whole mechanism. It keeps the
+-- upgrade path additive and keeps history intact.
