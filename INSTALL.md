@@ -30,11 +30,18 @@ Everything needed to get `pg_lock_tree` running, move it between versions, and u
 | To use `lock_tree_statements()` | **optional.** `pg_stat_statements` must be in `shared_preload_libraries` in `postgresql.conf`, and a restart, or every read of its view raises `must be loaded via shared_preload_libraries`. It also needs `CREATE EXTENSION pg_stat_statements;` per database. Without it the function still reports every root and how much each blocks, with the statement columns empty. |
 | To use the history | **optional.** `lock_tree_sample()` is a function you schedule yourself; `pg_cron` is one way to schedule it and needs `shared_preload_libraries = 'pg_cron'` in `postgresql.conf` plus a restart. Any scheduler works, including a host cron job running `psql -c 'SELECT lock_tree_sample()'`. The extension itself needs none of this. |
 | To check the docs against the code | `./scripts/lint-docs.sh`, or `make lint-docs`. Pure text and git: no database, no superuser. Verifies the version agrees across `pg_lock_tree.control`, `README.md` and `CHANGELOG.md`, that every object and file the docs name exists, that each test file's `plan()` matches its assertions, and that there are no em-dashes or en-dashes. |
+| To scan for secrets | `./scripts/check-secrets.sh`, or `make check-secrets`. Same two tools and same pinned versions as CI: gitleaks 8.21.2 over the git history and detect-secrets 1.5.0 over the tree. No database, no superuser and no root. Needs `curl`, `python3` and network access on the first run only; both tools are then cached under `$XDG_CACHE_HOME/pg_lock_tree/secrets-tools` (or `~/.cache/...`) and reused. Part of `make check`. |
 
-That last row catches people. `max_prepared_transactions` defaults to **0**, and with it at 0
+The `max_prepared_transactions` row catches people. It defaults to **0**, and with it at 0
 `PREPARE TRANSACTION` is refused. It does not affect normal use of the extension. Only the
 prepared-transaction test needs it, but if you want to see that path work, set it before starting
 the server.
+
+The secret scan is worth one note. Run it as `make check-secrets CANARY=1` and it also proves
+it is capable of failing, by planting a canary key in a throwaway copy of the tree and checking
+that it is reported. That is not ceremony: detect-secrets 1.5.0 returns zero findings when
+handed an absolute path, so a scan invoked wrongly looks exactly like a clean one. `make check`
+runs the plain form; `CANARY=1` is for when you want to be sure the gate still bites.
 
 ## Where to get it
 

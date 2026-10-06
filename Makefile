@@ -34,7 +34,7 @@ prove:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples
+.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture check check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-secrets
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -68,8 +68,22 @@ capture:
 
 # The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
 # since they need a live PostgreSQL with the extension installed.
-check: lint-docs
+check: lint-docs check-secrets
 	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
+
+# Secret scan, the same two tools and the same pinned versions that
+# .forgejo/workflows/secrets.yml runs, so the gate can be run before pushing rather than
+# only after. Needs no server and no root: it installs both tools into a cache directory
+# outside the repository on first use and reuses them after that.
+#
+# Pass CANARY=1 to also confirm the scan can fail, which matters because detect-secrets
+# reports nothing at all when invoked wrongly, most easily by passing it an absolute path.
+#
+# The switch is called CANARY and not PROVE because PGXS already defines PROVE as the path
+# to Perl's prove(1), so `$(PROVE)` here silently expanded to /usr/bin/prove and this target
+# ran in canary mode on every invocation.
+check-secrets:
+	./scripts/check-secrets.sh $(if $(CANARY),--prove,)
 
 # Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read, and explain what
 # one means. A script rather than a pgTAP file because psql prints notifications to stdout and a
