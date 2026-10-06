@@ -4,6 +4,87 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.2 (2026-10-06)
+
+1.1.2: lock_tree_incidents() stops sorting every row to find a few distinct values
+
+One function body changes, `lock_tree_incidents()`, and **nothing it returns changes**. It is faster
+because the work changed shape, not because it does less.
+
+WHAT WAS SLOW
+
+Each of the three array columns, `roots`, `applications` and `root_objects`, was a correlated subquery
+of the form `array_agg(DISTINCT x ORDER BY x)`. PostgreSQL satisfies that by sorting every row in the
+incident's time range, and on the standard fixture that is 1,209,620 rows sorted to produce arrays of
+one and five elements. With the default `work_mem` the sort went to disk, once per column: 3,286 temp
+blocks per call at a week of history, 557,041 (4.25 GB) at a year.
+
+WHAT CHANGED
+
+The `DISTINCT` is taken in a subquery first, which the planner satisfies with a hash aggregate, and only
+the distinct values are sorted into the array:
+
+    (SELECT array_agg(d.root_pid ORDER BY d.root_pid)
+       FROM (SELECT DISTINCT h.root_pid FROM lock_tree_history h WHERE ...) d)
+
+The `root_object IS NOT NULL` filter stays where it was. NULL handling is unchanged: `DISTINCT` keeps one
+NULL and `array_agg` keeps it, sorted last, exactly as `array_agg(DISTINCT ...)` did, so `applications`
+still carries a NULL element when a session had no `application_name`, and `root_objects` still has
+none.
+
+MEASURED
+
+Same fixture, the 1.1.1 body and the 1.1.2 body alternated in one session, best of three,
+`EXPLAIN (ANALYZE, TIMING OFF)`, PostgreSQL 18, fixture built by `scripts/bench-history.sh` with one
+sample every 10 seconds and 20 sessions per sample, vacuumed before timing:
+
+| retain | rows | 1.1.1 | 1.1.2 | change |
+|---|---|---|---|---|
+| 7 days | 1,209,620 | 2107.0 ms | 1785.1 ms | -15% |
+| 30 days | 5,184,020 | 11410.8 ms | 9059.1 ms | -21% |
+| 90 days | 15,552,020 | 32941.0 ms | 25569.4 ms | -22% |
+| 365 days | 63,072,020 | 159110.4 ms | 110475.0 ms | -31% |
+
+At 7, 30 and 90 days 1.1.2 writes no temp blocks at all. At 365 days it writes 44,818, against 557,041,
+and those come from sorting 3,153,601 per-sample rows into incidents, a step this release does not
+touch. With cold `shared_buffers` on the 7-day fixture the figures are 2188.1 and 1878.8 ms, -14%. The
+measurement that proposed the change, in an earlier session, read 2411 and 2095 ms, -13%; the
+absolute times move between sessions and the ratio is what has held.
+
+PROVEN IDENTICAL, NOT ARGUED
+
+The two bodies were compared row for row, both as text and as `EXCEPT ALL` in both directions:
+
+- on the 7-day bench fixture, `max_gap` at 5 seconds, 1 minute, 5 minutes and 1 day, `since` at NULL,
+  1 hour, 6 hours, 1 day and 30 days: 20 cases, up to 60,481 incidents in one call, all identical;
+- on a small fixture in its own database with NULL `application_name`, an empty-string
+  `application_name`, NULL, empty-string and non-NULL `root_object`, pid 0 roots, and an incident whose
+  rows are all NULL: 8 `max_gap` values by 8 `since` values, 64 cases and 308 incidents, all identical.
+
+THE DOCUMENTATION, MEASURED AT 30, 90 AND 365 DAYS
+
+The retention tables in [docs/history.md](docs/history.md#reading-is-bounded-by-the-window-not-by-the-retention)
+were projections from a 7-day per-row cost. The `incidents()` column is now measured at each retention,
+with the fixture parameters stated beside the table, and the measuring turned up two things:
+
+- **`incidents()` was not linear.** Its 1.1.1 cost per row rose from 1.74 us at a week to 2.52 us at a
+  year, so the projected 132.5 s for a year was 17% light against 159.1 s measured. 90 days held.
+- **`lock_tree_duration_by_application()` is not bounded by its window.** At its 7-day default it took
+  2.3 s on a week of history and 30.3 s on a year. The page said it did not move. It does, and that is
+  now written down there and in [docs/roadmap.md](docs/roadmap.md) as open and not yet diagnosed.
+  `lock_tree_duration()` does stay flat, between 2.0 and 2.6 s.
+
+The row counts in the whole-window table were also corrected to the fixture's own: they read
+1,270,080 for seven days, which is not what seven days at 10 seconds and 20 sessions produces, and the
+two projected columns were recomputed from the same per-row costs on the right counts.
+
+UPDATE PATH
+
+[`pg_lock_tree--1.1.1--1.1.2.sql`](pg_lock_tree--1.1.1--1.1.2.sql) is `CREATE OR REPLACE FUNCTION` with
+the body and the `COMMENT` copied from the release file, not written again. The comment is unchanged and
+restated anyway, because a body or comment that differs between the two files has failed
+`check-upgrade` on every path before. No table, index or grant changes.
+
 ## 1.1.1 (2026-10-06)
 
 1.1.1: the documentation said things that were not true, and nothing was checking

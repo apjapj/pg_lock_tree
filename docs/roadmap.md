@@ -108,6 +108,13 @@ for exactly the applications that were busiest. Measured, not reasoned: that is 
 So this is not a defect either, and it is recorded here because the number was quoted at the wrong
 function and that is worth correcting in public rather than quietly dropping.
 
+**Open, found while measuring 1.1.2: its cost follows retention even inside its 7-day window.** Asked
+about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month, 7.4 s on 90 days and
+30.3 s on a year, single runs of [`scripts/bench-history.sh`](../scripts/bench-history.sh) at each
+`--days`. `lock_tree_duration()`, beside it in the same runs, stayed between 2.0 and 2.6 s. Not yet
+diagnosed: the plan at 365 days is the next thing to read, and the partial index keyed on
+`application_name` before `sampled_at` is the first suspect, not a finding.
+
 ## Considered and not planned
 
 - **Cross-database.** The extension lives in each database, as all extensions do, so a queue on
@@ -186,6 +193,10 @@ function and that is worth correcting in public rather than quietly dropping.
 Recorded here so the section is a record rather than a wish list. Each is one line because the
 changelog has the detail and a test has the proof.
 
+- **`lock_tree_incidents()` without the disk sort** (1.1.2): the `DISTINCT` taken before each array
+  rather than inside `array_agg`, so the array subplans no longer spill. Identical output; 15% faster on
+  a week of history and 31% on a year, measured at each retention in
+  [docs/history.md](history.md#incidents-in-112).
 - **A window on `lock_tree_incidents()`** (1.1.0), the last history read function whose cost followed
   retention rather than the question. Measured at 2.00 us per row as a caller uses it, which is 2.5
   seconds for a week of the standard fixture and 10.9 seconds for a month at its sampling rate, with

@@ -102,7 +102,7 @@ and [docs/roadmap.md](roadmap.md) lists it as an open question rather than prete
 
 The default window of every read function is 7 days, and on a big database that is not always long
 enough to be useful. **Retention and query window are two separate decisions**, and this section is
-about keeping them separate. Everything below was measured on PostgreSQL 18 against the standard
+about keeping them separate. Everything below was measured on PostgreSQL 18, against the standard
 fixture: 1,209,620 rows, 60,481 samples, seven days sampled every 10 seconds with 20 blocked sessions.
 
 ### What a row costs
@@ -131,49 +131,90 @@ Storage is not the constraint. Query time is.
 ### Reading is bounded by the window, not by the retention
 
 Five of the six history read functions take a `since`, so how much they cost depends on how much you
-ask for rather than how much you keep:
+ask for rather than how much you keep. Mostly. Measured in 1.1.2 at each retention, not projected:
 
-| retain | `duration()` at the 7-day window | `by_application()` at the 7-day window | `incidents()` |
-|---|---|---|---|
-| 7 days | 1.6 s | 2.2 s | 0.2 s |
-| 90 days | 1.6 s | 2.2 s | **3.0 s** |
-| 365 days | 1.6 s | 2.2 s | **12 s** |
+| retain | rows | `duration()` at the 7-day window | `by_application()` at the 7-day window | `incidents()`, whole history |
+|---|---|---|---|---|
+| 7 days | 1,209,620 | 2.0 s | 2.3 s | 1.8 s |
+| 30 days | 5,184,020 | 2.6 s | 3.6 s | 9.1 s |
+| 90 days | 15,552,020 | 2.5 s | **7.4 s** | **25.6 s** |
+| 365 days | 63,072,020 | 2.2 s | **30.3 s** | **110.5 s** |
 
-The first two columns do not move, because they read the window you name. The third does, and until
-**1.1.0** there was nothing you could do about it: `lock_tree_incidents()` was the only history read
-function with no window parameter, so its cost followed your retention. It now takes one:
+Fixture for every row of this table and the ones below: [`scripts/bench-history.sh`](../scripts/bench-history.sh)
+`--days=7|30|90|365`, one sample every 10 seconds, 20 blocked sessions per sample, vacuumed (every page
+all-visible) before timing, PostgreSQL 18, `shared_buffers` 128 MB, `work_mem` 4 MB. The fixture has one
+root pid, five application names and a `NULL` `root_object` on every row, so its arrays are short; a
+real history's are longer, and the cost of building them grows with the distinct values rather than
+the rows. `duration()` and `by_application()` are single runs; `incidents()` is the best of three.
+
+`duration()` does not move, because it reads the window you name. **`by_application()` does**, from
+2.3 s at a week of retention to 30 s at a year, while asking about the same seven days. That was not
+known before these measurements and is not fixed in 1.1.2; until it is, it is the read to be careful
+with on a long retention. `incidents()` moves too, and until **1.1.0** there was nothing you could do
+about it: it was the only history read function with no window parameter, so its cost followed your
+retention. It now takes one:
 
 ```sql
 SELECT * FROM lock_tree_incidents(since => interval '30 days');
 ```
 
 Its default is `NULL`, meaning the whole retained history, which is what it did in every earlier
-release. An existing call changes nothing. Measured on the fixture: no argument 2477 ms,
-`since => '1 day'` 315 ms, `since => '6 hours'` 124 ms.
+release. An existing call changes nothing. Measured on the 7-day fixture in 1.1.2, best of three: no
+argument 1785 ms, `since => '1 day'` 250 ms, `since => '6 hours'` 106 ms.
 
-What asking for the **whole retained window** costs instead, which is the thing to avoid:
+### `incidents()` in 1.1.2
+
+1.1.2 changed how `lock_tree_incidents()` builds its three arrays, and nothing about what it returns.
+`array_agg(DISTINCT x ORDER BY x)` sorted every row in the incident's range to produce a handful of
+values, and with the default `work_mem` that sort went to disk once per array. It now takes the
+`DISTINCT` first, as a hash aggregate, and sorts only the distinct values. Same fixture as above, the
+1.1.1 body and the 1.1.2 body alternated in one session, best of three, `EXPLAIN (ANALYZE, TIMING OFF)`:
+
+| retain | 1.1.1 | 1.1.2 | change | temp written, 1.1.1 | temp written, 1.1.2 |
+|---|---|---|---|---|---|
+| 7 days | 2.11 s | 1.79 s | -15% | 26 MB | 0 |
+| 30 days | 11.41 s | 9.06 s | -21% | 220 MB | 0 |
+| 90 days | 32.94 s | 25.57 s | -22% | 658 MB | 0 |
+| 365 days | 159.11 s | 110.48 s | -31% | 4.25 GB | 350 MB |
+
+The 350 MB left at a year is not the arrays. It is the sort of 3,153,601 per-sample rows into
+incidents, which the arrays never touched, and on this fixture the array subplans write nothing to
+disk at any retention. The gain grows with retention because the spill it removed grew faster than
+the rows did. Output was compared row for row between the two bodies on this fixture, at four
+`max_gap` values from 5 seconds (60,481 incidents) to 1 day and five `since` values, and on a small
+fixture with `NULL` application names, `NULL` and empty-string root objects and pid 0 roots, at eight
+`max_gap` and eight `since` values: identical in every case, text and set.
+
+### The whole retained window
+
+What asking for the **whole retained window** costs, which is the thing to avoid:
 
 | retain | rows | `duration()` | `by_application()` | `incidents()` |
 |---|---|---|---|---|
-| 7 days | 1,270,080 | 2.0 s | 2.3 s | 2.5 s |
-| 30 days | 5,443,200 | 8.4 s | 9.7 s | 10.9 s |
-| 90 days | 16,329,600 | 25.3 s | 29.1 s | 32.7 s |
-| 365 days | 66,225,600 | 102.4 s | 118.0 s | 132.5 s |
+| 7 days | 1,209,620 | 1.8 s | 2.1 s | 1.8 s |
+| 30 days | 5,184,020 | 7.9 s | 9.1 s | 9.1 s |
+| 90 days | 15,552,020 | 23.6 s | 27.2 s | 25.6 s |
+| 365 days | 63,072,020 | 95.9 s | 110.4 s | 110.5 s |
 
-Every figure in that table is the measured per-row cost multiplied by the row count, and the per-row
-costs were all taken the same way, on the same fixture, cold `shared_buffers`, best of three, with
-`SELECT *` because that is how a caller uses these functions:
+The `incidents()` column is **measured** at each retention, from the table above. The other two are
+still projections: the measured per-row cost multiplied by the row count, with per-row costs taken on
+the 7-day fixture, cold `shared_buffers`, best of three, `SELECT *` because that is how a caller uses
+these functions:
 
     lock_tree_duration()                1843.1 ms over 1,209,620 rows   1.52 us per row
     lock_tree_duration_by_application() 2110.8 ms                    1.75 us per row
-    lock_tree_incidents()               2414.5 ms                    2.00 us per row
+    lock_tree_incidents()               1878.8 ms                    1.55 us per row  (1.1.1: 2188.1 ms, 1.81 us)
+
+A projection is a straight line, and `incidents()` was not one. Its 1.1.1 per-row cost rose from 1.74
+us at a week to 2.52 us at a year, so the 132.5 s this page projected for a year of 1.1.1 was 17%
+light against the 159.1 s measured. The 90-day projection, 32.7 s, held: 32.9 s measured. Read the
+two projected columns with that in mind at a year.
 
 **The `incidents()` figures in the 1.1.0 release were wrong, by about 2.8 times too pessimistic.**
-They read 91 s at 90 days and 364 s at a year, against 32.7 s and 132.5 s measured. The error was
-arithmetic on a correct measurement: 1.95 us per row was taken with all three array columns present,
-and then multiplied by three again when projecting, as though the per-row figure had covered one array
-rather than all of them. Correcting it matters, because the number was discouraging exactly the case
-it was written to inform.
+They read 91 s at 90 days and 364 s at a year. The error was arithmetic on a correct measurement:
+1.95 us per row was taken with all three array columns present, and then multiplied by three again
+when projecting, as though the per-row figure had covered one array rather than all of them.
+Correcting it matters, because the number was discouraging exactly the case it was written to inform.
 
 `incidents()` is worth stating carefully for a different reason. `SELECT count(*)` on it is ten times
 cheaper, at 0.20 us per row, because `count(*)` lets the planner drop all three array columns. If you
