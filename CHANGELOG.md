@@ -4,6 +4,130 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.1 (2026-10-06)
+
+1.1.1: the documentation said things that were not true, and nothing was checking
+
+A release with **no SQL change**. Everything in it is documentation and release tooling. It is tagged
+and versioned anyway, for the reason given under the update script below: a release with no update
+path can only be installed by dropping the extension, and dropping it takes `lock_tree_history` with
+it.
+
+SEVEN LINKS THAT 404 IN THE BROWSER
+
+Reported from the rendered page, not from the files. `docs/reference.md` linked to
+`INSTALL.md#backups-and-restores`, and a renderer resolves a relative link against the file containing
+it, so it looked for that file inside the `docs` directory, where there is no such file. The target
+is at the repository root, one level above the document holding the link.
+
+It was seven links, all with that one cause, and two of them were added by 1.1.0. All now carry the
+`../` a renderer needs.
+
+The check that should have caught it was wrong in a specific way. [`scripts/lint-docs.sh`](scripts/lint-docs.sh) tested
+`[ -e "$p" ]` from the repo root **first**, and only then relative to the document, so a link from
+`docs/` to a root file passed, because the file does exist at the root. Every existence test in the
+script agreed with itself and disagreed with the browser. Two other things had to be untangled:
+
+- Membership of "is this a markdown link" was first tested with `case " $link_targets " in *" $p "*`,
+  which never matched, because `link_targets` is newline separated and the characters around a target
+  are newlines rather than the spaces the pattern asks for. Every link was falling into the bare-name
+  branch and the two rules had silently collapsed into one. It is an exact whole-line match now.
+- Bare backticked paths are not links at all. `` `test/06_cron.sql` `` in prose renders as code, so
+  it only has to exist somewhere. Applying the renderer's rule to it reported 24 false failures, which
+  is why the two categories are now checked separately and the reason is written down.
+
+**Anchors had never been checked at all**, because the extraction pattern excluded `#`. A target
+carrying a fragment never matched, which is why the reported link slipped through even after the path
+rule was right. Fragments are extracted now, split off, and tested against the target's headings,
+slugified the way GitHub and Forgejo do it. That is 104 anchors verified for the first time.
+
+NINE COMMANDS THAT WERE NOT RUNNABLE
+
+Stripping link syntax out of fences exposed something worse underneath it.
+`` [`scripts/check-alert.sh`](scripts/check-alert.sh) `` inside a `bash` block is not a link, because
+a fence renders as code, and it is not runnable either, because `[` is the test command and the shell
+would try to execute the label as if it were the command. Nine lines of the documentation looked like that, including commands a
+reader would reasonably copy and paste. They are now plain commands, with the clickable link moved
+into the prose above where a link belongs. One transcript fence was untagged and had to be tagged
+`console` before the work could be done, which is recorded in the check rather than left as a mystery.
+
+`scripts/lint-docs.sh` now fails on link syntax inside a fenced shell block, restricted to shell-ish
+languages because inside an `md` block showing link syntax is the point. Verified in both directions.
+
+AN SQL EXAMPLE THAT NEVER WORKED
+
+    SELECT * FROM lock_tree_replay(42);      -- captioned "replay one incident, given its id"
+
+`lock_tree_replay()` takes a `timestamptz` and always has, so that example has been wrong since 0.14.
+Nothing in the repository executed the documentation's examples: [`scripts/lint-docs.sh`](scripts/lint-docs.sh) checked that the names
+inside them exist and that their links resolve, which is not the same as the statement running. There
+are 77 example statements across seven documents and none of them were checked.
+
+`make check-examples` now plans every one of them with `EXPLAIN`, which parses and plans without
+executing, so nothing is written and nothing is locked. Three cannot plan here because they call
+`pg_cron` or `pg_tle`, which the documentation itself calls optional; those are listed with their
+reason, and adding to that list has to be deliberate rather than a way to quiet a failure.
+
+The example now finds the incident and replays from its start, which is what the caption meant, and
+that form is verified to return rows.
+
+Proven in three directions: a planted function name inside a named-argument call fails and exits 1;
+the original `lock_tree_replay(42)` bug, reintroduced, fails with the message it always had; the clean
+tree passes.
+
+**One skip rule in that check hid the check from itself, and it is worth recording.** The first version
+skipped any statement containing `<` or `>`, on the theory that placeholders look like `<PID>`. Named
+arguments are written `since => interval '7 days'`, so it skipped every example using them, and named
+arguments are what this project's own documentation recommends. So a planted
+
+```sql
+SELECT * FROM lock_tree_incidents_typo(since => interval '7 days');
+```
+
+was skipped, and the check reported zero failures on a tree carrying it. It now looks for an
+angle-bracket **pair**.
+
+THREE FIGURES THAT NO LONGER MATCHED
+
+Reviewing the same pages turned up numbers that had drifted, all from the benchmark correction in 1.1.0.
+
+`docs/roadmap.md` said the difference between the two duration functions was 688 ms while the table
+above it, already updated, said 353 ms. The document contradicted itself, which is the failure mode
+that table exists to prevent.
+
+`docs/incident.md` quoted `lock_tree_statements()` at 17.9 ms, which was no longer the figure and is
+not the same on two consecutive runs. It gives bounds now, because the point is the order of magnitude
+and an exact figure that moves is worse than none.
+
+`INSTALL.md` keeps the 0.15 figures of 980 ms and 78 ms, which are correct for that release, but a
+reader could take 78 ms as current. It is not: the fixture those were measured on had never been
+vacuumed, so every index-only scan in it was fetching every page, and the same one-millisecond window
+measures 0.4 ms on a vacuumed fixture. The historical figure stays and now says so.
+
+WHY AN EMPTY UPDATE SCRIPT
+
+`pg_lock_tree--1.1.0--1.1.1.sql` contains nothing but a comment, deliberately. Measured on a database
+carrying one sampled row:
+
+    ALTER EXTENSION pg_lock_tree UPDATE,  1.0.2 -> 1.1.0:   1 row before, 1 row after
+    DROP EXTENSION then CREATE EXTENSION:                    1 row before, 0 rows after
+
+There is no other way to move an extension forward in PostgreSQL, so a release with no update path can
+only be installed by dropping it, which takes `lock_tree_history`, `lock_tree_alert` and
+`lock_tree_deadlock` with it. One empty file per release is a fair price for that.
+
+VERIFIED
+
+  - 423 tests pass on PostgreSQL 14, 15, 16, 17, 18 and 19beta4, none of them changed by this release
+  - all 20 upgrade paths converge on a fresh install, including the empty one
+  - `make check-schema` green
+  - `make check-examples` green, 53 example statements planned and 0 failed
+  - 541 documentation checks, under `LC_ALL=POSIX` and `LC_ALL=C.UTF-8`
+  - `make demo` exits 0
+  - gitleaks clean on the staged tree and on the history
+
+Not verified: the Forgejo Actions verdicts, for the reason given in 1.1.0 and unchanged.
+
 ## 1.1.0 (2026-10-06)
 
 1.1.0: the last read function you could not bound, and a benchmark that measured less work than it claimed

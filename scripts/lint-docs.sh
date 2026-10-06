@@ -247,7 +247,18 @@ for f in $DOCS_ALL; do
             ' "$f" | grep -oE 'lock_tree_[a-z_]+' 
         } | sort -u
     )
-    for n in $names; do check_object "$n"; done
+      # The CHANGELOG exclusion, which the comment above this loop described for a long time and no
+      # code implemented. It is correct on the merits rather than merely convenient: a changelog is a
+      # historical record, so it names objects that a later release removed, and requiring those to
+      # resolve makes the check unsatisfiable by design. It came up for real writing the 1.1.1 entry,
+      # which quotes a function name that does not exist because that is the example being discussed.
+      #
+      # PATHS are not exempted. A path in the changelog should still resolve, and one did not: see
+      # the 1.1.1 entry, which named a file in a directory it is not in.
+      case "$f" in
+          CHANGELOG.md) continue ;;
+      esac
+      for n in $names; do check_object "$n"; done
 done
 
 # ---------------------------------------------------------------- files the docs link to
