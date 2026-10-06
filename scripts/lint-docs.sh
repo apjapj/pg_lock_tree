@@ -396,12 +396,12 @@ for f in $DOCS_ALL; do
     [ -f "$f" ] || continue
     : > "$fence_tmp"
     awk -v out="$fence_tmp" '
-        /^[[:space:]]*(`{3,}|~{3,})/ {
+        /^[[:space:]]*(```|~~~)/ {
             if (inside) { inside = 0; lang = "" }
             else {
                 inside = 1
                 t = $0
-                sub(/^[[:space:]]*`{3,}/, "", t); sub(/~{3,}.*$/, "", t)
+                sub(/^[[:space:]]*`+/, "", t); sub(/~~~.*$/, "", t)
                 gsub(/[[:space:]]/, "", t)
                 lang = tolower(t)
             }
@@ -570,7 +570,7 @@ anchor_of() {
 anchors_in() {
   [ -f "$1" ] || return 0
   awk '
-    /^#{1,6} /   { sub(/^#+ /, ""); print tolower($0) }
+    /^#+ /       { sub(/^#+ /, ""); print tolower($0) }
     /^[^=-]+$/   { if (getline nxt) { if (nxt ~ /^=+$/) { print tolower($0) } ; next } }
   ' "$1" 2>/dev/null | sed -e 's/[^a-z0-9 -]//g' -e 's/ /-/g' | sort -u
 }
