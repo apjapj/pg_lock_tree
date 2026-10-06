@@ -112,8 +112,29 @@ function and that is worth correcting in public rather than quietly dropping.
 about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month, 7.4 s on 90 days and
 30.3 s on a year, single runs of [`scripts/bench-history.sh`](../scripts/bench-history.sh) at each
 `--days`. `lock_tree_duration()`, beside it in the same runs, stayed between 2.0 and 2.6 s. Not yet
-diagnosed: the plan at 365 days is the next thing to read, and the partial index keyed on
-`application_name` before `sampled_at` is the first suspect, not a finding.
+  diagnosed, and the suspect this entry used to name has since been measured and refuted.
+
+  **The suspect it used to name is wrong, on PostgreSQL 18 at least.** The partial index keyed
+  on `application_name` before `sampled_at` was the first guess, on the reasoning that a window
+  predicate on a non-leading column is a filter rather than a range bound, so `qids` would read
+  the whole index and the index grows with retention. Measured: it does not. With in-window rows
+  fixed at 2,000 and re-verified before every run, that index scan read 185 buffers and then 165
+  while 900,000 out-of-window `depth = 0` rows were added and the index grew to 38 MB. The
+  `sampled_at` predicate is a usable bound, not a filter, so `qids` is window-bounded and is not
+  the cause.
+
+  Two caveats on that refutation. It was measured on 18 only, and B-tree skip scan, which is what
+  makes a non-leading column usable here, arrived in that release. On 14 to 17 the original
+  reasoning may still hold and is worth one run rather than an assumption. And on 18 it rules out
+  this suspect, not the symptom: something still makes the cost follow retention.
+
+  So the suspect list is shorter, not empty. The plan at 365 days is still the next thing to
+  read, now looking for a node whose buffers or heap fetches grow with total table size rather
+  than with the rows in the window. The leading remaining candidate is the visibility map: at 63
+  million rows and 14 GB with constant appends, autovacuum falls behind, pages stop being marked
+  all-visible, and index-only scans degrade into random heap fetches. `duration()` staying flat
+  beside it is consistent with that, since its worst node is not an index-only scan. That is a
+  hypothesis, not a finding.
 
 ## Considered and not planned
 

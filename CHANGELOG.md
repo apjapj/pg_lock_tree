@@ -78,11 +78,16 @@ comment describing the window's sample times was corrected to list the new sampl
 
 **Not in this release, and still open.** `lock_tree_deadlocks()` does not name the two
 participants of a deadlock. And `.forgejo/workflows/test.yml` still loads the release SQL by
-piping it into `psql` rather than using `CREATE EXTENSION`, which is not equivalent: measured
-on PostgreSQL 18, a proper install runs 423 of 423 tests and the piped load runs 364 with 59
-failures across six files, because `CREATE EXTENSION` reads from the server's extension
-directory, baked into the container image. That needs the test images rebuilt per commit, and
-is recorded in `docs/roadmap.md`.
+piping it into `psql` rather than using `CREATE EXTENSION`, because `CREATE EXTENSION` reads from
+the server's extension directory, which is baked into the container image rather than taken
+from the working tree. That is recorded in `docs/roadmap.md`.
+
+The first attempt to quantify that gap, in the notes above, was wrong and is corrected here. It
+reported "a proper install runs 423 of 423 and the piped load runs 364 with 59 failures across
+six files". Those two runs used different database names, and the difference was not the loading
+method: `pg_cron` refuses to install anywhere but the `postgres` database, so the piped run was
+also missing every pg_cron assertion. Compared properly, same database, only the loading method
+varied, the gap is **one file and ten assertions**, not six files and fifty-nine.
 
 **Checks.** 428 tests pass on PostgreSQL 14, 15, 16, 17, 18 and 19beta4. All seven upgrade
 paths to 1.1.3 end in exactly the objects a fresh install produces. 554 documentation checks
