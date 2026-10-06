@@ -54,7 +54,41 @@ jobs:
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
         run: |
-          sed -e "/^\\echo Use/d" -e "s/@extschema@/public/g" pg_lock_tree--0.11.sql \
-            | psql -qX -v ON_ERROR_STOP=1
+          # check_function_bodies=off is load-bearing, not a convenience.
+          #
+          # CI loads the release SQL directly rather than CREATE EXTENSION, because the
+          # server is a separate service container whose own copy of the extension is
+          # whatever was baked into the image, not this working tree. Direct loading runs
+          # the statements in file order with default settings, and in that order
+          # lock_tree_sampling_advice() is defined before lock_tree_history exists:
+          # 1.1.2 defines the function at line 1483 with a LANGUAGE sql body that selects
+          # FROM lock_tree_history, and creates the table at line 1587.
+          #
+          # PostgreSQL validates a sql function body when the function is created, so with
+          # the default check_function_bodies=on the load aborts there with
+          #   ERROR: relation "public.lock_tree_history" does not exist
+          # ON_ERROR_STOP=1 stops the script, the table and every object after line 1483
+          # are never created, and the suite runs 161 of its 423 tests with most files
+          # dying before they produce a plan. CREATE EXTENSION does not hit this, which is
+          # why every local run passed and CI never did.
+          #
+          # Verified on PostgreSQL 18: with the setting off the same load reports zero
+          # errors, creates lock_tree_history, and the suite runs 364 tests instead of 161.
+          # Turning body validation off is safe here because pgTAP exercises every one of
+          # those bodies immediately afterwards.
+          #
+          # The deeper fix is to create the table before the function that reads it, so the
+          # release file loads correctly with default settings in any order. That is a
+          # change to the release script itself, so it belongs in a release rather than here.
+          # The single quotes are load-bearing too. Written as "/^\\echo Use/d" the shell
+          # hands sed /^\echo Use/d, and GNU sed reads \e as ESC, so the pattern means
+          # "start with ESC followed by cho" and matches nothing. The \echo line therefore
+          # survives, psql reaches the \quit on that same line, and the load stops
+          # immediately having created no objects at all. Verified: that form prints the
+          # echoed line and leaves zero lock_tree objects in the database.
+          { echo 'SET check_function_bodies = off;'
+            sed -e '/^\\echo Use/d' -e 's/@extschema@/public/g' \
+              "pg_lock_tree--$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" pg_lock_tree.control).sql"
+          } | psql -qX -v ON_ERROR_STOP=1
       - name: pgTAP
         run: pg_prove --dbname postgres test/*.sql
