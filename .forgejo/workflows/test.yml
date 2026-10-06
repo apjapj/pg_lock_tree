@@ -9,11 +9,35 @@ on:
 
 jobs:
   pgtap:
-    runs-on: docker
+    # babar-pg, not docker, and deliberately so.
+    #
+    # `docker` is advertised by two runners on this instance: babar-runner on the babar host and
+    # a second one on ufo-1. A job on `docker` is therefore placed on whichever runner polls
+    # first, and that is not a property this workflow can reason about. It bit hard: for months
+    # the matrix reported five or six of six failing in 0 seconds, which looked like a lost
+    # concurrency slot and was not one. The runner that won those jobs could not pull this
+    # repository's own test images at all, because ufo-1's Docker daemon has no
+    # insecure-registries entry for the Forgejo registry and so tries HTTPS against a plain HTTP
+    # port and dies. The surviving job was whichever the babar runner happened to claim.
+    #
+    # babar-pg is advertised by the babar runner alone. Placement is deterministic, and it is
+    # the only host configured to pull from that registry. The `docker` label is untouched, so
+    # every other repository on the instance is unaffected.
+    #
+    # lint.yml and secrets.yml stay on `docker` on purpose. They pull nothing private, so they
+    # run correctly on either host, and they are not PostgreSQL-specific enough to belong in a
+    # pool named for it.
+    runs-on: babar-pg
     strategy:
       fail-fast: false
       matrix:
-        pg_version: ["19beta4", "14", "15", "16", "17", "18"]   # keep in step with pg-dev-infra
+        # Ascending, and that is now cosmetic rather than load-bearing. A previous commit put
+        # 19beta4 first to test whether the job that failed was failing by position in the matrix
+        # or by being the beta image. It was neither: Forgejo sorts permutations by value, so
+        # 19beta4 was always dispatched last, and being dispatched last is what put it on the
+        # other runner. With runs-on pinned to babar-pg the order no longer decides anything, so
+        # it goes back to the order pg-dev-infra builds the images in.
+        pg_version: ["14", "15", "16", "17", "18", "19beta4"]   # keep in step with pg-dev-infra
     services:
       postgres:
         image: 192.168.10.111:3000/apjapj/pg-test:${{ matrix.pg_version }}
