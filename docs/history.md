@@ -153,17 +153,32 @@ release. An existing call changes nothing. Measured on the fixture: no argument 
 
 What asking for the **whole retained window** costs instead, which is the thing to avoid:
 
-| retain | `duration()` | `by_application()` | `incidents()` |
-|---|---|---|---|
-| 30 days | 6.7 s | 9.7 s | 30 s |
-| 90 days | 20.2 s | 29.1 s | 91 s |
-| 365 days | 82.0 s | 118 s | 364 s |
+| retain | rows | `duration()` | `by_application()` | `incidents()` |
+|---|---|---|---|---|
+| 7 days | 1,270,080 | 2.0 s | 2.3 s | 2.5 s |
+| 30 days | 5,443,200 | 8.4 s | 9.7 s | 10.9 s |
+| 90 days | 16,329,600 | 25.3 s | 29.1 s | 32.7 s |
+| 365 days | 66,225,600 | 102.4 s | 118.0 s | 132.5 s |
 
-Per row, measured rather than assumed: `duration()` 1.30 us, `by_application()` 1.87 us, and
-`incidents()` **1.95 us as a caller uses it**. That last figure is worth stating carefully, because
-`SELECT count(*) FROM lock_tree_incidents()` is ten times cheaper at 0.20 us. The three array columns
-are per-session aggregates that `count(*)` lets the planner drop entirely, so if you have ever timed
-this function with `count(*)` you have a number a tenth of the real one.
+Every figure in that table is the measured per-row cost multiplied by the row count, and the per-row
+costs were all taken the same way, on the same fixture, cold `shared_buffers`, best of three, with
+`SELECT *` because that is how a caller uses these functions:
+
+    lock_tree_duration()                1843.1 ms over 1,209,620 rows   1.52 us per row
+    lock_tree_duration_by_application() 2110.8 ms                    1.75 us per row
+    lock_tree_incidents()               2414.5 ms                    2.00 us per row
+
+**The `incidents()` figures in the 1.1.0 release were wrong, by about 2.8 times too pessimistic.**
+They read 91 s at 90 days and 364 s at a year, against 32.7 s and 132.5 s measured. The error was
+arithmetic on a correct measurement: 1.95 us per row was taken with all three array columns present,
+and then multiplied by three again when projecting, as though the per-row figure had covered one array
+rather than all of them. Correcting it matters, because the number was discouraging exactly the case
+it was written to inform.
+
+`incidents()` is worth stating carefully for a different reason. `SELECT count(*)` on it is ten times
+cheaper, at 0.20 us per row, because `count(*)` lets the planner drop all three array columns. If you
+have ever timed this function with `count(*)` you have a number a tenth of the real one, which is what
+made it look like the slowest thing in the extension before 1.1.0 corrected the benchmark.
 
 ### What to actually do
 

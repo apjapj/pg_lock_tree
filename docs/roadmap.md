@@ -187,9 +187,17 @@ Recorded here so the section is a record rather than a wish list. Each is one li
 changelog has the detail and a test has the proof.
 
 - **A window on `lock_tree_incidents()`** (1.1.0), the last history read function whose cost followed
-  retention rather than the question. Measured at 1.95 us per row as a caller uses it, so a month of
-  history is about 30 seconds with no way to ask about less; `since` takes it to 315 ms for a day.
-  The default is `NULL` rather than seven days precisely so that no existing call changes.
+  retention rather than the question. Measured at 2.00 us per row as a caller uses it, which is 2.5
+  seconds for a week of the standard fixture and 10.9 seconds for a month at its sampling rate, with
+  no way to ask about less; `since` takes a week to 315 ms. The default is `NULL` rather than seven
+  days precisely so that no existing call changes.
+- **The per-row figures in the retention table**, re-measured after the 1.1.0 release because
+  investigating that window parameter turned up an arithmetic error in the projection. `incidents()`
+  was costed at three times its measured per-row rate, so the 90-day figure read 91 s against 32.7 s
+  measured and the yearly figure read 364 s against 132.5 s. `duration()` was understated by about a
+  quarter the other way. The table and the method are now in
+  [docs/history.md](history.md#holding-more-than-a-few-weeks), which says what was measured rather
+  than leaving the arithmetic to be trusted.
 - **`INCLUDE (query_id)` on `lock_tree_history_application_idx`** (1.1.0), which turns the `qids` step
   from a bitmap heap scan fetching 24,133 pages into an Index Only Scan with `Heap Fetches: 0` and
   300, taking that step from 117.0 to 31.2 ms for 528 kB on a 1.9 MB index. A four percent win on a
