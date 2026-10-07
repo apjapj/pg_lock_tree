@@ -180,7 +180,23 @@ rather than at a mystery.
 The exception is a sample that lands while the cycle still exists, which is the `deadlock_timeout`
 before the server breaks it. Then `lock_tree_history` holds both participants, query text included,
 as depth-0 rows that are themselves waiting. No other row looks like that: an ordinary root holds its
-lock and waits on nothing. So this finds every deadlock the history happened to catch:
+lock and waits on nothing. **From 1.1.4 there is a function for it**, which also names the other side
+so one call returns both participants:
+
+```sql
+SELECT * FROM lock_tree_deadlock_participants();
+```
+
+| column | what it is |
+|---|---|
+| `sampled_at` | the sample that caught the cycle |
+| `pid`, `root_pid` | the participant |
+| `state`, `application_name`, `wait_age` | as at that instant |
+| `waiting_for` | what it was waiting for, which for a cycle is the other participant's lock |
+| `query` | the statement, which is the thing you actually want |
+| `partner_pids` | the other participant at the same sample |
+
+The same rows are reachable by hand, if you would rather not depend on a function:
 
 ```sql
 SELECT sampled_at, pid, application_name, waiting_for, query
@@ -188,6 +204,13 @@ FROM lock_tree_history
 WHERE depth = 0 AND waiting_for IS NOT NULL
 ORDER BY sampled_at, pid;
 ```
+
+**Empty is the normal case and does not mean no deadlock happened.** This only has rows for samples
+taken while the cycle existed, so with the defaults it catches roughly one deadlock in ten. That is
+why it is a function and not a column on `lock_tree_history`: a column would be NULL in nearly every
+row of the table that matters, and a reader who queried it would see NULL and conclude the opposite
+of the truth. `lock_tree_deadlocks()` is the counter that moves whether or not anyone was looking, and
+it is how you find the ones this misses.
 
 With the default 1s `deadlock_timeout` and a 10 second sample interval, roughly one deadlock in ten
 is caught this way. Do not raise `deadlock_timeout` to catch more: it is also how long every real lock

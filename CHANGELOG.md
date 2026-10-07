@@ -4,6 +4,66 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.4 (2026-10-07)
+
+1.1.4: one addition, and the design question it settles
+
+Nothing that exists changes. No output changes anywhere, no column is added, and no table grows.
+One function is added.
+
+**`lock_tree_deadlock_participants(since interval DEFAULT '7 days')`.** One row per participant
+per sample for any deadlock the history happened to catch, with `partner_pids` naming the other
+side, so a single call returns both participants rather than making the reader join the sample to
+itself. `query` comes back attached, which is the point of catching them at all.
+
+The shape is specific to a deadlock rather than merely suggestive. An ordinary root holds its lock
+and waits on nothing, so `waiting_for` is NULL on it; a row at `depth = 0` with `waiting_for` set
+is a root that is itself waiting, which is a cycle and nothing else. Measured on the standard
+fixture, zero of 60,481 `depth = 0` rows have `waiting_for` set.
+
+**Why a function and not a column, which was the open question in `docs/roadmap.md`.** A deadlock
+participant is only in the history for samples taken inside the `deadlock_timeout` window, so a
+column on `lock_tree_history` would be NULL in nearly every row of the table that matters. An empty
+column on the hot table is worse than no column: a reader who queries it sees NULL and concludes no
+deadlock happened, which is the specific misreading the roadmap warned about. A read function costs
+no storage, changes no schema, and carries the caveat in a `COMMENT` that a reader meets where they
+use it.
+
+`lock_tree_deadlocks()` is untouched and remains the way to find the deadlocks this misses. It
+moves whether or not anyone was looking, which is the half that makes the server log worth reading.
+
+**Reproduced, not assumed.** `scenarios/s6_deadlock.sql` was re-run on PostgreSQL 16 and confirms
+the premise this rests on: both participants appear at `depth = 0` with `waiting_for` set and the
+query text attached, `LOCK TABLE s6_x` and `LOCK TABLE s6_y IN ACCESS EXCLUSIVE MODE`, each naming
+the other. The eight new assertions in `test/14_deadlocks.sql` build that shape from `depth` and
+`waiting_for` values rather than provoking a real deadlock, so they do not need two sessions or a
+long `deadlock_timeout`, and they were verified to fail against 1.1.3, where the function does not
+exist.
+
+### Not in this release, and why
+
+**A plan change to `lock_tree_duration_by_application()`.** A first draft of 1.1.4 bounded the waiter
+side of its root-to-waiter join, on the reading that an unbounded side forced a scan of every
+retained waiter row. It measured 4,924,819 waiter rows read against 1,149,405, and 3548 ms against
+2210 ms. **That measurement does not reproduce.** Rebuilt from the installed 1.1.3 source, with an
+explicit `ANALYZE`, and with all 11 rows of `pg_statistic` deleted so the planner had no statistics
+at all, the 1.1.3 body read 1,149,405 rows in every case, bounded, and the two versions were
+indistinguishable in time. The bad plan could not be reproduced under any condition constructed, so
+the change was discarded rather than shipped with numbers nobody could stand behind.
+
+What survives from that investigation is a real asymmetry, recorded here because it is the place to
+look next: `lock_tree_duration()` and `lock_tree_duration_by_application()` contain the same join,
+and the planner gives the first a nested loop that probes `sampled_at` per row and reads 19 waiter
+rows at a time, while giving the second a hash join. Both are correct plans. If the retention
+scaling in `docs/history.md` is still unexplained, that asymmetry is where to look, with a
+measurement that reproduces before anything is believed.
+
+**A note for anyone writing assertions against these functions.** `statement_timestamp()` moves,
+and the sampler runs on a grid, so `lock_tree_duration_by_application()` does not agree with *itself*
+across two consecutive calls: the window boundary moves and a boundary sample enters or leaves.
+Two runs gave different checksums. Any test comparing its exact output is flaky for that reason, and
+any before-and-after comparison must freeze the clock in both arms or it measures the clock.
+
 ## 1.1.3 (2026-10-06)
 
 1.1.3: the release notes contradicted the reference documentation, and one documented

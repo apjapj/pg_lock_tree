@@ -14,28 +14,89 @@ that needs a measurement before anyone can say whether it is worth doing.
 up in the record section at the end. What is left is the one that needs a design decision rather than
 a measurement.
 
-**The two statements in `lock_tree_deadlocks()`.** `lock_tree_deadlocks()` reports *when* a deadlock
-happened, from the `pg_stat_database.deadlocks` counter, and names neither participant. Both are
-recoverable from the history, and this was measured rather than assumed. On PostgreSQL 16 with
-`deadlock_timeout` at 15s, a sample taken while a real two-session cycle existed wrote two rows into
-`lock_tree_history` at `depth = 0` with `waiting_for` set and the query text attached, and on the
-1,209,620-row benchmark fixture **zero** of the 60,481 `depth = 0` rows have `waiting_for` set. The
-shape is therefore unique to a deadlock, and a window join on `sampled_at` is what would surface it.
+**The two statements in `lock_tree_deadlocks()`. RESOLVED in 1.1.4, as a function.**
 
-Why it is still open, and it is a decision rather than a difficulty: the population of the new column
-is a trade, not a feature. It works only if a sample happened to land while the cycle existed, which
-needs `deadlock_timeout` longer than the sampling interval. At the default one second it almost never
-will, so the column would be empty in most rows of the history that matters. A column that is usually
-empty is still worth having, but only alongside an honest statement of how often it is populated,
-because the alternative is a reader who sees NULL and concludes no deadlock happened.
+`lock_tree_deadlocks()` reports *when* a deadlock happened, from the `pg_stat_database.deadlocks`
+counter, and names neither participant. Both are recoverable from the history, and this was measured
+rather than assumed. On PostgreSQL 16 with `deadlock_timeout` at 15s, a sample taken while a real
+two-session cycle existed wrote two rows into `lock_tree_history` at `depth = 0` with `waiting_for`
+set and the query text attached, and on the 1,209,620-row benchmark fixture **zero** of the 60,481
+`depth = 0` rows have `waiting_for` set. The shape is therefore unique to a deadlock. Re-run and
+captured in 1.1.4: `scenarios/s6_deadlock.sql` on PostgreSQL 16 shows both participants at `depth =
+0`, `LOCK TABLE s6_x` and `LOCK TABLE s6_y IN ACCESS EXCLUSIVE MODE`, each naming the other.
 
-The other question is what the column should contain. `docs/after-the-incident.md` is careful about
-this already: the server log names both statements, the client never sees the `Process N:` lines that
-carry them, so anything this returns is second-hand and can be wrong in the case that matters. A
-window join on `sampled_at` gives the two rows that were waiting, with their query text. It does not
-prove those were the statements PostgreSQL named, only that they were the ones waiting when the
-cycle existed. That distinction has to survive into the documentation or the column will be read as
-the log.
+The decision, which was the part that needed one, was function rather than column. A participant is
+only in the history for samples taken inside the `deadlock_timeout` window, so a column on
+`lock_tree_history` would be NULL in nearly every row of the table that matters, and an empty column
+on the hot table is worse than no column: a reader who queries it sees NULL and concludes no deadlock
+happened. That is the misreading this item was worried about, and a column would have caused it.
+`lock_tree_deadlock_participants(since)` costs no storage, changes no schema, and puts the caveat in
+a `COMMENT` a reader meets at the point of use. The open question about what the column should
+contain is answered by there not being a column.
+
+**The 353 ms difference is a fifth scan, and the fifth scan is required.** The per-application variant
+has an extra CTE, `qids`, that collects the distinct `query_id`s an application was root for. That step
+cost 100 to 160 ms on its own before 1.1.0; `INCLUDE (query_id)` took it to 31.2 ms, so the gap between
+the two functions is now 353 ms rather than the 688 ms this paragraph used to quote, and the fifth
+scan is still the largest single thing left in the difference. The obvious cheaper shape is to derive it from `rooted`, which is already
+filtered to `depth = 0` and grouped by application, and that would remove a scan. It would also be wrong:
+`rooted` is at the grain `(sampled_at, application_name)`, and adding `query_id` to that grain takes it
+from 23,036 rows to 150,485 on the fixture, because one application can be the root of several queries
+at one instant. `rooted` is joined at both ends of every gap, so the wider grain double-counts the gaps
+for exactly the applications that were busiest. Measured, not reasoned: that is the row count.
+
+So this is not a defect either, and it is recorded here because the number was quoted at the wrong
+function and that is worth correcting in public rather than quietly dropping.
+
+**Open, found while measuring 1.1.2: its cost follows retention even inside its 7-day window.** Asked
+about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month, 7.4 s on 90 days and
+30.3 s on a year, single runs of [`scripts/bench-history.sh`](../scripts/bench-history.sh) at each
+`--days`. `lock_tree_duration()`, beside it in the same runs, stayed between 2.0 and 2.6 s. Not yet
+  diagnosed, and the suspect this entry used to name has since been measured and refuted.
+
+  **The suspect it used to name is wrong, on PostgreSQL 18 at least.** The partial index keyed
+  on `application_name` before `sampled_at` was the first guess, on the reasoning that a window
+  predicate on a non-leading column is a filter rather than a range bound, so `qids` would read
+  the whole index and the index grows with retention. Measured: it does not. With in-window rows
+  fixed at 2,000 and re-verified before every run, that index scan read 185 buffers and then 165
+  while 900,000 out-of-window `depth = 0` rows were added and the index grew to 38 MB. The
+  `sampled_at` predicate is a usable bound, not a filter, so `qids` is window-bounded and is not
+  the cause.
+
+  Two caveats on that refutation. It was measured on 18 only, and B-tree skip scan, which is what
+  makes a non-leading column usable here, arrived in that release. On 14 to 17 the original
+  reasoning may still hold and is worth one run rather than an assumption. And on 18 it rules out
+  this suspect, not the symptom: something still makes the cost follow retention.
+
+  And one more suspect has now been raised and REFUTED, which is worth recording, because the
+  measurement looked convincing and the code it justified was written.
+
+  `lock_tree_duration_by_application()` bounds only the root side of its root-to-waiter join, so the
+  waiter side was left to the planner. On the 30-day fixture over a 7-day window it read 4,924,819
+  waiter rows where 1,149,405 were needed, and 3548 ms against 2210 ms for a variant that stated the
+  bound. Adding `AND w.sampled_at >= statement_timestamp() - since` is result-preserving, because the
+  join already equates `sampled_at` and the root side is bounded.
+
+  **It does not reproduce.** Rebuilt from the installed 1.1.3 source, the 1.1.3 body reads 1,149,405
+  rows, bounded. With an explicit `ANALYZE`, and again with all 11 rows of `pg_statistic` deleted so
+  the planner had no statistics at all, still 1,149,405. The bad plan could not be brought back under
+  any condition constructed, so the clause was discarded rather than shipped with numbers that could
+  not be defended. It is in the 1.1.4 changelog as well, since a refuted measurement that looks
+  convincing is worth more in the tree than a silent removal.
+
+  What survives is a real asymmetry, and the place to look next. `lock_tree_duration()` has the same
+  join and is given a nested loop that probes `sampled_at` per row, 19 waiter rows at a time.
+  `lock_tree_duration_by_application()`, with more CTEs above it, is given a hash join. Both are
+  correct plans and only one is fast. That is plan-shape dependence rather than a semantic defect,
+  and it is where I would look for the retention scaling before proposing anything again.
+
+  So the suspect list is shorter, not empty. The plan at 365 days is still the next thing to
+  read, now looking for a node whose buffers or heap fetches grow with total table size rather
+  than with the rows in the window. The leading remaining candidate is the visibility map: at 63
+  million rows and 14 GB with constant appends, autovacuum falls behind, pages stop being marked
+  all-visible, and index-only scans degrade into random heap fetches. `duration()` staying flat
+  beside it is consistent with that, since its worst node is not an index-only scan. That is a
+  hypothesis, not a finding.
 
 ## The whole-window duration read, measured rather than assumed
 

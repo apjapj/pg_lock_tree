@@ -52,7 +52,7 @@ TRUNCATE lock_tree_deadlock;
 \o
 \unset QUIET
 
-SELECT plan(30);
+SELECT plan(38);
 
 SELECT has_table('lock_tree_deadlock', 'lock_tree_deadlock table exists');
 
@@ -252,3 +252,59 @@ TRUNCATE lock_tree_deadlock;
 TRUNCATE lock_tree_history;
 \o
 \set QUIET 0
+
+-- ------------------------------------------------- the participants, from 1.1.4
+
+-- lock_tree_deadlocks() reports WHEN the counter moved and names nobody, because a counter carries
+-- no attribution. The participants are recoverable from the history for any sample taken while the
+-- cycle still existed. This asserts that shape directly against a fixture built from depth and
+-- waiting_for values, so it does not depend on provoking a real deadlock, which would need two
+-- sessions and a deadlock_timeout long enough to sample inside.
+
+\set QUIET 1
+\o /dev/null
+SELECT count(*) AS n_before FROM lock_tree_deadlock_participants() \gset
+INSERT INTO lock_tree_history(sampled_at, pid, root_pid, depth, state, waiting_for, wait_age,
+                              application_name, query)
+VALUES
+  (now() - interval '1 minute', 100, 100, 0, 'active', 'AccessExclusiveLock on t_y', '2s'::interval, 'transfer_out', 'LOCK TABLE t_y IN ACCESS EXCLUSIVE MODE'),
+  (now() - interval '1 minute', 200, 200, 0, 'active', 'AccessExclusiveLock on t_x', '2s'::interval, 'transfer_in',  'LOCK TABLE t_x IN ACCESS EXCLUSIVE MODE'),
+  -- an ordinary root: holds its lock, waits on nothing. This is the row that must NOT be returned,
+  -- because it is what every non-deadlock sample looks like.
+  (now() - interval '1 minute', 300, 300, 0, 'active', NULL, NULL, 'batch', 'UPDATE t SET a = 1'),
+  -- a waiter under that ordinary root: depth > 0, so not a participant either.
+  (now() - interval '1 minute', 301, 300, 1, 'active', 'transactionid', '1s'::interval, 'batch', 'SELECT 1');
+\o
+\set QUIET 0
+
+SELECT is(:n_before::int, 0, 'no participants before the fixture is planted');
+
+SELECT set_eq(
+  'SELECT pid FROM lock_tree_deadlock_participants() ORDER BY pid',
+  ARRAY[100,200],
+  'and both participants of the cycle are returned, at depth 0 with waiting_for set');
+
+SELECT set_eq(
+  'SELECT unnest(partner_pids) FROM lock_tree_deadlock_participants() ORDER BY 1',
+  ARRAY[100,200],
+  'each names the other as its partner, so one call returns both sides');
+
+SELECT is((SELECT count(*) FROM lock_tree_deadlock_participants() WHERE pid = 300)::int, 0,
+          'an ordinary root that waits on nothing is not a participant, which is what keeps this shape specific to a deadlock');
+
+SELECT is((SELECT count(*) FROM lock_tree_deadlock_participants() WHERE pid = 301)::int, 0,
+          'and neither is a waiter beneath an ordinary root, which is depth 1 and waits on a lock rather than forming a cycle');
+
+SELECT is((SELECT count(*) FROM lock_tree_deadlock_participants() WHERE query LIKE 'LOCK TABLE%')::int, 2,
+          'both statements come back with the query text attached, which is the point of catching them');
+
+SELECT is((SELECT array_agg(application_name ORDER BY application_name)
+             FROM lock_tree_deadlock_participants())::text, '{transfer_in,transfer_out}',
+          'and the application names, so a reader knows which two things to look for in the log');
+
+SELECT is((SELECT count(*) FROM lock_tree_deadlock_participants(
+             interval '1 millisecond'))::int, 0,
+          'a window matching no sample returns nothing rather than everything');
+
+-- clean up the planted rows so the fixture does not leak into later files
+DELETE FROM lock_tree_history WHERE pid IN (100, 200, 300, 301);
