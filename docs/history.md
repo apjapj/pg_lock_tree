@@ -359,7 +359,7 @@ made it look like the slowest thing in the extension before 1.1.0 corrected the 
    **Unless you archive on a cadence**, which removes the trap rather than paying it: a table pruned
    on a fixed cycle never exceeds its window plus one cycle, so its high-water mark is its steady
    state and the file never grows past it. The tax falls on installations that grew their retention
-   and then cut it. See [Move data on a cadence](#move-data-on-a-cadence-and-the-cost-collapses).
+   and then cut it. See [What a one-off move costs, and why you should not do one](#what-a-one-off-move-costs-and-why-you-should-not-do-one).
 5. **If a year is genuinely the goal, stop storing query text for old samples.** A row would go from
    410 to 93 bytes and a year from 28 GB to 6.4 GB. This is a trade rather than an optimisation: you
    give up being able to see what statement was running months ago. It is the only change that
@@ -409,11 +409,74 @@ benefit is invisible until it degrades.
 
 Everything in this section was measured on the 365-day fixture. It is here because the natural
 instinct, keep the last week hot and move the rest somewhere cold, turns out to be expensive in a
-way that is not obvious until you have measured it. **None of this is built in.** The extension ships
-the two prune forms above and nothing else; the rest is what you would do by hand, with the costs
-written down so you do not have to discover them.
+way that is not obvious until you have measured it.
 
-### Moving rows into an archive table costs five minutes and doubles your peak disk
+**1.1.6 ships the two pieces worth shipping**: `lock_tree_history_archive`, a cold table with the
+same columns indexed by BRIN and nothing else, and `lock_tree_archive()`, which moves history into it
+in committed batches. What follows is the reasoning and the measured costs behind them, and the one
+limitation to know about before relying on it.
+
+### What `lock_tree_archive()` does, and what it costs
+
+```sql
+-- weekly, on its own line: it is a procedure and cannot run inside a transaction block
+CALL lock_tree_archive(interval '30 days');
+```
+
+It moves rows older than the given age into `lock_tree_history_archive` in committed batches of
+`batch_size`, and it re-applies `lock_tree_redact()` to the query text as rows cross.
+
+**The redaction is the part to know about.** `lock_tree_sample()` redacts on the way **in**, under
+whatever `lock_tree.history_query` said at the time, so a row sampled while that was `full` carries a
+verbatim query into the hot table. Copying it into a table you intend to keep for a year would
+preserve that indefinitely, and a physical backup or a streaming replica copies the archive whatever
+`pg_dump` policy says. Re-applying the function on the move costs one `IMMUTABLE` call per row on a
+1.8 second job, and it makes the archive **strictly safer than its source**: a row archived under a
+laxer policy than you run today stops being one. Verified: `ALTER ROLE app LOGIN PASSWORD 'sekrit'`
+enters the archive as `ALTER ROLE app LOGIN PASSWORD '<redacted>'` while the hot copy is untouched.
+
+**The cost is a function of the batch, not of the year.** Measured on the fixture:
+
+| move | rows | time | peak disk penalty |
+|---|---|---|---|
+| the whole year in one statement | 61,862,400 | 298 s | the entire archive, roughly 9.5 GB |
+| one week at a time | 1,209,600 | **1.8 s** | one week, 124 MB |
+
+A weekly job moves a year of history for about two seconds of copying per run. That is why the
+procedure batches rather than doing it in one statement, and why it is a procedure at all: only a
+procedure called outside a transaction block may `COMMIT`.
+
+**It does not give disk back, and it is not supposed to.** The hot table keeps its file's high-water
+mark, for the reasons above. What the cadence changes is that the high-water mark stops being a
+problem: a table pruned on a fixed cycle never exceeds its window plus one cycle, so its file never
+grows past that and no `TRUNCATE` or `VACUUM FULL` is ever needed. The disk is not smaller, it is
+**bounded**, and the hot table is what shrinks.
+
+### The one limitation: nothing shipped reads the archive
+
+`lock_tree_incidents()`, `lock_tree_duration()` and the rest read `lock_tree_history` and nothing
+else. **Archived rows are invisible to them**, so `lock_tree_incidents(since => interval '90 days')`
+against a 30-day hot window returns 90 days of incidents silently truncated to 30. No error, no
+warning, just a short answer.
+
+This is deliberate and it is measured rather than assumed. The alternative, teaching the read
+functions to span both tables, was tried and is **9.6 times slower**: with the archive as a
+`UNION ALL` inside the root-to-waiter join, the planner switches from a `Nested Loop Semi Join` with
+an index probe, 96 ms, to a `HashAggregate` over a sequential scan of both tables, 924 ms on the same
+data, because it stops choosing the probe once the inner side is a multi-way `Append`. That is the
+same failure that sank monthly partitioning, described in
+[the roadmap](roadmap.md#considered-and-not-planned). An **empty** archive still costs about 50% on a
+plain count, 50 ms to 75 ms, so installations that never archive would pay for a feature they do not
+use.
+
+It also could not be done as a view. The sampler `INSERT`s into the history table on every run, and
+PostgreSQL refuses with `cannot insert into view` for any view containing `UNION`, so a
+boundary-spanning read would have to be inlined into every read function body. **Query the archive
+with SQL of your own**, and expect to want a helper for it eventually. That is the open question
+this release leaves, deliberately, rather than solving with a change that makes every read nine times
+worse.
+
+### What a one-off move costs, and why you should not do one
 
 Copying everything older than seven days, 61,862,400 rows, into a plain table in the same database:
 
@@ -425,46 +488,19 @@ INSERT INTO archive SELECT * FROM lock_tree_history
 took **298 seconds**. Every one of those rows is written twice, and the original is deleted
 afterwards, so for the duration of the copy the database holds both. On this fixture the archive
 reached 9556 MB while the original still measured 9714 MB. Peak disk is roughly double, and the
-window is minutes long, not seconds.
+window is minutes long, not seconds. That statement is the shape of the mistake, not a
+recommendation, and `lock_tree_archive()` exists so you do not have to write it.
 
-Do it in batches if you do it at all, the same reason `lock_tree_prune_batched()` is a procedure. The
-unbatched copy above is the shape of the mistake, not the recommendation.
+It also did not give the disk back. Having moved the bulk out, the hot table still measured
+9740 MB, and a plain `VACUUM` left it at 9740 MB, for the reasons given above.
 
-### But the archive does not give the disk back
-
-This is the part that inverts the plan. Having moved the bulk out, the hot table still measured
-9740 MB, and a plain `VACUUM` left it at 9740 MB. The rows are marked reusable and the file is
-unchanged, because of the `VACUUM` behaviour above. So an archive built by deleting from the hot
-table leaves you holding a full year on disk **and** a full year in the archive, which is strictly
-worse than having never archived, unless you were going to export the archive off the cluster anyway.
-
-If the plan is to move old history out of the cluster entirely, then exporting is the right shape
-and the archive table is just a staging area you should drop once the export lands. If the plan is to
-keep it queryable in place, you pay double disk for it and you still have the hot table at its
-high-water mark.
-
-### Move data on a cadence, and the cost collapses
-
-The 298 seconds above is what a **once-off, whole-table** move costs. It is not what a scheduled job
-costs, and treating it as the number to plan against is the mistake. Measured on a week's worth of
-rows at the fixture's rate, 1,209,600 rows, into a table carrying only a BRIN index:
-
-| move | rows | time | peak disk penalty |
-|---|---|---|---|
-| the whole year at once | 61,862,400 | 298 s | the entire archive, roughly 9.5 GB |
-| one week at a time | 1,209,600 | **1.8 s** | one week, 124 MB |
-
-A weekly job moves a year of history for about two seconds of copying per run, and the transient
-disk cost is bounded by one week rather than by the whole archive. Nothing about the copy is
-unusual at that size; it is an ordinary bulk insert.
-
-**And a steady cadence removes the high-water-mark problem entirely, without a `TRUNCATE`.** This is
-the part worth taking away, because the paragraphs above make it sound unavoidable. The trap is not
-"a table that has held a lot of data stays big". It is **growing your retention and then shrinking
-it**: the file was sized for the peak, the peak has passed, and the space is reusable but not
-returned. A table on a steady weekly cycle never experiences that. It grows to your window plus one
-cycle, is pruned back to your window, and repeats, so **the high-water mark is the steady state and
-the file never grows past it**. No `TRUNCATE`, no `VACUUM FULL`, no `ACCESS EXCLUSIVE` rewrite.
+**A steady cadence removes the high-water-mark problem entirely, without a `TRUNCATE`.** This is the
+part worth taking away, because the paragraph on `VACUUM` above makes it sound unavoidable. The trap
+is not "a table that has held a lot of data stays big". It is **growing your retention and then
+shrinking it**: the file was sized for the peak, the peak has passed, and the space is reusable but
+not returned. A table on a steady weekly cycle never experiences that. It grows to your window plus
+one cycle, is pruned back to your window, and repeats, so **the high-water mark is the steady state
+and the file never grows past it**. No `TRUNCATE`, no `VACUUM FULL`, no `ACCESS EXCLUSIVE` rewrite.
 
 What you get for a year, keeping 30 days hot and archiving weekly:
 
@@ -487,18 +523,6 @@ within a few percent rather than as a figure.
 
 So this is not a disk saving. It is a **hot-set** saving, bought for two seconds a week.
 
-### The cost that a cadence does not remove
-
-The shipped read functions read `lock_tree_history` and nothing else. **Archived rows are invisible
-to them**, so `lock_tree_incidents(since => interval '90 days')` against a 30-day hot window returns
-90 days of incidents truncated to 30, silently, because the function cannot see rows that are not
-there. That is the one thing a cadence does not fix, and it is the reason none of this is built in.
-
-If you want a year queryable, the archive has to be reachable by something. Either you accept
-hand-written SQL for anything crossing the boundary, or the extension grows a way to read across
-both. That is a real API decision rather than a tuning knob, and it is worth making deliberately
-rather than discovering it the first time a quarterly report comes back short.
-
 ### If you do keep an archive table, index it with BRIN and nothing else
 
 `sampled_at` is append-only, so it is perfectly correlated with physical order. Measured on the
@@ -520,10 +544,9 @@ CREATE INDEX archive_brin ON archive USING brin (sampled_at) WITH (pages_per_ran
 ```
 
 Two things to know about an archive table. **Do not make it `UNLOGGED`** even though it is
-second-tier, because research data that vanishes on a crash is not research data. And **the read
-functions will not see it**: every history read function reads `lock_tree_history` and nothing else,
-so a question spanning the archive boundary needs SQL of your own. That is a real cost, and it is the
-reason this is not built in.
+second-tier, because research data that vanishes on a crash is not research data; the shipped
+`lock_tree_history_archive` is an ordinary logged table. And **the read functions will not see it**,
+which is the limitation set out above.
 
 ### What this leaves as the actual answer
 
@@ -533,10 +556,11 @@ they cost you:
 
 1. Sample less often. `lock_tree_sampling_advice()` will tell you the interval your queue width
    supports, and 30 seconds instead of 10 is a third of the rows.
-2. Prune on a schedule with the batched procedure.
-3. Budget the disk at the high-water mark, because nothing else returns it.
-4. Only then consider exporting, and accept the double disk and the hand-written queries that come
-   with it.
+2. Prune on a schedule with the batched procedure, and on a **fixed** cycle, which is what keeps the
+   file bounded.
+3. Archive on that same cycle with `lock_tree_archive()`. It costs two seconds a week and makes the
+   hot table ten times smaller, and it returns no disk itself.
+4. Only then consider exporting, and accept the hand-written queries that come with it.
 
 Partitioning is the shape that would fix the retention side properly, and it was measured and
 rejected. The measurements are in [the roadmap](roadmap.md#considered-and-not-planned), including why

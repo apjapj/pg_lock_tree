@@ -28,6 +28,8 @@ creates, the stability statement, and the NOTIFY payload keys.
 | `lock_tree_prune(older_than interval)` | Delete history older than the given age, return how many **history** rows went, which is what it has always returned. The table only grows otherwise. |
 | `lock_tree_history_size()` | What the history costs now and what it will cost at the rate it is already being written: rows, samples, total bytes, the observed sample interval, bytes per day, and days until it reaches a gigabyte. |
 | `lock_tree_prune_batched(older_than interval, batch_size integer)` | A **procedure**, not a function. The same prune in committed batches, so no single lock is held for the whole of it. Cannot be called inside a transaction block, and checks for one before deleting anything. |
+| `lock_tree_history_archive` (table) | The cold tier: history older than what you keep hot, moved here by `lock_tree_archive()`. Same columns as `lock_tree_history`, indexed by BRIN on `sampled_at` and by nothing else, which is what keeps a year of it affordable. **No shipped read function reads it**, so a `since` window stops at the hot boundary rather than erroring; query it with SQL of your own. New in 1.1.6 |
+| `lock_tree_archive(older_than interval, batch_size integer DEFAULT 10000)` | Move history older than an age into `lock_tree_history_archive`, in committed batches, so no single transaction holds everything and no single statement doubles your peak disk. Re-applies `lock_tree_redact()` to the query text as rows cross, so the archive cannot preserve a laxer redaction policy than the one you run now. A **procedure**, for the same reason `lock_tree_prune_batched()` is one. **It does not free disk**: the hot table stays at its file's high-water mark, and a table pruned on a fixed cycle never exceeds that in the first place. New in 1.1.6 |
 | `lock_tree_wide()` | One row per root instead of one per session: how many sessions each blocks, the deepest chain under it, the longest wait, and what they are waiting for. Use when the tree is too wide to read. |
 | `lock_tree_summary()` | One row for the whole queue: sessions blocked, roots, deepest chain, longest wait, oldest root transaction. Zeros on a quiet database, not no rows, so it drops straight into a dashboard. |
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
@@ -104,7 +106,12 @@ does not recognise, and this is the one place where that is a requirement rather
 
 - **The three tables are not registered for `pg_dump`.** That is a decision with reasons in
   [Backups and restores](../INSTALL.md#backups-and-restores), pinned by a test, and a future release may
-  register them behind a documented option.
+  register them behind a documented option. `lock_tree_history_archive` is a fourth, kept out on the
+  same reasoning: it describes pids and timestamps that mean nothing on the server a restore lands on.
+- **`lock_tree_history_archive` is not read by any shipped function.** It exists so a scheduled job can
+  move old history out in small batches; every read function still reads `lock_tree_history` alone. A
+  `since` window therefore stops at the hot boundary rather than erroring, which is a limitation you
+  can hit without being told, so it is stated here as well as on the table.
 - **Cross-database visibility.** Each database has its own history. A fan-out sampler is a separate
   tool; see the [roadmap](roadmap.md).
 - **Anything about a server where `make install` is not possible**, such as RDS and Aurora. Being pure

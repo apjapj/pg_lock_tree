@@ -4,13 +4,85 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
-## Unreleased
+## 1.1.6 (2026-10-08)
+
+A cold tier, and one function. `lock_tree_history_archive` is a second table with the same columns as
+`lock_tree_history`, indexed by BRIN on `sampled_at` and by nothing else, and `lock_tree_archive()`
+moves history into it in committed batches. **Nothing existing is replaced and no shipped read
+function changes**, so no result any existing function returns can differ.
+
+### Why the read functions were left alone
+
+The obvious design is to teach `lock_tree_incidents()`, `lock_tree_duration()` and the rest to read
+hot and archive together. It was measured and rejected, twice over, and both findings are worth
+stating because both were expected to go the other way.
+
+**It is 9.6 times slower.** With the archive as a `UNION ALL` on the inner side of the root-to-waiter
+join, the planner stops choosing the index probe and switches from a `Nested Loop Semi Join` to a
+`HashAggregate` over a sequential scan of both tables: 96 ms against **924 ms** on the same data,
+reading 1,149,120 of 1,209,600 available rows to answer a question the hot table answers by probing.
+That is the same failure that sank monthly partitioning, recorded in the roadmap, and it arrives
+again in a different shape.
+
+**An empty archive still costs 50%.** 50 ms to 75 ms on a plain count with nothing archived at all, so
+installations that never archive would pay, permanently, for a feature they do not use.
+
+It also could not be done as a view. The sampler `INSERT`s into the history table on every run, and
+PostgreSQL refuses with `cannot insert into view` for any view containing `UNION`, so a
+boundary-spanning read would have to be inlined into every read function body. Dedicated archive
+objects are the only shape that works.
+
+### `lock_tree_archive()` re-redacts on the way across
+
+`lock_tree_sample()` applies `lock_tree_redact()` on the way **in**, under whatever
+`lock_tree.history_query` said at the time. So a row sampled while that was `full` carries a verbatim
+query, and copying it into a table you intend to keep for a year would preserve that indefinitely. A
+physical backup, a filesystem snapshot or a streaming replica copies the archive whatever `pg_dump`
+policy says, and the extension has no control over that.
+
+So the move re-applies the function as rows cross. It is `IMMUTABLE`, so it costs one call per row on
+what measures 1.8 seconds for a week, and it makes the archive **strictly safer than its source**: a
+row archived under a laxer policy than you run today stops being a liability. Verified end to end,
+`ALTER ROLE app LOGIN PASSWORD 'sekrit'` arriving in the archive as
+`ALTER ROLE app LOGIN PASSWORD '<redacted>'` with the hot copy untouched, and a `NULL` query staying
+`NULL` rather than becoming an empty string.
+
+### A bug the design was chosen to prevent, and what it actually does
+
+The batch loop takes one set of row identities and uses it for both the copy and the delete. The
+obvious version takes two independent `LIMIT batch_size` batches, and it was built and timed before
+it was replaced. **It writes duplicates and then never terminates.** On the 62-row test fixture with
+`batch_size` 7 against 20-row ties it wrote 34 rows into the archive from 21 eligible, thirteen of
+them duplicates, and then looped forever, killed after 179 seconds, because the rows it had just
+copied were still in the source for the next delete to select, so the eligible count never fell.
+
+That is recorded because the failure mode was expected to be data loss and turned out to be a
+non-terminating loop that manufactures duplicates while it spins. Either way it is silent, which is
+the property that makes it worth a test. `test/23_archive.sql` asserts the row count across both
+tables, and its fixture is built so every batch boundary lands inside a tie so the bug fires on the
+first pass.
+
+### What this does not do, stated plainly
+
+**It does not free disk.** The hot table keeps its file's high-water mark, as it does after any
+`DELETE`. What a fixed cadence changes is that the high-water mark stops being a problem: a table
+pruned on a cycle never exceeds its window plus one cycle, so the file never grows past that and no
+`TRUNCATE` or `ACCESS EXCLUSIVE` rewrite is ever needed.
+
+**Nothing shipped reads the archive.** A `since` window silently stops at the hot boundary rather
+than erroring, so `lock_tree_incidents(since => interval '90 days')` against a 30-day hot window
+returns 30 days. That is the limitation to know about, it is asserted in the tests rather than left
+to be discovered when a quarterly report comes back short, and closing it is the open question this
+release deliberately leaves.
+
+The archive is not registered for `pg_dump`, on the same reasoning as the other three tables, which
+is now four.
 
 ### Documentation, from a year of history measured rather than projected
 
-No code changes. The 365-day fixture this project had only ever projected was built and run, and
-several things the documentation asserted turned out to be wrong. All of it is now measured, and the
-prose tells you the number rather than the shape of the worry.
+No code changes to the extension. The 365-day fixture this project had only ever projected was built
+and run, and several things the documentation asserted turned out to be wrong. All of it is now
+measured, and the prose tells you the number rather than the shape of the worry.
 
 **The 365-day projection was pessimistic, and `by_application()` no longer follows retention at
 all.** `docs/history.md` carried a table predicting 30.3 s for `by_application()` at a year, against
