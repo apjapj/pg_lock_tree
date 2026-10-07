@@ -119,24 +119,54 @@ jobs:
 
   # The install-path checks, which the pgTAP matrix above cannot run.
   #
-  # Eight scripts under scripts/ gate on a row in pg_extension, which only exists if the extension
-  # was installed with CREATE EXTENSION. The matrix above deliberately does not do that: it loads
-  # the release SQL straight into public, because the server is a separate service container whose
-  # own copy of the extension is whatever was baked into the image. Verified, and it is not a
-  # version skew: apjapj/pg-test:18 contains zero pg_lock_tree files. So CREATE EXTENSION cannot
-  # work in that job, and the eight checks could not run in CI at all.
+  # Eight checks (scripts/check-*.sh, scenarios/run.sh, and demo.sql) gate on a row in pg_extension,
+  # which only exists if the extension was installed with CREATE EXTENSION. The matrix above
+  # deliberately does not do that: it loads the release SQL straight into public on a separate
+  # service container.
   #
-  # This job starts its own Postgres from the same image with the checkout mounted at /src, and
-  # copies the extension files in before running the checks. That keeps the work in this
-  # repository: no image is rebuilt and no registry write is needed. The alternative, baking the
-  # extension into the image, is infrastructure and belongs in pg-dev-infra, and is not required.
-  #
-  # One version, not the matrix. These checks are about the install path rather than about a
-  # PostgreSQL version's behaviour, and six copies would be six times the wall clock for one result.
-  # PostgreSQL 18 is the version the benchmark figures in docs/history.md were taken on, so it is
-  # also the one where a surprise would be easiest to compare against.
-  #
-  # Unverified: this job has never run, because nothing has ever dispatched it. It needs docker
-  # inside the job, which the runner provides by mounting /var/run/docker.sock. If that turns out
-  # not to reach the job, the fallback is to bake the extension into the image, which is
-  # pg-dev-infra work and would need a write:package decision first.
+  # This job runs on babar-pg, which is backed by pg-dev-infra's apjapj/pg-runner:18 image.
+  # The runner pre-bakes the PostgreSQL 18 stack (pg_cron, pg_stat_statements, max_prepared_transactions=10),
+  # developer headers, and the pg-start startup helper. This allows full in-job CREATE EXTENSION
+  # execution without mounting /var/run/docker.sock or running sibling Docker containers.
+  install-path-checks:
+    name: install-path checks
+    runs-on: babar-pg
+    env:
+      PGUSER: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Postgres and install extension
+        run: |
+          set -euo pipefail
+          pg-start
+          make install
+          psql -qX -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pg_lock_tree"
+          psql -X -tAc "SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_lock_tree'"
+
+      - name: Run all 8 checks
+        run: |
+          set -uo pipefail
+          fail=0
+          # All eight checks that gate on a pg_extension row
+          for s in check-upgrade check-install check-schema check-examples \
+                   check-alert check-deadlock; do
+            printf '=== %s ===\n' "$s"
+            if ./scripts/$s.sh; then
+              printf '    ok %s\n' "$s"
+            else
+              printf '    FAIL %s\n' "$s"
+              fail=1
+            fi
+          done
+
+          printf '=== scenarios/run.sh ===\n'
+          if ./scenarios/run.sh; then printf '    ok scenarios\n'
+          else printf '    FAIL scenarios\n'; fail=1; fi
+
+          printf '=== demo.sql ===\n'
+          if psql -qX -v ON_ERROR_STOP=1 -f demo.sql; then printf '    ok demo.sql\n'
+          else printf '    FAIL demo.sql\n'; fail=1; fi
+
+          exit $fail
