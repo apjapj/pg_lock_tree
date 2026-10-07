@@ -104,7 +104,29 @@ SELECT '  rows', count(*),
 # Measured on this fixture, PG18: lock_tree_incidents() 2660.5 ms before the vacuum and 233.3 ms
 # after, an order of magnitude, same data and same query. ANALYZE alone does not do it, because the
 # visibility map is what vacuum sets.
-psql -X -q -c 'VACUUM (ANALYZE) lock_tree_history' >/dev/null 2>&1
+# PARALLEL 0 is not optional in a container. The parallel index phase of VACUUM allocates a shared
+# memory segment sized to the maintenance_work_mem GUC, and Docker's default /dev/shm is 64 MB. On
+# PG14 in pg-test:14 that is a 67,145,216 byte request against 64 MB, so the vacuum fails outright:
+#
+#   ERROR:  could not resize shared memory segment "/PostgreSQL.573425660" to 67145216 bytes:
+#           No space left on device
+#
+# And it failed SILENTLY, because this line used to send all output to /dev/null and never checked.
+# The script then carried on and printed timings for an unvacuumed, unanalysed table: 9.0 s where
+# 2.3 s was the truth, and 1.2 s for a 1 ms window that should be free. A benchmark that cannot report
+# its own broken state is worse than no benchmark, and this is how a whole investigation went wrong:
+# a measured 4,924,819-row scan was dismissed as unreproducible when the fixture under it had never
+# been vacuumed. Hence the second half of the fix, which is the important half: capture the output
+# and refuse to report timings from a fixture that is not in the state the numbers assume.
+vacout=$(psql -X -q -c 'VACUUM (ANALYZE, PARALLEL 0) lock_tree_history' 2>&1)
+if printf '%s' "$vacout" | grep -qi 'ERROR'; then
+  printf '  \033[31merror\033[0m  the VACUUM failed, so every timing below would describe an\n'
+  printf '         unvacuumed table and must not be read as a result:\n'
+  printf '%s\n' "$vacout" | sed 's/^/           /' | head -6
+  printf '         If this is a shared memory error, give the container a larger /dev/shm\n'
+  printf '         (docker run --shm-size=1g) or keep PARALLEL 0.\n'
+  exit 1
+fi
 
 # The state the timings are taken in, printed because a benchmark that reports timings should report
 # that too. relallvisible counts pages known all-visible; it is 0 before the vacuum above.
@@ -210,6 +232,26 @@ else
     say_bad "no Index Cond: the window bound is still a filter over the whole index"
     printf '%s\n' "$plan" | sed 's/^/        /' | head -12
 fi
+
+# From 1.1.5: both duration reads bound the waiter side of the root-to-waiter join. Asserted here
+# rather than in a pgtap file because this is the only place with a fixture big enough for the
+# unbounded scan to be the wrong answer, and because on a small fixture a sequential scan is
+# correct and the assertion would fire wrongly. On a big one it is emphatically not correct:
+# without the bound, by_application() reads every depth > 0 row ever retained to answer a 7-day
+# question. The signature is a node carrying "Filter: (depth > 0)" with no index bound beside it.
+for fn in lock_tree_duration lock_tree_duration_by_application; do
+  wp=$(psql -X -tA -c "EXPLAIN SELECT * FROM ${fn}(interval '7 days')" 2>/dev/null)
+  if printf '%s\n' "$wp" | grep -q 'Filter: (depth > 0)'; then
+    if printf '%s\n' "$wp" | grep -B2 'Filter: (depth > 0)' | grep -q 'Index Cond'; then
+      say_ok "${fn} keeps its waiter-side scan inside the window"
+    else
+      say_bad "${fn} reads every retained waiter row: a node carries Filter: (depth > 0) with no index bound, so the cost follows retention rather than the window"
+      printf '%s\n' "$wp" | sed 's/^/        /' | head -20
+    fi
+  else
+    say_ok "${fn} has no separate waiter-side scan to bound"
+  fi
+done
 
 # The timings above are only meaningful if the plan they ran still contains the work. This is the
 # check that says so, and it is here because a timing can be quietly wrong: count(*) is cheaper

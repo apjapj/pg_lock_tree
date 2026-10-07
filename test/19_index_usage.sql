@@ -54,7 +54,7 @@ SELECT now() - interval '2 hours' + k.n * interval '30 seconds',
   FROM generate_series(1, 120) AS k(n)
   CROSS JOIN generate_series(0, 4) AS d(d);
 
-SELECT plan(18);
+SELECT plan(20);
 
 -- ------------------------------------------------------ the source, which is the real claim
 
@@ -129,6 +129,39 @@ SELECT is(:view_volatile::int, 3,
 SELECT is(:view_stable::int, 0,
           'and it uses statement_timestamp() nowhere, so a blanket replacement of the whole file '
           || 'would have changed behaviour the ages depend on. This is the assertion that catches it');
+
+  -- ------------------------------------------------- both duration reads bound the waiter side
+
+  -- From 1.1.5. PostgreSQL does not carry a >= bound on r.sampled_at across the equality
+  -- w.sampled_at = r.sampled_at, so before this the waiter side of the join stayed inside the
+  -- window only if the planner picked a nested loop and probed it. It did not always: on PG18 with
+  -- a 90-day fixture lock_tree_duration_by_application() read 14,774,419 waiter rows to answer a
+  -- 7-day question, and on PG14 with a 30-day one it read 4,924,819. lock_tree_duration() has the
+  -- identical join and was handed a nested loop, which is why the two disagreed.
+  --
+  -- Asserted against the SOURCE, not the plan, for the reason in the next section: this has to pass
+  -- on six PostgreSQL versions and plan shape depends on version, statistics and fixture size. The
+  -- plan consequence is asserted in scripts/bench-history.sh against a large fixture.
+
+  \set QUIET 1
+  \o /dev/null
+  SELECT (SELECT count(*) FROM regexp_matches(
+            pg_get_functiondef('lock_tree_duration(interval)'::regprocedure),
+            'AND w\.sampled_at >= statement_timestamp\(\) - since', 'g')) AS dur_bound \gset
+  SELECT (SELECT count(*) FROM regexp_matches(
+            pg_get_functiondef('lock_tree_duration_by_application(interval)'::regprocedure),
+            'AND w\.sampled_at >= statement_timestamp\(\) - since', 'g')) AS byapp_bound \gset
+  \o
+  \set QUIET 0
+
+  SELECT is(:dur_bound::int, 1,
+            'lock_tree_duration() bounds the waiter side of its root-to-waiter join, so its cost '
+            || 'follows the window rather than depending on the planner picking a nested loop');
+
+  SELECT is(:byapp_bound::int, 1,
+            'and lock_tree_duration_by_application() bounds it too, which is the one that was '
+            || 'reading every retained waiter row');
+
 
 -- ------------------------------------------------- plans are asserted elsewhere, and why
 

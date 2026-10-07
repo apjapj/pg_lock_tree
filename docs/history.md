@@ -147,10 +147,65 @@ root pid, five application names and a `NULL` `root_object` on every row, so its
 real history's are longer, and the cost of building them grows with the distinct values rather than
 the rows. `duration()` and `by_application()` are single runs; `incidents()` is the best of three.
 
-`duration()` does not move, because it reads the window you name. **`by_application()` does**, from
-2.3 s at a week of retention to 30 s at a year, while asking about the same seven days. That was not
-known before these measurements and is not fixed in 1.1.2; until it is, it is the read to be careful
-with on a long retention. `incidents()` moves too, and until **1.1.0** there was nothing you could do
+`duration()` does not move, because it reads the window you name. **`by_application()` did**, from
+2.3 s at a week of retention to 30 s at a year, while asking about the same seven days. That was
+measured in 1.1.2 and the cause was not understood until 1.1.5, which fixes it.
+
+**The cause, and the fix.** Both functions join root rows to waiter rows on `sampled_at`, and both
+bounded only the root side. PostgreSQL does not carry a `>=` bound on `r.sampled_at` across the
+equality `w.sampled_at = r.sampled_at`, so whether the waiter side stayed inside the window depended
+on which join the planner chose. A nested loop probes it and reads about 19 rows per root. A merge
+join, a hash join or a sequential scan reads every `depth > 0` row in the table. `duration()` was
+handed the first and `by_application()` the second, which is why the two disagreed despite
+identical SQL, and why the cost tracked retention rather than the window you asked about.
+
+From 1.1.5 both state the bound on the waiter side. It cannot change the result, since the join
+equates `sampled_at` and the root side is bounded. Measured on the 7-day window, old and new
+alternating on one fixture, best of three:
+
+| fixture | function | 1.1.4 | 1.1.5 | waiter rows read |
+|---|---|---|---|---|
+| PG18, 90 days | `duration()` | 2480 ms | 2511 ms | 19 either way |
+| PG18, 90 days | `by_application()` | 6989 ms | **2155 ms** | 14,774,419 to **1,143,439** |
+| PG14, 30 days | `duration()` | 2265 ms | 2335 ms | 19 either way |
+| PG14, 30 days | `by_application()` | 3417 ms | **2397 ms** | 4,924,819 to **1,148,854** |
+
+`duration()` is bounded as well although its plan does not change on a healthy fixture, because that
+is not guaranteed: on PG14 with unusable statistics it fell back to a sequential scan over every
+waiter row, 7,917 ms against 2,806 ms with the bound.
+
+**The `by_application()` column in the table above is a 1.1.2 measurement of 1.1.2 behaviour, and
+should now be read as pre-fix.** Those figures were taken on PostgreSQL 18, where the fixture
+vacuums successfully, so the tooling fault below did not affect them, and they remain a fair record
+of what 1.1.2 did. What has changed is that 30 s at a year is no longer a property of the function:
+it was a property of one plan on one version. Expect `by_application()` to behave like `duration()`
+does now. That expectation is a projection and is labelled as one rather than folded silently into
+the table, because re-measuring at 365 days means building a 63 million row fixture and it has not
+been done.
+
+### A fault in this harness, found while fixing the above
+
+`scripts/bench-history.sh` ran `VACUUM (ANALYZE)` with its output discarded and never checked the
+result. The parallel index phase allocates a shared memory segment sized to `maintenance_work_mem`,
+and Docker's default `/dev/shm` is 64 MB. On PG14 in `pg-test:14` that is a 67,145,216 byte request
+against 64 MB, so the vacuum failed outright:
+
+```
+ERROR:  could not resize shared memory segment "/PostgreSQL.573425660" to 67145216 bytes:
+        No space left on device
+```
+
+The script carried on and printed timings for an unvacuumed, unanalysed table: 9.0 s where 2.3 s was
+the truth, and 1.2 s for a 1 ms window that should be free. It now uses
+`VACUUM (ANALYZE, PARALLEL 0)` and refuses to report any timing if the vacuum fails, printing the
+underlying error and exiting non-zero.
+
+The figures in this file predate that fault and are PostgreSQL 18, where the vacuum succeeds, so they
+are unaffected. Stated rather than assumed. The general lesson is the one this project keeps meeting:
+a check that cannot report its own broken state is worse than no check, because a silent failure
+reads as a pass. That fault is also part of why the 1.1.5 investigation was hard: an early
+measurement of 4,924,819 waiter rows was dismissed as unreproducible when the fixture beneath it had
+never been vacuumed, and the real explanation turned out to be plan dependence on a second version.
 about it: it was the only history read function with no window parameter, so its cost followed your
 retention. It now takes one:
 

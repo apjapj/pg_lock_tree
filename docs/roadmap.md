@@ -68,28 +68,65 @@ about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month,
   reasoning may still hold and is worth one run rather than an assumption. And on 18 it rules out
   this suspect, not the symptom: something still makes the cost follow retention.
 
-  And one more suspect has now been raised and REFUTED, which is worth recording, because the
-  measurement looked convincing and the code it justified was written.
+And one more suspect was raised, wrongly refuted, and turned out to be the answer. Kept in full
+  because the wrong turn is more instructive than the right one, and because a confident false
+  negative is worse than an open question: it stops people looking.
 
-  `lock_tree_duration_by_application()` bounds only the root side of its root-to-waiter join, so the
-  waiter side was left to the planner. On the 30-day fixture over a 7-day window it read 4,924,819
-  waiter rows where 1,149,405 were needed, and 3548 ms against 2210 ms for a variant that stated the
-  bound. Adding `AND w.sampled_at >= statement_timestamp() - since` is result-preserving, because the
-  join already equates `sampled_at` and the root side is bounded.
+  `lock_tree_duration_by_application()` bounds only the root side of its root-to-waiter join.
+  PostgreSQL does not carry `r.sampled_at >= now - since` across the equality
+  `w.sampled_at = r.sampled_at`, so whether the waiter side stayed inside the window depended on
+  which join the planner chose. A nested loop probes it, about 19 rows per root. A merge join, a
+  hash join or a sequential scan reads every `depth > 0` row in the table, so the cost follows
+  retention rather than the window asked about. `lock_tree_duration()` has the identical join and
+  was handed a nested loop, which is why the two disagreed despite identical SQL.
 
-  **It does not reproduce.** Rebuilt from the installed 1.1.3 source, the 1.1.3 body reads 1,149,405
-  rows, bounded. With an explicit `ANALYZE`, and again with all 11 rows of `pg_statistic` deleted so
-  the planner had no statistics at all, still 1,149,405. The bad plan could not be brought back under
-  any condition constructed, so the clause was discarded rather than shipped with numbers that could
-  not be defended. It is in the 1.1.4 changelog as well, since a refuted measurement that looks
-  convincing is worth more in the tree than a silent removal.
+  Fixed in 1.1.5 by stating the bound on the waiter side. It cannot change the result, since the
+  join equates `sampled_at` and the root side is bounded. Default 7-day window, old and new
+  alternating on one fixture, best of three:
 
-  What survives is a real asymmetry, and the place to look next. `lock_tree_duration()` has the same
-  join and is given a nested loop that probes `sampled_at` per row, 19 waiter rows at a time.
-  `lock_tree_duration_by_application()`, with more CTEs above it, is given a hash join. Both are
-  correct plans and only one is fast. That is plan-shape dependence rather than a semantic defect,
-  and it is where I would look for the retention scaling before proposing anything again.
+  | fixture | function | 1.1.4 | 1.1.5 | waiter rows read |
+  |---|---|---|---|---|
+  | PG18, 90 days | `duration()` | 2480 ms | 2511 ms | 19 either way |
+  | PG18, 90 days | `by_application()` | 6989 ms | 2155 ms | 14,774,419 to 1,143,439 |
+  | PG14, 30 days | `duration()` | 2265 ms | 2335 ms | 19 either way |
+  | PG14, 30 days | `by_application()` | 3417 ms | 2397 ms | 4,924,819 to 1,148,854 |
 
+  `duration()` is bounded too although its plan does not change on a healthy fixture, because that
+  is not guaranteed: on PG14 with unusable statistics it fell back to a sequential scan over every
+  waiter row, 7,917 ms against 2,806 ms with the bound.
+
+  **The wrong turn.** A draft of 1.1.4 built this change, measured 4,924,819 waiter rows against
+  1,149,405 and 3548 ms against 2210 ms, then could not reproduce any of it and discarded the
+  clause. It rebuilt the comparison from the installed source, ran an explicit `ANALYZE`, and
+  deleted every row of `pg_statistic` so the planner had no statistics at all. Every time, 1.1.4
+  read 1,149,405 rows, bounded, and looked correct.
+
+  The error was treating a plan difference as a property of the SQL. It was a property of one
+  planner, on one version, with one fixture. On PG18 with a 90-day fixture `by_application()` is
+  given a nested loop and is fast; on PG14 with a 30-day one it is given an index scan with only a
+  filter and reads everything ever retained. Same SQL, same query, and the symptom appears and
+  disappears with version, statistics and size. Testing a plan-dependent property on one
+  configuration proves nothing, and the note to write is "not reproducible **here**, reason not yet
+  understood", not "does not reproduce".
+
+  **A second trap, in the comparison rather than the SQL.** Run the two bodies in separate
+  statements and they can differ without either being wrong. `statement_timestamp()` moves and the
+  sampler runs on a grid, so the window boundary shifts between calls, and these functions do not
+  agree with **themselves** across two consecutive calls: two runs of one query gave different
+  checksums. Each old and new pair must run inside a single statement, or the comparison measures
+  the clock.
+
+  **A third, in the tooling.** `scripts/bench-history.sh` ran `VACUUM (ANALYZE)` with its output
+  discarded and never checked the result. On PG14 in Docker the parallel index phase needs more than
+  the default 64 MB `/dev/shm`, so the vacuum failed and the script printed timings for an
+  unvacuumed, unanalysed table: 9.0 s where 2.3 s was the truth. Now `PARALLEL 0`, and, the part
+  that matters, the script refuses to report any timing when the vacuum fails.
+
+  **What this does to the visibility-map hypothesis.** It was a reasonable guess at a symptom with
+  two causes. The waiter-side scan is now explained and fixed, and it accounted for the asymmetry
+  between the two functions on its own. The visibility-map effect may still be real at a year and
+  the 365-day reading is still worth doing, but it is no longer the first place to look, and
+  `duration()` being flat across retention is now explained by its plan rather than left dangling.
   So the suspect list is shorter, not empty. The plan at 365 days is still the next thing to
   read, now looking for a node whose buffers or heap fetches grow with total table size rather
   than with the rows in the window. The leading remaining candidate is the visibility map: at 63

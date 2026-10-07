@@ -4,6 +4,102 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## 1.1.5 (2026-10-07)
+
+1.1.5: bound the waiter side of the root-to-waiter join, and correct 1.1.4
+
+**The 1.1.4 note below was wrong and is corrected here.** It said of a candidate change that the
+effect "does not reproduce" and "could not be brought back under any condition constructed". Both
+statements were false. The effect is real and it was measured here. The mistake was mine, and the
+reason is worth recording because it is a measurement trap rather than an oversight: whether the
+effect appears depends on which join the planner picks, so testing it on one version with one fixture
+proves nothing. See "Why 1.1.4 was wrong" below.
+
+**The change.** One added predicate in each of `lock_tree_duration()` and
+`lock_tree_duration_by_application()`:
+
+```sql
+AND w.sampled_at >= statement_timestamp() - since
+```
+
+on the waiter side of the join. It cannot change which rows match: the join already equates
+`w.sampled_at` with `r.sampled_at`, and `r.sampled_at` is bounded by the `WHERE`. What it changes is
+how many rows have to be read to find them.
+
+**Why it was needed.** PostgreSQL does not carry a `>=` bound on the root side across the equality
+on `sampled_at`. So whether the waiter side stayed inside the window was a property of the chosen
+join, not of the SQL. A nested loop probes the waiter side and reads about 19 rows per root. A merge
+join, a hash join, or a sequential scan reads every `depth > 0` row in the table, so the cost follows
+retention rather than the window you asked about.
+
+**Measured.** Default 7-day window, old and new bodies alternating in one session on one fixture,
+best of three, so both see the same statistics and the same cache:
+
+| fixture | function | 1.1.4 | 1.1.5 | waiter rows read |
+|---|---|---|---|---|
+| PG18, 90 days | `duration()` | 2480 ms | 2511 ms | 19 either way |
+| PG18, 90 days | `by_application()` | 6989 ms | **2155 ms** | 14,774,419 to **1,143,439** |
+| PG14, 30 days | `duration()` | 2265 ms | 2335 ms | 19 either way |
+| PG14, 30 days | `by_application()` | 3417 ms | **2397 ms** | 4,924,819 to **1,148,854** |
+
+The `duration()` figures are the point as much as the `by_application()` ones. Its plan does not
+change on a healthy fixture, so the added line costs nothing there. It is there because that is not
+guaranteed: on PG14 with unusable statistics `duration()` degraded to a sequential scan over every
+waiter row, 7,917 ms against 2,806 ms with the bound. The line removes a dependency on planner
+behaviour that has already been observed to move.
+
+**Output is identical.** 8 windows from `NULL` to 100 days, 16 of 16 cases on a 90-day fixture and
+16 of 16 on a varied small fixture with several applications, several query ids, NULL and empty
+application names and root objects, pid 0 roots and gaps, 48 result rows. Each old and new pair ran
+inside a single statement so both saw the same `statement_timestamp()`.
+
+That last point is a trap worth restating, because it invalidated a comparison here first: run the
+two bodies in separate statements and they can differ without either being wrong.
+`statement_timestamp()` moves, and the sampler runs on a grid, so the window boundary shifts between
+calls. These functions do not agree with **themselves** across two consecutive calls. Two runs of the
+same query gave different checksums. Freeze the clock in both arms or you are measuring time.
+
+### Why 1.1.4 was wrong
+
+The 1.1.4 investigation built the change, measured 4,924,819 waiter rows against 1,149,405 and
+3548 ms against 2210 ms, then could not reproduce any of it. It rebuilt the comparison from the
+installed 1.1.4 source, ran an explicit `ANALYZE`, and deleted all 11 rows of `pg_statistic` so the
+planner had no statistics at all. Every time, 1.1.4 read 1,149,405 rows, bounded, and looked correct.
+
+The error was assuming that a plan difference is a property of the SQL. It was a property of one
+planner, on one version, with one fixture. On PG18 with a 90-day fixture `by_application()` is handed
+a nested loop and is fast. On PG14 with a 30-day fixture it is handed an index scan with only a
+filter and reads the whole retained history. Same SQL, same query, different cost, and the symptom
+appears and disappears with version, statistics and size.
+
+So the clause was discarded, which was the right call on the evidence then available and the wrong
+outcome. The refutation was recorded in this file and in the roadmap as a measured finding, which
+made it worse: a confident false negative is more damaging than an open question, because it stops
+people looking. What should have been written is "not reproducible **here**, and the reason is not
+yet understood".
+
+### A tooling bug found on the way
+
+`scripts/bench-history.sh` ran `VACUUM (ANALYZE)` with all output sent to `/dev/null` and never
+checked the result. The parallel index phase allocates a shared memory segment sized to
+`maintenance_work_mem`, and Docker's default `/dev/shm` is 64 MB. On PG14 in `pg-test:14` that is a
+67,145,216 byte request against 64 MB, so the vacuum failed outright:
+
+```
+ERROR:  could not resize shared memory segment "/PostgreSQL.573425660" to 67145216 bytes:
+        No space left on device
+```
+
+The script then carried on and printed timings for an unvacuumed, unanalysed table: 9.0 s where 2.3 s
+was the truth, and 1.2 s for a 1 ms window that should be free. It now uses
+`VACUUM (ANALYZE, PARALLEL 0)` and, more importantly, **refuses to report any timing if the vacuum
+fails**, printing the underlying error and exiting non-zero. A benchmark that cannot report its own
+broken state is worse than no benchmark, and this is the same failure mode this project keeps
+fighting: a check that does not run, mistaken for a check that passed.
+
+Figures already in `docs/history.md` are PostgreSQL 18, where the vacuum succeeds, so they are
+unaffected. Stated rather than assumed.
+
 ## 1.1.4 (2026-10-07)
 
 1.1.4: one addition, and the design question it settles
