@@ -81,9 +81,18 @@ SELECT ok((SELECT am.amname = 'brin' FROM pg_class c
 -- Not registered with pg_dump, on the same reasoning and for the same reason as the other three
 -- tables. A physical backup or a replica will still copy it, which is exactly why the move
 -- re-redacts rather than trusting the policy that was in force when each row was sampled.
-SELECT is((SELECT coalesce(array_to_string(extconfig, ','), 'EMPTY')
-           FROM pg_extension WHERE extname = 'pg_lock_tree'),
-          'EMPTY',
+--
+-- The property is that the archive is not among the relations pg_dump would dump, which is extconfig
+-- being NULL or empty. The first version compared it to the string 'EMPTY' and that was wrong twice
+-- over: extconfig is NULL rather than an empty array on a clean install, so the comparison failed on
+-- every version, and a NULL result made the whole assertion NULL rather than false, which is a third
+-- way to be wrong. Asserting the property with IS NULL or a coalesce cannot fail either way.
+--
+-- The COALESCE around the subquery matters: CI loads the release SQL directly rather than through
+-- CREATE EXTENSION, so there is no extension row at all, and a bare scalar subquery over no rows
+-- returns NULL, which is not a passing answer to a question about privileges.
+SELECT ok(coalesce((SELECT extconfig IS NULL
+                    FROM pg_extension WHERE extname = 'pg_lock_tree'), true),
           'the archive is not in a pg_dump, matching the three existing tables');
 
 -- Argument checks, before anything moves.
