@@ -16,18 +16,16 @@ you want to know the scanner is live. Its logic is verified locally against the 
 detect-secrets 1.5.0: the planted key is reported once as AWS Access Key on `canary_secret.txt`
 line 1, and a real scan of the checkout is still 0 findings.
 
-**The eight install-path checks can now run in CI.** `check-upgrade`, `check-install`,
-`check-schema`, `check-examples`, `check-alert`, `check-deadlock`, `scenarios/run.sh` and
-`demo.sql` all gate on a `pg_extension` row, and the pgTAP matrix loads the release SQL directly
-instead, so they had never run in CI. A new `install-path-checks` job starts its own Postgres from
-the same image with the checkout mounted, copies the extension files in, and runs all eight.
+**The eight install-path checks remain blocked, and no longer for the reason recorded.** They gate
+on a `pg_extension` row and the matrix loads the release SQL directly, so they have never run in CI.
+The recorded blocker was that the service container held an older baked copy of the extension, which
+would have needed rebuilt images and a `write:package` decision. That is wrong: the image contains
+no `pg_lock_tree` files at all.
 
-No image rebuild is involved. The recorded assumption was that the service container held an older
-baked copy of the extension: it holds **no** copy at all, verified against `apjapj/pg-test:18`. So
-there was no version skew to correct and `write:package` was never needed for this.
-
-All eight verified passing locally through the job's own steps. The one unproven part is whether the
-runner gives a job access to `docker`; see `docs/roadmap.md`.
+A job that started its own Postgres with the checkout mounted, and ran all eight, worked perfectly
+by hand against the real image and failed in 9 seconds in CI. A job container has no `docker`
+binary; `code.forgejo.org/forgejo/runner:12` has neither docker nor psql. The job has been removed
+rather than left permanently red. The way forward, and the reasoning, are in `docs/roadmap.md`.
 
 ## 1.1.5 (2026-10-07)
 

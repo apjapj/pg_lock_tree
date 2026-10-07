@@ -234,51 +234,51 @@ about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month,
   beside it is consistent with that, since its worst node is not an index-only scan. That is a
   hypothesis, not a finding.
 
-## The eight checks, and how they got into CI
+## The eight checks: blocked on runner capability, not on images
 
-The six `scripts/check-*.sh`, plus `scenarios/run.sh` and `demo.sql`, all gate on a row in
-`pg_extension`, which exists only if the extension was installed with `CREATE EXTENSION`. The pgTAP matrix deliberately
-does not do that: it loads the release SQL straight into `public`, because the server is a separate
-service container. So for as long as that has been true, these eight could not run in CI at all.
+`scripts/check-*.sh` (six of them), `scenarios/run.sh` and `demo.sql` all gate on a row in
+`pg_extension`, which exists only if the extension was installed with `CREATE EXTENSION`. The pgTAP
+matrix deliberately loads the release SQL straight into `public`, because the server is a separate
+service container. So these eight have never run in CI.
 
-**The image was never the obstacle.** The recorded assumption was that the service container held
-some older baked copy of the extension, so the fix was thought to need rebuilt images and a
-`write:package` decision. Checked: `apjapj/pg-test:18` contains **zero** `pg_lock_tree` files. There
-is no version skew to correct and nothing to rebuild. `CREATE EXTENSION` could never have worked
-there, for a reason that has nothing to do with which version is baked in.
+**The image is not the obstacle, and the recorded reason was wrong.** The assumption was that the
+service container held an older baked copy, so the fix was thought to need rebuilt images and a
+`write:package` decision. Checked: `apjapj/pg-test:18` contains **zero** `pg_lock_tree` files. Not a
+stale version, none at all. There is no version skew to correct.
 
-**What runs instead.** A second job in `.forgejo/workflows/test.yml`, `install-path-checks`, starts
-its own Postgres from the same image with the checkout mounted at `/src`, copies
-`pg_lock_tree.control` and the release SQL into the server's extension directory, and then runs all
-eight. It needs no rebuilt image and no registry write, so it stays in this repository rather than
-becoming infrastructure work. One version, PostgreSQL 18, because these checks are about the install
-path rather than about a version's behaviour.
+**What was tried, and why it failed.** A job that started its own Postgres from the same image with
+the checkout mounted, copied the extension files in, ran `CREATE EXTENSION`, and ran all eight. It
+worked perfectly by hand, verified end to end against the real image from a clean container: 0 files
+before the copy and 50 after, `CREATE EXTENSION` reporting 1.1.5, all eight passing. Pushed, it
+failed in 9 seconds while every matrix job passed.
 
-**Verified locally, end to end.** The job's steps were run by hand against the real image, from a
-clean container: 0 `pg_lock_tree` files before the copy and 50 after, `CREATE EXTENSION` succeeding
-and reporting 1.1.5, and all eight checks passing.
+The cause is that a job container has no `docker` binary. Checked directly:
+`code.forgejo.org/forgejo/runner:12`, which is the image jobs run in, has neither `docker` nor
+`psql`. So the step died on `docker: command not found` before it started anything. That the exact
+error is an inference, not an observation: the job log is at
+`/actions/jobs/{id}/logs`, which returns 404 at `read:repository`, so the message cannot be read
+from here. The 9-second duration and the absence of the binary are both consistent with it and with
+nothing else.
 
-Two bugs were found this way and both are the kind a green CI run would have hidden rather than
-shown.
+The job has been removed rather than left failing. A permanently red context is worse than an
+absent one: it trains everyone to ignore the job list.
 
-The container was started with no published port, so `docker port` returned nothing, `PGPORT` came
-out empty, and every check would have dialled 127.0.0.1:5432 where nothing was listening. Six
-failures, none of them about the extension.
+**Two ways forward, and the second is the one I would take.**
 
-The second draft copied the files and stopped, never running `CREATE EXTENSION`, and four of the
-eight then failed with `pg_lock_tree is not installed in this database`. Copying the files is not
-installing the extension: the row every one of these checks gates on appears only when
-`CREATE EXTENSION` runs. An earlier hand-run had done that by hand, which is exactly how the gap
-survived being "verified" once.
+Install a PostgreSQL server inside the job from the PGDG repository and run the checks against it
+directly, no container and no docker. The job would then own its own filesystem, so it could copy
+the extension files into its own `share/extension` itself. Self-contained in this repository, at the
+cost of a heavier apt step per job.
 
-**Not verified.** The job has never run, because nothing has dispatched it. What is unproven is
-whether the runner gives a job access to `docker`, which it provides by mounting
-`/var/run/docker.sock`. Every step below that line is verified; the line itself is not. If it turns
-out not to reach the job, the fallback is to bake the extension into the image, which is
-`pg-dev-infra` work and would want a `write:package` decision first.
+Or give the runner's job image a docker CLI and mount `/var/run/docker.sock` into job containers.
+That is **infrastructure**, it belongs in `pg-dev-infra`, and it is a change to a runner shared with
+`book-platform`, so it should not be made as a side effect of work in this repository.
 
-**A deliberate omission.** The checks are listed by name rather than globbed, so adding a file
-cannot silently change what CI runs.
+**Two lessons worth keeping regardless.** The by-hand verification passed and CI still failed,
+because by-hand ran on a host with docker and the job container does not have it. Verifying a
+workflow step on the machine you are sitting at is not the same as verifying it in the runner's
+environment. And a 9-second failure is not a flaky test, it is a missing binary: check the
+environment before believing a timing.
 
 ## Considered and not planned
 
