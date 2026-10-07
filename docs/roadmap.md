@@ -322,8 +322,8 @@ fail on its first line.
   penalty on a query that costs two seconds. The retention benefit is real and is still bought with
   `TRUNCATE` where it can be, which is documented in
   [docs/history.md](history.md#retiring-old-history).
-- **An archive table for old history, with BRIN.** Measured on the 365-day fixture rather than
-  assumed, and the interesting half is a negative result. The index shape is excellent:
+- **An archive table for old history, with BRIN, on a weekly cadence.** Measured on the 365-day
+  fixture rather than assumed, and the interesting half is a negative result. The index shape is excellent:
   `corr(sampled_at, block) = 1.000000`, and BRIN on `sampled_at` is 1336 kB against 475 MB for the
   b-tree on the same 63M rows, while still serving a 30-day range. The shape does not pay for
   itself, for two reasons that only measurement would have found.
@@ -338,9 +338,22 @@ fail on its first line.
 
   Worth recording that the alerting path is not a factor in this at all: `lock_tree_notify()` reads
   `lock_tree_wide()` and `lock_tree_alert`, never `lock_tree_history`, and measures 6 to 24 ms on 63M
-  rows. Keeping a year has never been in tension with alerting on it. The costs, the BRIN recipe and
-  the reason the read functions cannot see an archive are all in
-  [docs/history.md](history.md#retiring-old-history).
+  rows. Keeping a year has never been in tension with alerting on it.
+
+  **A cadence changes the verdict on the cost, and dissolves one of the objections.** Moving the
+  whole year in one statement is 298 s; moving a week at a time is **1.8 s**, measured, with the peak
+  disk penalty bounded by one week instead of the entire archive. More usefully, the high-water-mark
+  objection does not apply to a table pruned on a fixed cycle: it grows to its window plus one cycle
+  and is pruned back, so the high-water mark is the steady state and the file never exceeds it. That
+  needs no `TRUNCATE` and no `ACCESS EXCLUSIVE` rewrite, which is the part this entry previously
+  treated as unavoidable.
+
+  What survives is the hot-set win and the API gap. A 30-day hot window on a weekly archive makes the
+  hot table 2.8 GB instead of 28.1 GB, ten times smaller, for about two seconds of copying a week.
+  Total disk is a wash. And the read functions still cannot see the archive, so a `since` window
+  silently truncates to what is hot, which is the one problem a cadence does not solve and the reason
+  this stays on the list rather than shipping. The costs, the BRIN recipe and the cadence arithmetic
+  are all in [docs/history.md](history.md#retiring-old-history).
 - **Registering the tables for `pg_dump`.** Decided against, with reasons per table, and the decision
   is now pinned by a test and written up in [`INSTALL.md`](../INSTALL.md#backups-and-restores). The short
   version: `lock_tree_history` grows without bound and describes pids and timestamps that mean

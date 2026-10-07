@@ -48,6 +48,30 @@ The roadmap's open question of how large a history is too large is answered: the
 because reads cost what you ask for rather than what you keep, and the binding constraint is a disk
 budget rather than a cliff.
 
+**Archiving on a cadence costs about two seconds a week, which dissolves the high-water-mark
+problem rather than paying it.** The 298 s figure recorded above is what moving the whole year in one
+statement costs, and treating it as the number to plan against is the mistake. Measured, a week's
+worth of rows at the fixture's rate, 1,209,600 rows into a table carrying only a BRIN index, takes
+**1.8 s** with a peak disk penalty of one week rather than the whole archive.
+
+That matters because the high-water-mark trap was documented here as an unavoidable tax on any table
+that has held a lot of data, and that framing was wrong. The trap is not holding a lot of data, it
+is **growing a retention and then shrinking it**: the file was sized for the peak and the space is
+reusable but never returned. A table pruned on a fixed cycle never gets there. It grows to its window
+plus one cycle and is pruned back, so the high-water mark **is** the steady state and the file never
+exceeds it. No `TRUNCATE`, because the table is never emptied, and no `VACUUM FULL` under
+`ACCESS EXCLUSIVE`.
+
+For a year with 30 days hot and a weekly archive, production-shaped query text: the hot table goes
+from 28.1 GB to **2.8 GB**, ten times smaller, which is the part that matters on a busy server. Total
+disk is a wash, 30.9 GB against 28.1 GB, because the archive carries only a BRIN index and so pays
+almost none of the per-row index overhead, 124 MB against 170 MB on the same 1,209,600 rows. So the
+benefit is a smaller hot set, not a smaller bill.
+
+What a cadence does **not** fix is that the shipped read functions read `lock_tree_history` and
+nothing else, so archived rows are invisible to them and a `since` window silently truncates to what
+is still hot. That is the remaining cost, and it is an API question rather than a tuning one.
+
 **The visibility-map hypothesis is refuted, not merely unproven.** The roadmap carried it as the
 leading remaining candidate for why the read cost might follow retention: at 63 million rows and
 14 GB of constant appends, autovacuum was expected to fall behind, pages would stop being marked

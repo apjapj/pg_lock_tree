@@ -356,6 +356,10 @@ made it look like the slowest thing in the extension before 1.1.0 corrected the 
 3. **Prune on a schedule, with the batched procedure.** See below.
 4. **Budget the disk at the high-water mark, not at your current retention.** Nothing returns the
    space except `TRUNCATE` on an empty table. See below, where this is measured on a 63M-row table.
+   **Unless you archive on a cadence**, which removes the trap rather than paying it: a table pruned
+   on a fixed cycle never exceeds its window plus one cycle, so its high-water mark is its steady
+   state and the file never grows past it. The tax falls on installations that grew their retention
+   and then cut it. See [Move data on a cadence](#move-data-on-a-cadence-and-the-cost-collapses).
 5. **If a year is genuinely the goal, stop storing query text for old samples.** A row would go from
    410 to 93 bytes and a year from 28 GB to 6.4 GB. This is a trade rather than an optimisation: you
    give up being able to see what statement was running months ago. It is the only change that
@@ -385,9 +389,14 @@ vacuumed:
 `VACUUM FULL` held `ACCESS EXCLUSIVE` for **260 seconds** on a table with 63M live rows, and
 reclaimed 26 MB, because 62.9M rows genuinely need that space. Reclaiming disk is not a function of
 how much you deleted; it is a function of how little you kept. **Only `TRUNCATE` returns space, and
-only when the table is genuinely empty.** On a table you intend to keep filling, `TRUNCATE` is not
-an option, so budget the disk at the high-water mark. The two escape hatches are a coarser sampling
-interval or a shorter retention, both above.
+only when the table is genuinely empty.**
+
+Two consequences, and the second is the useful one. If you keep a long retention and then shorten
+it, you are left holding the peak forever, so size the disk for the largest retention you intend to
+run. But if you prune **on a fixed cadence**, you never reach that state: the table grows to your
+window plus one cycle and is pruned back, so the high-water mark is the steady state and the file
+never exceeds it. No `TRUNCATE` is needed, because the table is never emptied. The escape hatches
+above, a coarser interval or a shorter retention, remain available.
 
 **Keep autovacuum ahead of the sample rate.** The history is appended to continuously, and an
 index-only scan on it can only skip the heap where the visibility map is set. Measured on the
@@ -433,6 +442,62 @@ If the plan is to move old history out of the cluster entirely, then exporting i
 and the archive table is just a staging area you should drop once the export lands. If the plan is to
 keep it queryable in place, you pay double disk for it and you still have the hot table at its
 high-water mark.
+
+### Move data on a cadence, and the cost collapses
+
+The 298 seconds above is what a **once-off, whole-table** move costs. It is not what a scheduled job
+costs, and treating it as the number to plan against is the mistake. Measured on a week's worth of
+rows at the fixture's rate, 1,209,600 rows, into a table carrying only a BRIN index:
+
+| move | rows | time | peak disk penalty |
+|---|---|---|---|
+| the whole year at once | 61,862,400 | 298 s | the entire archive, roughly 9.5 GB |
+| one week at a time | 1,209,600 | **1.8 s** | one week, 124 MB |
+
+A weekly job moves a year of history for about two seconds of copying per run, and the transient
+disk cost is bounded by one week rather than by the whole archive. Nothing about the copy is
+unusual at that size; it is an ordinary bulk insert.
+
+**And a steady cadence removes the high-water-mark problem entirely, without a `TRUNCATE`.** This is
+the part worth taking away, because the paragraphs above make it sound unavoidable. The trap is not
+"a table that has held a lot of data stays big". It is **growing your retention and then shrinking
+it**: the file was sized for the peak, the peak has passed, and the space is reusable but not
+returned. A table on a steady weekly cycle never experiences that. It grows to your window plus one
+cycle, is pruned back to your window, and repeats, so **the high-water mark is the steady state and
+the file never grows past it**. No `TRUNCATE`, no `VACUUM FULL`, no `ACCESS EXCLUSIVE` rewrite.
+
+What you get for a year, keeping 30 days hot and archiving weekly:
+
+| | today | weekly cadence |
+|---|---|---|
+| hot table | 28.1 GB, 365 days, 4 indexes | **2.8 GB, 37 days, 4 indexes** |
+| archive | none | 28.1 GB, 328 days, BRIN only |
+| total | 28.1 GB | 30.9 GB |
+
+Production-shaped query text, at the 478 bytes a row measured above. Two things to read out of that.
+**The hot table is ten times smaller**, which is the part that matters on a busy server, since a
+2.8 GB table competing for `shared_buffers` is a different proposition from a 28 GB one and whole-window
+reads get proportionally cheaper. And **total disk is roughly a wash**, 30.9 GB against 28.1 GB,
+because the archive carries only a BRIN index and so pays almost none of the 68 bytes a row of index
+overhead: on the same 1,209,600 rows, four indexes cost 170 MB and BRIN alone costs 124 MB.
+
+The archive figure above is the projection for a BRIN-indexed archive and the 170 MB against 124 MB
+is measured; the 28.1 GB is the table above multiplied by 328/365. Treat the total as a wash to
+within a few percent rather than as a figure.
+
+So this is not a disk saving. It is a **hot-set** saving, bought for two seconds a week.
+
+### The cost that a cadence does not remove
+
+The shipped read functions read `lock_tree_history` and nothing else. **Archived rows are invisible
+to them**, so `lock_tree_incidents(since => interval '90 days')` against a 30-day hot window returns
+90 days of incidents truncated to 30, silently, because the function cannot see rows that are not
+there. That is the one thing a cadence does not fix, and it is the reason none of this is built in.
+
+If you want a year queryable, the archive has to be reachable by something. Either you accept
+hand-written SQL for anything crossing the boundary, or the extension grows a way to read across
+both. That is a real API decision rather than a tuning knob, and it is worth making deliberately
+rather than discovering it the first time a quarterly report comes back short.
 
 ### If you do keep an archive table, index it with BRIN and nothing else
 
