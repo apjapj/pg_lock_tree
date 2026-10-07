@@ -4,6 +4,23 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## Unreleased
+
+### Two things the 1.1.6 release taught, recorded rather than edited into a frozen release
+
+**A test assertion in 1.1.6 was wrong and CI caught it.** `test/23_archive.sql` compared
+`pg_extension.extconfig` to the string `EMPTY`; on a clean install it is `NULL`, so the assertion
+failed on every version. It passed locally only because the database it was written against had been
+set up by an earlier `CREATE EXTENSION`, and the two install paths were never checked against each
+other. The deeper fault is that the assertion returned `NULL` rather than false, which pgTAP reports
+as "test result was NULL": not a failure a reader can diagnose from the test's own name. Fixed in
+`715046b` and verified on all six versions through both install paths, 464 tests each.
+
+**The prove-the-scan-can-fail canary has now fired on a real release tag**, successful in 20s, rather
+than on the throwaway probe tag that proved the trigger worked. That is the case the trigger was
+opened for, and it is worth recording separately from the release because the release itself is
+already tagged and must not be rewritten to mention it.
+
 ## 1.1.6 (2026-10-08)
 
 A cold tier, and one function. `lock_tree_history_archive` is a second table with the same columns as
