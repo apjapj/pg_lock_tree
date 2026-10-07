@@ -70,10 +70,14 @@ jobs:
       PGDATABASE: postgres
     steps:
       - uses: actions/checkout@v4
-      - name: Client tools
-        run: |
-          apt-get update -q
-          apt-get install -y -q --no-install-recommends postgresql-client libtap-parser-sourcehandler-pgtap-perl
+        # No apt step, and that is the point of the babar-pg image: it carries
+        # postgresql-client-18, pg_prove and libtap-parser-sourcehandler-pgtap-perl, so the matrix
+        # used to pay an apt-get per job to install what was already present. Verified in
+        # apjapj/pg-runner:18: pg_prove takes a test file to PASS with nothing installed first.
+        #
+        # It also drops the last per-job dependency on the Debian mirror being reachable, which is
+        # the fragility secrets.yml was refactored away from: a security gate should not depend on
+        # the Debian mirror at job time.
       - name: Wait for Postgres
         run: until pg_isready -q; do sleep 1; done
       - name: Load pg_lock_tree into public
@@ -143,7 +147,16 @@ jobs:
           pg-start
           make install
           psql -qX -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pg_lock_tree"
-          psql -X -tAc "SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_lock_tree'"
+          # Assert, do not print. A bare SELECT reports whatever is installed and is then
+          # discarded, so a partial or stale `make install` would pass unnoticed. This is the one
+          # thing that must not drift: these checks exist to test THIS working tree, not whatever
+          # the image happened to carry.
+          want=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" pg_lock_tree.control)
+          got=$(psql -X -tAc "SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree'")
+          echo "control says ${want}, server loaded ${got}"
+          [ -n "$want" ] && [ "$got" = "$want" ] || {
+            echo "the loaded version is not this checkout" >&2; exit 1;
+          }
 
       - name: Run all 8 checks
         run: |
