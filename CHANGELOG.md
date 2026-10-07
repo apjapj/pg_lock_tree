@@ -8,13 +8,17 @@ selects a release.
 
 ### CI, tooling
 
-**The prove-the-scan-can-fail job can now actually run.** It was gated on `workflow_dispatch` with
-an opt-in `prove` input, and `on: push` was branches-only, so the job had no reachable trigger and
-had never once run. A canary nobody has seen pass is not a canary. It now also runs on release
-tags, which is the right cadence: releases are rare and deliberate, and a release is exactly when
-you want to know the scanner is live. Its logic is verified locally against the pinned
-detect-secrets 1.5.0: the planted key is reported once as AWS Access Key on `canary_secret.txt`
-line 1, and a real scan of the checkout is still 0 findings.
+**The prove-the-scan-can-fail job can now actually run, and has.** It was gated on
+`workflow_dispatch` with an opt-in `prove` input, and `on: push` was branches-only, so the job had no
+reachable trigger and had never once run. A canary nobody has seen pass is not a canary. It now
+also runs on release tags, which is the right cadence: releases are rare and deliberate, and a
+release is exactly when you want to know the scanner is live.
+
+Verified three ways. Both steps were run by hand inside `node:20-bookworm`, the image `docker`
+resolves to: `venv --without-pip` plus get-pip.py works there despite there being no pip, and the
+planted key is reported once as AWS Access Key on `canary_secret.txt` line 1 while a real scan of
+the checkout is still 0 findings. Then the job itself was made to run, on a throwaway tag pushed
+for the purpose and deleted straight afterwards: **successful in 21s**.
 
 **The eight install-path checks now run in CI.** `scripts/check-*.sh` (six), `scenarios/run.sh` and
 `demo.sql` all gate on a `pg_extension` row, and the pgTAP matrix loads the release SQL directly
