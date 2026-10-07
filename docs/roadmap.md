@@ -234,6 +234,52 @@ about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month,
   beside it is consistent with that, since its worst node is not an index-only scan. That is a
   hypothesis, not a finding.
 
+## The eight checks, and how they got into CI
+
+The six `scripts/check-*.sh`, plus `scenarios/run.sh` and `demo.sql`, all gate on a row in
+`pg_extension`, which exists only if the extension was installed with `CREATE EXTENSION`. The pgTAP matrix deliberately
+does not do that: it loads the release SQL straight into `public`, because the server is a separate
+service container. So for as long as that has been true, these eight could not run in CI at all.
+
+**The image was never the obstacle.** The recorded assumption was that the service container held
+some older baked copy of the extension, so the fix was thought to need rebuilt images and a
+`write:package` decision. Checked: `apjapj/pg-test:18` contains **zero** `pg_lock_tree` files. There
+is no version skew to correct and nothing to rebuild. `CREATE EXTENSION` could never have worked
+there, for a reason that has nothing to do with which version is baked in.
+
+**What runs instead.** A second job in `.forgejo/workflows/test.yml`, `install-path-checks`, starts
+its own Postgres from the same image with the checkout mounted at `/src`, copies
+`pg_lock_tree.control` and the release SQL into the server's extension directory, and then runs all
+eight. It needs no rebuilt image and no registry write, so it stays in this repository rather than
+becoming infrastructure work. One version, PostgreSQL 18, because these checks are about the install
+path rather than about a version's behaviour.
+
+**Verified locally, end to end.** The job's steps were run by hand against the real image, from a
+clean container: 0 `pg_lock_tree` files before the copy and 50 after, `CREATE EXTENSION` succeeding
+and reporting 1.1.5, and all eight checks passing.
+
+Two bugs were found this way and both are the kind a green CI run would have hidden rather than
+shown.
+
+The container was started with no published port, so `docker port` returned nothing, `PGPORT` came
+out empty, and every check would have dialled 127.0.0.1:5432 where nothing was listening. Six
+failures, none of them about the extension.
+
+The second draft copied the files and stopped, never running `CREATE EXTENSION`, and four of the
+eight then failed with `pg_lock_tree is not installed in this database`. Copying the files is not
+installing the extension: the row every one of these checks gates on appears only when
+`CREATE EXTENSION` runs. An earlier hand-run had done that by hand, which is exactly how the gap
+survived being "verified" once.
+
+**Not verified.** The job has never run, because nothing has dispatched it. What is unproven is
+whether the runner gives a job access to `docker`, which it provides by mounting
+`/var/run/docker.sock`. Every step below that line is verified; the line itself is not. If it turns
+out not to reach the job, the fallback is to bake the extension into the image, which is
+`pg-dev-infra` work and would want a `write:package` decision first.
+
+**A deliberate omission.** The checks are listed by name rather than globbed, so adding a file
+cannot silently change what CI runs.
+
 ## Considered and not planned
 
 - **Cross-database.** The extension lives in each database, as all extensions do, so a queue on

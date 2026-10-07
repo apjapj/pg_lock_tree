@@ -4,6 +4,31 @@ All notable changes to `pg_lock_tree` are recorded here. Versions follow the ext
 `default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
 selects a release.
 
+## Unreleased
+
+### CI, tooling
+
+**The prove-the-scan-can-fail job can now actually run.** It was gated on `workflow_dispatch` with
+an opt-in `prove` input, and `on: push` was branches-only, so the job had no reachable trigger and
+had never once run. A canary nobody has seen pass is not a canary. It now also runs on release
+tags, which is the right cadence: releases are rare and deliberate, and a release is exactly when
+you want to know the scanner is live. Its logic is verified locally against the pinned
+detect-secrets 1.5.0: the planted key is reported once as AWS Access Key on `canary_secret.txt`
+line 1, and a real scan of the checkout is still 0 findings.
+
+**The eight install-path checks can now run in CI.** `check-upgrade`, `check-install`,
+`check-schema`, `check-examples`, `check-alert`, `check-deadlock`, `scenarios/run.sh` and
+`demo.sql` all gate on a `pg_extension` row, and the pgTAP matrix loads the release SQL directly
+instead, so they had never run in CI. A new `install-path-checks` job starts its own Postgres from
+the same image with the checkout mounted, copies the extension files in, and runs all eight.
+
+No image rebuild is involved. The recorded assumption was that the service container held an older
+baked copy of the extension: it holds **no** copy at all, verified against `apjapj/pg-test:18`. So
+there was no version skew to correct and `write:package` was never needed for this.
+
+All eight verified passing locally through the job's own steps. The one unproven part is whether the
+runner gives a job access to `docker`; see `docs/roadmap.md`.
+
 ## 1.1.5 (2026-10-07)
 
 1.1.5: bound the waiter side of the root-to-waiter join, and correct 1.1.4
