@@ -16,16 +16,19 @@ you want to know the scanner is live. Its logic is verified locally against the 
 detect-secrets 1.5.0: the planted key is reported once as AWS Access Key on `canary_secret.txt`
 line 1, and a real scan of the checkout is still 0 findings.
 
-**The eight install-path checks remain blocked, and no longer for the reason recorded.** They gate
-on a `pg_extension` row and the matrix loads the release SQL directly, so they have never run in CI.
-The recorded blocker was that the service container held an older baked copy of the extension, which
-would have needed rebuilt images and a `write:package` decision. That is wrong: the image contains
-no `pg_lock_tree` files at all.
+**The eight install-path checks now run in CI.** `scripts/check-*.sh` (six), `scenarios/run.sh` and
+`demo.sql` all gate on a `pg_extension` row, and the pgTAP matrix loads the release SQL directly
+instead, so they had never run. The recorded blocker was wrong: the service container was thought to
+hold an older baked copy of the extension, but the image contains no `pg_lock_tree` files at all.
 
-A job that started its own Postgres with the checkout mounted, and ran all eight, worked perfectly
-by hand against the real image and failed in 9 seconds in CI. A job container has no `docker`
-binary; `code.forgejo.org/forgejo/runner:12` has neither docker nor psql. The job has been removed
-rather than left permanently red. The way forward, and the reasoning, are in `docs/roadmap.md`.
+A job that started its own Postgres with the checkout mounted worked perfectly by hand and failed
+in 9 seconds in CI, because a job container has no `docker` binary. What works is a dedicated job
+image built in `pg-dev-infra` (`apjapj/pg-runner:18-20261007`) carrying PostgreSQL 18, pg_cron,
+pgTAP and the toolchain, with the runner's `babar-pg` label pointing at it and `docker` untouched.
+The job needs no apt, no docker and no socket: `pg-start`, `make install`, `CREATE EXTENSION`.
+
+All eight pass in CI on PostgreSQL 18, in about 1m50s. See `docs/roadmap.md` for the four bugs
+found on the way, all of which a green run would have hidden.
 
 ## 1.1.5 (2026-10-07)
 

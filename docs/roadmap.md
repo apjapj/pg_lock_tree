@@ -234,51 +234,55 @@ about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month,
   beside it is consistent with that, since its worst node is not an index-only scan. That is a
   hypothesis, not a finding.
 
-## The eight checks: blocked on runner capability, not on images
+## The eight checks: running, via a pre-baked runner image
 
 `scripts/check-*.sh` (six of them), `scenarios/run.sh` and `demo.sql` all gate on a row in
 `pg_extension`, which exists only if the extension was installed with `CREATE EXTENSION`. The pgTAP
 matrix deliberately loads the release SQL straight into `public`, because the server is a separate
-service container. So these eight have never run in CI.
+service container, so for most of this project's life these eight could not run in CI at all.
 
-**The image is not the obstacle, and the recorded reason was wrong.** The assumption was that the
-service container held an older baked copy, so the fix was thought to need rebuilt images and a
-`write:package` decision. Checked: `apjapj/pg-test:18` contains **zero** `pg_lock_tree` files. Not a
-stale version, none at all. There is no version skew to correct.
+**The image was never the obstacle.** The recorded assumption was that the service container held
+an older baked copy of the extension, so the fix was thought to need rebuilt images and a
+`write:package` decision. Checked: `apjapj/pg-test:18` contains **zero** `pg_lock_tree` files. Not
+a stale version, none at all. There was no version skew to correct.
 
-**What was tried, and why it failed.** A job that started its own Postgres from the same image with
-the checkout mounted, copied the extension files in, ran `CREATE EXTENSION`, and ran all eight. It
-worked perfectly by hand, verified end to end against the real image from a clean container: 0 files
-before the copy and 50 after, `CREATE EXTENSION` reporting 1.1.5, all eight passing. Pushed, it
-failed in 9 seconds while every matrix job passed.
+**What did not work, and why it is worth keeping.** A job that started its own Postgres from the
+same image with the checkout mounted, copied the extension files in, ran `CREATE EXTENSION` and ran
+all eight, worked perfectly by hand against the real image. Pushed, it **failed in 9 seconds** while
+every matrix job passed. A job container has no `docker` binary: `node:20-bookworm`, which is what
+jobs run in, has neither docker nor psql. That the error is literally `command not found` is an
+inference, not an observation, since `/actions/jobs/{id}/logs` 404s at `read:repository`; the
+9-second duration and the absent binary are consistent with it and with nothing else.
 
-The cause is that a job container has no `docker` binary. Checked directly:
-`code.forgejo.org/forgejo/runner:12`, which is the image jobs run in, has neither `docker` nor
-`psql`. So the step died on `docker: command not found` before it started anything. That the exact
-error is an inference, not an observation: the job log is at
-`/actions/jobs/{id}/logs`, which returns 404 at `read:repository`, so the message cannot be read
-from here. The 9-second duration and the absence of the binary are both consistent with it and with
-nothing else.
+**What works.** `pg-dev-infra` builds a dedicated job image, `apjapj/pg-runner:18-20261007`, from
+`node:20-bookworm` with PostgreSQL 18, `pg_cron`, `pg_stat_statements`, pgTAP, the TAP parser,
+`make` and `gcc` baked in, plus a `pg-start` helper that brings up a preconfigured cluster on
+localhost. The runner's `babar-pg` label names it; `docker` is untouched, so `book-platform`,
+`lint.yml` and `secrets.yml` are unaffected. The job then needs no apt, no docker and no socket:
 
-The job has been removed rather than left failing. A permanently red context is worse than an
-absent one: it trains everyone to ignore the job list.
+```bash
+pg-start
+make install
+psql -c "CREATE EXTENSION pg_lock_tree"
+```
 
-**Two ways forward, and the second is the one I would take.**
+This is the option I called "install PostgreSQL in the job", with the install moved to image build
+time and owned by `pg-dev-infra`, which is where it belongs. I should have reached for the image
+rather than the job.
 
-Install a PostgreSQL server inside the job from the PGDG repository and run the checks against it
-directly, no container and no docker. The job would then own its own filesystem, so it could copy
-the extension files into its own `share/extension` itself. Self-contained in this repository, at the
-cost of a heavier apt step per job.
+Verified end to end: all eight pass locally in the image, and in CI the `install-path checks` job
+runs them on PostgreSQL 18 in about 1m50s. One version, not the matrix, because these are about
+the install path rather than a version's behaviour. The checks are listed by name rather than
+globbed, so adding a file cannot silently change what CI runs.
 
-Or give the runner's job image a docker CLI and mount `/var/run/docker.sock` into job containers.
-That is **infrastructure**, it belongs in `pg-dev-infra`, and it is a change to a runner shared with
-`book-platform`, so it should not be made as a side effect of work in this repository.
+**Four bugs found along the way**, all of the kind a green run hides rather than shows. The
+container was started with no published port, so `PGPORT` was empty and every check dialled a port
+where nothing listened. The files were copied but `CREATE EXTENSION` never ran, so four of the eight
+failed with "not installed in this database": copying files is not installing the extension. The
+image tag carried no registry host, so the push went to `docker.io` and failed with
+`insufficient_scope`. And `pg-start` exited non-zero on a second call, so a reused container would
+fail on its first line.
 
-**Two lessons worth keeping regardless.** The by-hand verification passed and CI still failed,
-because by-hand ran on a host with docker and the job container does not have it. Verifying a
-workflow step on the machine you are sitting at is not the same as verifying it in the runner's
-environment. And a 9-second failure is not a flaky test, it is a missing binary: check the
-environment before believing a timing.
 
 ## Considered and not planned
 
