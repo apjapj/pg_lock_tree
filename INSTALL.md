@@ -569,6 +569,18 @@ COPY (SELECT * FROM lock_tree_history WHERE sampled_at >= now() - interval '7 da
 and load it back with `COPY ... FROM`. The `sampled_at` bound matters: the whole table on a long-lived
 server is large, and the value of the history is recent.
 
+**Exporting, rather than archiving in place.** If the goal is getting old history off the cluster,
+export it. Measured on a 63M-row year of history, copying the rows older than seven days into a
+table in the same database took **298 seconds** and roughly doubled peak disk while it ran, and the
+original table still measured 9740 MB afterwards, because deleting rows does not return a file's
+high-water mark. An archive built that way costs a year of extra disk and returns none of it. A
+`COPY ... TO PROGRAM` to compressed file or Parquet has neither problem, and drops the query text
+saving 77% of a row if you do not need it in the archive.
+
+The full costs, the BRIN recipe for anyone who does want an archive table queryable in place, and why
+the shipped read functions will not see it are in
+[docs/history.md](docs/history.md#retiring-old-history).
+
 ## Troubleshooting
 
 **`permission denied for view lock_tree`**, the most common one. You granted

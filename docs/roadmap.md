@@ -54,6 +54,13 @@ about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month,
 `--days`. `lock_tree_duration()`, beside it in the same runs, stayed between 2.0 and 2.6 s. Not yet
   diagnosed, and the suspect this entry used to name has since been measured and refuted.
 
+  **Closed, and closed by the fix rather than by a better plan.** 1.1.5 stated the window bound on
+  the waiter side of the join, and the 365-day fixture then confirmed it end to end: **1.9 s** at a
+  year, against the 30.3 s projected here and the 2.3 s a week of retention cost under 1.1.2. The
+  year is now cheaper than the week was. The projection went wrong for a reason worth keeping: it
+  extrapolated a trend the fix had already removed, which is what a per-retention figure measured
+  before a per-retention fix will always do.
+
   **The suspect it used to name is wrong, on PostgreSQL 18 at least.** The partial index keyed
   on `application_name` before `sampled_at` was the first guess, on the reasoning that a window
   predicate on a non-leading column is a filter rather than a range bound, so `qids` would read
@@ -127,13 +134,17 @@ And one more suspect was raised, wrongly refuted, and turned out to be the answe
   between the two functions on its own. The visibility-map effect may still be real at a year and
   the 365-day reading is still worth doing, but it is no longer the first place to look, and
   `duration()` being flat across retention is now explained by its plan rather than left dangling.
-  So the suspect list is shorter, not empty. The plan at 365 days is still the next thing to
-  read, now looking for a node whose buffers or heap fetches grow with total table size rather
-  than with the rows in the window. The leading remaining candidate is the visibility map: at 63
-  million rows and 14 GB with constant appends, autovacuum falls behind, pages stop being marked
-  all-visible, and index-only scans degrade into random heap fetches. `duration()` staying flat
-  beside it is consistent with that, since its worst node is not an index-only scan. That is a
-  hypothesis, not a finding.
+  **The 365-day reading has been done, and the visibility map is refuted.** The fixture reported
+`all-visible pages 1246773 of 1246773`, so autovacuum had kept up completely at 63 million rows and
+  14 GB, and the `by_application()` plan reported `Heap Fetches: 0` on its root scan. The degradation
+  this paragraph hypothesised was not present, so the hypothesis is wrong rather than merely unproven,
+  and the suspect list is now empty rather than shorter: the waiter-side join was the whole of it.
+
+  That does not make the effect impossible, it makes it a thing to watch rather than a thing to
+  predict. It would need a table growing faster than autovacuum can keep up, which is a property of
+  your write rate rather than of your retention, so it can still bite a busier installation at a
+  week. The symptom is `Heap Fetches` climbing on a plan that should not need the heap, and the
+  remedy is autovacuum settings on this one table rather than anything in the extension.
 
 ## The whole-window duration read, measured rather than assumed
 
@@ -205,34 +216,6 @@ for exactly the applications that were busiest. Measured, not reasoned: that is 
 
 So this is not a defect either, and it is recorded here because the number was quoted at the wrong
 function and that is worth correcting in public rather than quietly dropping.
-
-**Open, found while measuring 1.1.2: its cost follows retention even inside its 7-day window.** Asked
-about the same seven days, it took 2.3 s on a week of history, 3.6 s on a month, 7.4 s on 90 days and
-30.3 s on a year, single runs of [`scripts/bench-history.sh`](../scripts/bench-history.sh) at each
-`--days`. `lock_tree_duration()`, beside it in the same runs, stayed between 2.0 and 2.6 s. Not yet
-  diagnosed, and the suspect this entry used to name has since been measured and refuted.
-
-  **The suspect it used to name is wrong, on PostgreSQL 18 at least.** The partial index keyed
-  on `application_name` before `sampled_at` was the first guess, on the reasoning that a window
-  predicate on a non-leading column is a filter rather than a range bound, so `qids` would read
-  the whole index and the index grows with retention. Measured: it does not. With in-window rows
-  fixed at 2,000 and re-verified before every run, that index scan read 185 buffers and then 165
-  while 900,000 out-of-window `depth = 0` rows were added and the index grew to 38 MB. The
-  `sampled_at` predicate is a usable bound, not a filter, so `qids` is window-bounded and is not
-  the cause.
-
-  Two caveats on that refutation. It was measured on 18 only, and B-tree skip scan, which is what
-  makes a non-leading column usable here, arrived in that release. On 14 to 17 the original
-  reasoning may still hold and is worth one run rather than an assumption. And on 18 it rules out
-  this suspect, not the symptom: something still makes the cost follow retention.
-
-  So the suspect list is shorter, not empty. The plan at 365 days is still the next thing to
-  read, now looking for a node whose buffers or heap fetches grow with total table size rather
-  than with the rows in the window. The leading remaining candidate is the visibility map: at 63
-  million rows and 14 GB with constant appends, autovacuum falls behind, pages stop being marked
-  all-visible, and index-only scans degrade into random heap fetches. `duration()` staying flat
-  beside it is consistent with that, since its worst node is not an index-only scan. That is a
-  hypothesis, not a finding.
 
 ## The eight checks: running, via a pre-baked runner image
 
@@ -330,6 +313,34 @@ fail on its first line.
   is the operational pain, the answer is a documented pruning cadence, not a schema change. The
   measurements behind the original decision are in the 0.11 changelog, and
   `lock_tree_history_size()` and `lock_tree_prune_batched()` are what shipped instead.
+
+  **Re-checked against a real year of history, and the rejection holds.** The 365-day fixture
+  (63,072,020 rows, 3,153,601 samples, 14 GB) makes the case for partitioning weaker still, because
+  the read side it would have degraded is already fast: a seven-day window costs 2.1 s through
+  `duration()` and 1.9 s through `by_application()`. There is no 30 s read at a year to fix, that
+  projection having been falsified, so partitioning would now be paying a measured 38% to 203%
+  penalty on a query that costs two seconds. The retention benefit is real and is still bought with
+  `TRUNCATE` where it can be, which is documented in
+  [docs/history.md](history.md#retiring-old-history).
+- **An archive table for old history, with BRIN.** Measured on the 365-day fixture rather than
+  assumed, and the interesting half is a negative result. The index shape is excellent:
+  `corr(sampled_at, block) = 1.000000`, and BRIN on `sampled_at` is 1336 kB against 475 MB for the
+  b-tree on the same 63M rows, while still serving a 30-day range. The shape does not pay for
+  itself, for two reasons that only measurement would have found.
+
+  Copying 61,862,400 rows, everything older than seven days, into a table in the same database took
+  **298 seconds** and roughly doubled peak disk while it ran. And then the hot table still measured
+  9740 MB, unchanged, because deleting rows does not return the file's high-water mark and a plain
+  `VACUUM` does not either. So an archive built by deleting from the hot table costs a year of extra
+  disk and five minutes of `ACCESS EXCLUSIVE`-adjacent work, and returns none of it. The only thing
+  that returns space is `TRUNCATE`, and only on a table that is genuinely empty, which a table you
+  intend to keep filling never is.
+
+  Worth recording that the alerting path is not a factor in this at all: `lock_tree_notify()` reads
+  `lock_tree_wide()` and `lock_tree_alert`, never `lock_tree_history`, and measures 6 to 24 ms on 63M
+  rows. Keeping a year has never been in tension with alerting on it. The costs, the BRIN recipe and
+  the reason the read functions cannot see an archive are all in
+  [docs/history.md](history.md#retiring-old-history).
 - **Registering the tables for `pg_dump`.** Decided against, with reasons per table, and the decision
   is now pinned by a test and written up in [`INSTALL.md`](../INSTALL.md#backups-and-restores). The short
   version: `lock_tree_history` grows without bound and describes pids and timestamps that mean
@@ -353,9 +364,19 @@ fail on its first line.
 - **`pg_tle` on RDS and Aurora**, where `make install` is not possible. Being pure SQL is what makes
   it plausible. The thing most likely to fail is whether `pg_blocking_pids()` is reachable under
   `pg_tle`, so that is what to check first.
-- **How large a history is too large.** `lock_tree_history_size()` reports it and
-  `lock_tree_sampling_advice()` suggests an interval, but neither says when the read side becomes the
-  problem instead of the write side. That number is a judgement, and nobody has made it.
+- **A cheap `lock_tree_history_size()`**, which is the one function whose cost follows retention. It
+  takes 6.3 s on the 365-day fixture, 5.0 s of which is `count(DISTINCT sampled_at)` over 63M rows. A
+  `GROUP BY` rewrite measured 2.95 s on the same data, so this is a real saving and not a large one.
+  It is on the list rather than fixed because the same function reports `pg_total_relation_size`,
+  which is the file's high-water mark, so it cannot distinguish a table holding a week of rows in a
+  year-sized file from one holding a year of them. That is the more useful fix and it changes what
+  the function is for.
+- **How large a history is too large.** Asked and answered, at least for a year, by building the
+  fixture instead of reasoning about it. There is no single threshold, because retention and read
+  speed are independent: the read functions cost what you ask for, not what you keep, so a 63M-row
+  table answers a seven-day window in about two seconds. The binding constraint is disk, not query
+  time, and it is a budget rather than a cliff. Three measured numbers now carry that section, in
+  [docs/history.md](history.md#holding-more-than-a-few-weeks).
 
 ## Done, and where to read about it
 

@@ -6,6 +6,64 @@ selects a release.
 
 ## Unreleased
 
+### Documentation, from a year of history measured rather than projected
+
+No code changes. The 365-day fixture this project had only ever projected was built and run, and
+several things the documentation asserted turned out to be wrong. All of it is now measured, and the
+prose tells you the number rather than the shape of the worry.
+
+**The 365-day projection was pessimistic, and `by_application()` no longer follows retention at
+all.** `docs/history.md` carried a table predicting 30.3 s for `by_application()` at a year, against
+2.3 s at a week, extrapolating a 1.1.2 trend. Measured on 63,072,020 rows and 3,153,601 samples it is
+**1.9 s**, so the year is cheaper to read than the week was. `duration()` measured 2.1 s against a
+predicted 2.2 s, and `incidents()` over the whole year 89.0 s against a predicted 110.5 s. The
+projection had been made before 1.1.5 removed the cause, so it kept predicting the old shape; the
+general lesson, now written into the page, is that a per-retention figure measured before a fix that
+changes per-retention behaviour will mispredict indefinitely.
+
+**Keeping a year was never in tension with alerting, and that is now measured rather than asserted.**
+`lock_tree_notify()` reads `lock_tree_wide()` and `lock_tree_alert` and never reads the history
+table at all, which is a property of the shape rather than the size. On 63M rows it takes 6 to 24 ms,
+the same as on an empty table.
+
+**`lock_tree_history_size()` is the one function whose cost follows retention**, at 6.3 s on the
+fixture, 5.0 s of it `count(DISTINCT sampled_at)`. Recorded as open rather than fixed, because the
+same function reports the file's high-water mark and so cannot tell you the disk is wasted, which is
+the more useful thing it ought to say.
+
+**Archiving old history into a second table costs five minutes, doubles peak disk, and gives no disk
+back.** New section in `docs/history.md`, because this is the plan people form and it is worth having
+the numbers for. Copying 61,862,400 rows into a table in the same database took **298 s** and roughly
+doubled peak disk while it ran. The hot table then still measured 9740 MB, because deleting rows does
+not move the high-water mark and a plain `VACUUM` does not either. `VACUUM FULL` on the same table
+held `ACCESS EXCLUSIVE` for **260 s** and reclaimed 26 MB, because 62.9M live rows need that space.
+
+**Partitioning's rejection is now re-checked against a real year, and it holds.** The case for it is
+weaker, not stronger, since the read side it would penalise by a measured 38% to 203% is two seconds
+long. And **BRIN is confirmed as the right index for an archive table, should you build one**:
+`corr(sampled_at, block) = 1.000000`, and BRIN on `sampled_at` is 1336 kB against 475 MB for the
+b-tree on the same 63M rows while still serving a 30-day range.
+
+The roadmap's open question of how large a history is too large is answered: there is no threshold,
+because reads cost what you ask for rather than what you keep, and the binding constraint is a disk
+budget rather than a cliff.
+
+**The visibility-map hypothesis is refuted, not merely unproven.** The roadmap carried it as the
+leading remaining candidate for why the read cost might follow retention: at 63 million rows and
+14 GB of constant appends, autovacuum was expected to fall behind, pages would stop being marked
+all-visible and index-only scans would degrade into random heap fetches. The fixture reported
+`all-visible pages 1246773 of 1246773` and `Heap Fetches: 0`, so autovacuum had kept up completely
+and the degradation was not there. Recorded as a refutation rather than deleted, because the
+hypothesis was reasonable and the reason it fails is the useful part: it was a property of a
+predicted write rate, not of retention.
+
+**A 20-line block of the roadmap was duplicated**, appearing at lines 51 and 209 with identical
+text, predating any of this work. Every line of the second copy had an equivalent elsewhere in the
+file, verified by comparison rather than by eye, so the duplicate was removed and the surviving copy
+updated instead. Found while checking for claims that contradicted the new measurements, which is
+not a reason one would normally run a duplicate check, and it had survived CI because nothing
+looks for it.
+
 ### CI, tooling
 
 **The prove-the-scan-can-fail job can now actually run, and has.** It was gated on

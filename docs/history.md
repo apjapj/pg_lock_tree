@@ -128,17 +128,36 @@ At a 10 second interval with 20 blocked sessions that is 172,800 rows a day:
 
 Storage is not the constraint. Query time is.
 
+The 365-day row of that table is what production-shaped query text costs. **The 365-day fixture
+measured 14 GB**, roughly half, for the same 63,072,020 rows, because the fixture stores
+34-character queries rather than 300-character ones. Both numbers are right and they are not the
+same measurement: budget from the table, which assumes what your server actually stores, and expect
+the fixture to land near half of it.
+
 ### Reading is bounded by the window, not by the retention
 
 Five of the six history read functions take a `since`, so how much they cost depends on how much you
-ask for rather than how much you keep. Mostly. Measured in 1.1.2 at each retention, not projected:
+ask for rather than how much you keep. The first four rows were measured in 1.1.2. The last was a
+projection until 1.1.5, when it was measured on a real 365-day fixture, and **the projection was
+pessimistic**:
 
 | retain | rows | `duration()` at the 7-day window | `by_application()` at the 7-day window | `incidents()`, whole history |
 |---|---|---|---|---|
 | 7 days | 1,209,620 | 2.0 s | 2.3 s | 1.8 s |
 | 30 days | 5,184,020 | 2.6 s | 3.6 s | 9.1 s |
 | 90 days | 15,552,020 | 2.5 s | **7.4 s** | **25.6 s** |
-| 365 days | 63,072,020 | 2.2 s | **30.3 s** | **110.5 s** |
+| 365 days | 63,072,020 | 2.2 s (2.1 s) | **30.3 s** (**1.9 s**) | **110.5 s** (**89.0 s**) |
+
+The bracketed figures are measured, on 63,072,020 rows and 3,153,601 samples, PostgreSQL 18, every
+page all-visible. The year is **not** the expensive case this table used to imply. A seven-day window
+at a year of retention costs 1.9 s, which is less than the 2.3 s that the same window cost at a week
+of retention in 1.1.2, because 1.1.5 fixed the cause. Read the last row as a measurement, not as a
+warning.
+
+The projection was pessimistic because it was made before the fix, and it extrapolated the 1.1.2
+trend that 1.1.5 removed. That is the general hazard with this table: a per-retention figure
+measured before a fix that changes per-retention behaviour will keep predicting the old shape after
+the fix lands, and the only way to find out is to build the fixture.
 
 Fixture for every row of this table and the ones below: [`scripts/bench-history.sh`](../scripts/bench-history.sh)
 `--days=7|30|90|365`, one sample every 10 seconds, 20 blocked sessions per sample, vacuumed (every page
@@ -149,7 +168,8 @@ the rows. `duration()` and `by_application()` are single runs; `incidents()` is 
 
 `duration()` does not move, because it reads the window you name. **`by_application()` did**, from
 2.3 s at a week of retention to 30 s at a year, while asking about the same seven days. That was
-measured in 1.1.2 and the cause was not understood until 1.1.5, which fixes it.
+measured in 1.1.2 and the cause was not understood until 1.1.5, which fixes it. **Confirmed at a
+year:** 1.9 s measured, so the growth is gone rather than merely reduced.
 
 **The cause, and the fix.** Both functions join root rows to waiter rows on `sampled_at`, and both
 bounded only the root side. PostgreSQL does not carry a `>=` bound on `r.sampled_at` across the
@@ -178,10 +198,50 @@ waiter row, 7,917 ms against 2,806 ms with the bound.
 should now be read as pre-fix.** Those figures were taken on PostgreSQL 18, where the fixture
 vacuums successfully, so the tooling fault below did not affect them, and they remain a fair record
 of what 1.1.2 did. What has changed is that 30 s at a year is no longer a property of the function:
-it was a property of one plan on one version. Expect `by_application()` to behave like `duration()`
-does now. That expectation is a projection and is labelled as one rather than folded silently into
-the table, because re-measuring at 365 days means building a 63 million row fixture and it has not
-been done.
+it was a property of one plan on one version. **The 365-day fixture has since been built and run,
+and the expectation held:** 1.9 s, so `by_application()` now behaves like `duration()` does. The
+measurement is in [A year of history, measured](#a-year-of-history-measured) below.
+
+### A year of history, measured
+
+The 365-day fixture: 63,072,020 rows, 3,153,601 samples, 14 GB on disk, one sample every 10 seconds
+with 20 blocked sessions. Everything below was run against it, PostgreSQL 18, and is worth having in
+one place because several things people ask about at that size are not what they expect.
+
+| | |
+|---|---|
+| `duration()` at the 7-day window | 2.1 s |
+| `duration_by_application()` at the 7-day window | 1.9 s |
+| `incidents()`, whole history, no window | 89.0 s |
+| `history_statements()`, whole history | 470 ms |
+| `duration()` at a 1-millisecond window | 0.4 ms |
+| `history_size()` | **6.3 s** |
+| `lock_tree_notify()` | 6 to 24 ms |
+
+**The live path does not care how much history you keep.** `lock_tree_notify()` is the function an
+alerting cron calls, and it reads `lock_tree_wide()`, which reads `pg_locks`, plus `lock_tree_alert`.
+It never reads `lock_tree_history`. Measured on 63M rows it takes single-digit milliseconds, the
+same as on an empty table. That is a property of the shape rather than of the size: the sampler is
+live-tree only and the history table is written by it but never read by it. So archiving old history
+cannot slow down alerting, and you do not need to choose between keeping a year and alerting on it.
+
+**`history_size()` is the one function that got slow, and it is the one you would call to find that
+out.** It costs 6.3 s at a year, of which 5.0 s is `count(DISTINCT sampled_at)` over 63M rows. It is
+also, by construction, unable to tell you that your disk is wasted: it reports
+`pg_total_relation_size`, which is the file's high-water mark, so a table holding one week of rows in
+a file sized for a year reports the year's size. If you are sizing a disk, size it from the table
+above, not from this function.
+
+**Two narrow-window figures are worth trusting.** A one-millisecond window matches no sample at all
+and both duration functions return in 0.4 ms, which is what proves the window became an index
+condition rather than a filter over a whole index scan. If you ever see a narrow window take as long
+as a wide one, that is the regression to look for.
+
+### What a year does not tell you to do
+
+The measured year is **cheaper to read than a week was in 1.1.2**, so the case for tiering, archiving
+or partitioning the history rests on disk and on operational tidiness, not on read speed. What was
+measured about moving rows out, on this fixture, is in [Retiring old history](#retiring-old-history).
 
 ### A fault in this harness, found while fixing the above
 
@@ -206,8 +266,9 @@ a check that cannot report its own broken state is worse than no check, because 
 reads as a pass. That fault is also part of why the 1.1.5 investigation was hard: an early
 measurement of 4,924,819 waiter rows was dismissed as unreproducible when the fixture beneath it had
 never been vacuumed, and the real explanation turned out to be plan dependence on a second version.
-about it: it was the only history read function with no window parameter, so its cost followed your
-retention. It now takes one:
+`lock_tree_incidents()` moves too, and until **1.1.0** there was nothing you could do about it: it was
+the only history read function with no window parameter, so its cost followed your retention rather
+than the question you asked. It now takes one:
 
 ```sql
 SELECT * FROM lock_tree_incidents(since => interval '30 days');
@@ -265,6 +326,14 @@ us at a week to 2.52 us at a year, so the 132.5 s this page projected for a year
 light against the 159.1 s measured. The 90-day projection, 32.7 s, held: 32.9 s measured. Read the
 two projected columns with that in mind at a year.
 
+**The 365-day row of this table is now measurable, and only the `incidents()` column was kept
+projected on purpose.** The whole-window reads were not run at a year, because nobody should ask
+that question: the answer is a table scan of everything you kept, it grows linearly, and the useful
+response is to pass a `since`. What was measured at a year, and what matters, is the bounded query,
+which is in [A year of history, measured](#a-year-of-history-measured) above and costs 1.9 to 2.1 s
+for a seven-day window. So read the 365-day row as the shape of the mistake, not as a number to
+plan around.
+
 **The `incidents()` figures in the 1.1.0 release were wrong, by about 2.8 times too pessimistic.**
 They read 91 s at 90 days and 364 s at a year. The error was arithmetic on a correct measurement:
 1.95 us per row was taken with all three array columns present, and then multiplied by three again
@@ -285,19 +354,40 @@ made it look like the slowest thing in the extension before 1.1.0 corrected the 
    retention is 9.4 GB rather than 28 GB, and the queries above are correspondingly cheaper because
    there are fewer samples to read.
 3. **Prune on a schedule, with the batched procedure.** See below.
-4. **Budget the disk at the high-water mark, not at your current retention.** See below.
+4. **Budget the disk at the high-water mark, not at your current retention.** Nothing returns the
+   space except `TRUNCATE` on an empty table. See below, where this is measured on a 63M-row table.
 5. **If a year is genuinely the goal, stop storing query text for old samples.** A row would go from
    410 to 93 bytes and a year from 28 GB to 6.4 GB. This is a trade rather than an optimisation: you
    give up being able to see what statement was running months ago. It is the only change that
    decouples storage from the length of a query.
+6. **Know that keeping a year does not cost you read speed.** Measured on 63M rows, a seven-day
+   window costs 1.9 to 2.1 s, less than the same window cost at a week of retention in 1.1.2. Do not
+   shorten your retention to make queries fast; that trade is no longer on the table.
 
 ### Two operational facts that are easy to be surprised by
 
-**Plain `VACUUM` does not shrink the file.** After `SELECT lock_tree_prune(interval '1 day')` removed
-six of seven days, and after a plain `VACUUM`, the heap file was still 187 MB while holding one day
-of data. The space is reusable, and the file stays at its high-water mark until `VACUUM FULL`, which
-rewrites the table under `ACCESS EXCLUSIVE`. So size the disk for the largest retention you intend to
-run, not the one you are running now.
+**Plain `VACUUM` does not shrink the file, and neither does deleting almost everything.** After
+`SELECT lock_tree_prune(interval '1 day')` removed six of seven days, and after a plain `VACUUM`, the
+heap file was still 187 MB while holding one day of data. The space is reusable, and the file stays at
+its high-water mark until `VACUUM FULL`, which rewrites the table under `ACCESS EXCLUSIVE`. So size
+the disk for the largest retention you intend to run, not the one you are running now.
+
+This was re-measured on the 365-day fixture, where the effect is stark and where it is worth knowing
+before you plan around it. One day of rows was moved out and the rest deleted, then the table
+vacuumed:
+
+| | heap file | live rows |
+|---|---|---|
+| after the delete | 9740 MB | 62,899,220 |
+| after a plain `VACUUM` | 9740 MB | 62,899,220 |
+| after `VACUUM FULL` | **9714 MB** | 62,899,220 |
+
+`VACUUM FULL` held `ACCESS EXCLUSIVE` for **260 seconds** on a table with 63M live rows, and
+reclaimed 26 MB, because 62.9M rows genuinely need that space. Reclaiming disk is not a function of
+how much you deleted; it is a function of how little you kept. **Only `TRUNCATE` returns space, and
+only when the table is genuinely empty.** On a table you intend to keep filling, `TRUNCATE` is not
+an option, so budget the disk at the high-water mark. The two escape hatches are a coarser sampling
+interval or a shorter retention, both above.
 
 **Keep autovacuum ahead of the sample rate.** The history is appended to continuously, and an
 index-only scan on it can only skip the heap where the visibility map is set. Measured on the
@@ -305,6 +395,87 @@ fixture: with the table vacuumed, a covering scan reported `Heap Fetches: 0` and
 8,640 new rows were appended and not yet vacuumed, the same scan reported `Heap Fetches: 29719` and
 took 55.1 ms. It recovers on the next vacuum. This is worth watching on a busy table because the
 benefit is invisible until it degrades.
+
+## Retiring old history
+
+Everything in this section was measured on the 365-day fixture. It is here because the natural
+instinct, keep the last week hot and move the rest somewhere cold, turns out to be expensive in a
+way that is not obvious until you have measured it. **None of this is built in.** The extension ships
+the two prune forms above and nothing else; the rest is what you would do by hand, with the costs
+written down so you do not have to discover them.
+
+### Moving rows into an archive table costs five minutes and doubles your peak disk
+
+Copying everything older than seven days, 61,862,400 rows, into a plain table in the same database:
+
+```
+INSERT INTO archive SELECT * FROM lock_tree_history
+ WHERE sampled_at < (SELECT max(sampled_at) FROM lock_tree_history) - interval '7 days';
+```
+
+took **298 seconds**. Every one of those rows is written twice, and the original is deleted
+afterwards, so for the duration of the copy the database holds both. On this fixture the archive
+reached 9556 MB while the original still measured 9714 MB. Peak disk is roughly double, and the
+window is minutes long, not seconds.
+
+Do it in batches if you do it at all, the same reason `lock_tree_prune_batched()` is a procedure. The
+unbatched copy above is the shape of the mistake, not the recommendation.
+
+### But the archive does not give the disk back
+
+This is the part that inverts the plan. Having moved the bulk out, the hot table still measured
+9740 MB, and a plain `VACUUM` left it at 9740 MB. The rows are marked reusable and the file is
+unchanged, because of the `VACUUM` behaviour above. So an archive built by deleting from the hot
+table leaves you holding a full year on disk **and** a full year in the archive, which is strictly
+worse than having never archived, unless you were going to export the archive off the cluster anyway.
+
+If the plan is to move old history out of the cluster entirely, then exporting is the right shape
+and the archive table is just a staging area you should drop once the export lands. If the plan is to
+keep it queryable in place, you pay double disk for it and you still have the hot table at its
+high-water mark.
+
+### If you do keep an archive table, index it with BRIN and nothing else
+
+`sampled_at` is append-only, so it is perfectly correlated with physical order. Measured on the
+fixture, the correlation between `sampled_at` and the row's block number is **1.000000**, which is
+the best case BRIN exists for.
+
+| index on the same 63M rows | size |
+|---|---|
+| b-tree on `sampled_at` | 475 MB |
+| BRIN on `sampled_at`, `pages_per_range = 32` | **1336 kB** |
+
+That is 356 times smaller, and it is not merely small, it works. With the b-tree indexes disabled so
+BRIN had to serve the query, a 30-day range read 102,389 buffers out of a 63M-row table, and the
+archived day answered `count(*)` in 21 ms and a per-day trend in 47 ms.
+
+```sql
+CREATE TABLE archive (LIKE lock_tree_history);
+CREATE INDEX archive_brin ON archive USING brin (sampled_at) WITH (pages_per_range = 32);
+```
+
+Two things to know about an archive table. **Do not make it `UNLOGGED`** even though it is
+second-tier, because research data that vanishes on a crash is not research data. And **the read
+functions will not see it**: every history read function reads `lock_tree_history` and nothing else,
+so a question spanning the archive boundary needs SQL of your own. That is a real cost, and it is the
+reason this is not built in.
+
+### What this leaves as the actual answer
+
+At a year of retention the read side is 1.9 to 2.1 s for a seven-day window, which is not a
+performance problem. Retention is a **disk budget** problem, and the levers, in order of how much
+they cost you:
+
+1. Sample less often. `lock_tree_sampling_advice()` will tell you the interval your queue width
+   supports, and 30 seconds instead of 10 is a third of the rows.
+2. Prune on a schedule with the batched procedure.
+3. Budget the disk at the high-water mark, because nothing else returns it.
+4. Only then consider exporting, and accept the double disk and the hand-written queries that come
+   with it.
+
+Partitioning is the shape that would fix the retention side properly, and it was measured and
+rejected. The measurements are in [the roadmap](roadmap.md#considered-and-not-planned), including why
+it makes the read side worse.
 
 ## Pruning it
 
