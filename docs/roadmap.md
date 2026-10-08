@@ -387,32 +387,6 @@ fail on its first line.
   nobody needs. **One archive table per host, with the host in the table or schema name**, answers the
   scenario with no column and no migration. Storage for a dozen hosts is 0.33 TiB a year at
   production-shaped query text and 0.15 TiB at the fixture's, with BRIN costing 384 kB in total.
-- **Reading across the archive boundary.** 1.1.6 ships `lock_tree_history_archive` and
-  `lock_tree_archive()` and nothing reads the archive, so a `since` window silently stops at the hot
-  table rather than erroring. The obvious fix, teaching the existing read functions to span both
-  tables, was measured and rejected: with the archive as a `UNION ALL` on the inner side of the
-  root-to-waiter join the planner stops choosing the index probe, 96 ms to **924 ms** on the same
-  data, and an **empty** archive still costs 50%, so installations that never archive would pay for a
-  feature they do not use. It could not be a view either, since the sampler `INSERT`s into the history
-  table and PostgreSQL refuses `cannot insert into view` for any view containing `UNION`. So the
-  remaining option is dedicated archive read functions, a new API surface rather than a tuning knob.
-  **Closed in 1.1.8** by `lock_tree_archive_find()`, which searches the archive and nothing else, so
-  the boundary is a documented property of a separate function rather than a silent truncation inside
-  a shared one. The window is required because a NULL cannot become an index bound, and 1.1.9's
-  message gives the corrected figures: on 5,184,000 archived rows spread over 7 to 67 days, a window
-  reading 1,122,915 rows took 241 ms and no window over all 5,184,000 took 319 ms. **1.1.8 shipped two
-  false figures here** and the correction is recorded in CHANGELOG.md: its three fast windows matched
-  zero rows, and its "did not finish in 10 minutes" was autovacuum contention. 1.1.9 then called the
-  index a small penalty at full coverage, and **that was wrong too**: it compared a single-backend
-  bitmap scan with a two-worker parallel scan. Measured in 1.1.10 with the plan forced and nothing
-  else changed, the bitmap scan wins at every coverage from 14% to 86%, and the function's own
-  per-sample aggregation costs four to seven times the scan. So a window saves time in proportion to
-  the rows it excludes, it is never the difference between working and hanging, and the guard does
-  not cap `since`. The bound also cannot be enforced
-  from a `LANGUAGE sql` body: three attempts at a guard failed while looking correct, the third
-  because a guard joined into the query sits below the function's own `LIMIT` and a query returning no
-  rows never reaches it. `LANGUAGE plpgsql` with the check as the first statement is forced, not
-  chosen, and the VOLATILE that 1.1.8 called load-bearing turned out to be irrelevant to that shape.
 - **The `tool` key, and the shared alert contract.** Raised by the pg_incident_watch umbrella, which
   groups this extension with `pg_bloat_cause` and `pg_limit_runway` and promises that all three emit
   the same JSON payload shape so one listener can route all of them. The umbrella lists this as its
@@ -484,9 +458,22 @@ fail on its first line.
   truncates both tables, says so in the `--force` refusal, prints the archive's row count with the
   fixture, and refuses to time anything if it is not 0. Run for real with 5,000 rows planted in the
   archive first: they were cleared, the run reported `archive | 0 rows`, and every plan check passed.
-  **Still open for `demo.sql`**, which truncates `lock_tree_history` at lines 257 and 410 and never
-  touches the archive. Nothing it prints reads the archive today, so it is the same shape without
-  the consequence, and it is left for a change that runs the demo.
+  **Closed for `demo.sql` by deciding not to change it**, which is the opposite of what this entry
+  previously said. `demo.sql` truncates `lock_tree_history` and never touches the archive, and that
+  is correct: it reads the history, through `lock_tree_incidents()`, `lock_tree_history_statements()`
+  and the duration functions, and it never reads the archive at all. So emptying the archive would
+  destroy a year of someone's cold history while protecting no output of the demo's own.
+
+  The difference from the benchmark script is that script *does* read the archive, in exactly one
+  place: the `archive_bytes` column of `lock_tree_history_size()`, which the demo never calls. Every
+  plan check it times is on `lock_tree_history`, not on the archive. That single read is why it must
+  control the archive, and why it asks for `--force` to do so.
+
+  What remains, as a separate change: `demo.sql` truncates `lock_tree_history` at lines 257 and 410,
+  which is a real but smaller problem, since it clears a table the demo writes to but did not create.
+  Its header says "Safe to re-run: everything it creates is terminated and dropped at the end", which
+  is not quite true of that table, and the honest fix is for the header to say so rather than for the
+  demo to destroy data it does not own.
 - **What each root *holds* that its waiters want**, not only what the waiters ask for. The wait side is
   reported; the hold side is `pg_locks` and the lock tags, and the interesting version is a diff
   against what the waiter is asking for.
@@ -518,6 +505,43 @@ fail on its first line.
 
 Recorded here so the section is a record rather than a wish list. Each is one line because the
 changelog has the detail and a test has the proof.
+
+- **Reading across the archive boundary**, closed in 1.1.8 by `lock_tree_archive_find()`, which
+  searches the archive and nothing else. Longer than a line, unlike the rest of this section,
+  because the reasoning is what constrains any future attempt to span both tables: the measured
+  96 ms to 924 ms regression, why it cannot be a view, and why the guard cannot be enforced from a
+  SQL body. The changelog has the figures. The point here is that the boundary is now a property of
+  a separate function rather than a silent truncation inside a shared one.
+
+  **As of 1.1.6 the archive was write-only**: `lock_tree_history_archive` and `lock_tree_archive()`
+  shipped, nothing read the archive, and a `since` window on any read function silently stopped at
+  the hot table rather than erroring. That is history, and it is why this entry reads oddly at first.
+
+  The obvious fix at the time was to teach the existing read functions to span both tables. It was
+  measured and rejected: with the archive as a `UNION ALL` on the inner side of the root-to-waiter
+  join the planner stops choosing the index probe, 96 ms to **924 ms** on the same data, and an
+  **empty** archive still costs 50%, so installations that never archive would pay for a feature they
+  do not use. It could not be a view either, since the sampler `INSERT`s into the history table and
+  PostgreSQL refuses `cannot insert into view` for any view containing `UNION`.
+
+  What shipped instead is `lock_tree_archive_find()`. The window is required because a NULL cannot
+  become an index bound, and 1.1.9's message gives the corrected figures: on 5,184,000 archived rows
+  spread over 7 to 67 days, a window reading 1,122,915 rows took 241 ms and no window over all
+  5,184,000 took 319 ms.
+
+  **1.1.8 shipped two false figures here** and the correction is recorded in CHANGELOG.md: its three
+  fast windows matched zero rows, and its "did not finish in 10 minutes" was autovacuum contention.
+  1.1.9 then called the index a small penalty at full coverage, and **that was wrong too**: it
+  compared a single-backend bitmap scan with a two-worker parallel scan. Measured in 1.1.10 with the
+  plan forced and nothing else changed, the bitmap scan wins at every coverage from 14% to 86%, and
+  the function's own aggregation costs four to seven times the scan.
+
+  The bound also cannot be enforced from a `LANGUAGE sql` body: three attempts at a guard failed
+  while looking correct, the third because a guard joined into the query sits below the function's own
+  `LIMIT` and a query returning no rows never reaches it. `LANGUAGE plpgsql` with the check as the
+  first statement is forced, not chosen, and the VOLATILE that 1.1.8 called load-bearing turned out to
+  be irrelevant to that shape.
+
 
 - **`lock_tree_incidents()` without the disk sort** (1.1.2): the `DISTINCT` taken before each array
   rather than inside `array_agg`, so the array subplans no longer spill. Identical output; 15% faster on
