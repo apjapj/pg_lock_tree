@@ -45,7 +45,7 @@ $ext$;
 -- file is about 1.1.6. A guard that skipped would be a test that passes without testing anything.
 \o
 \echo # the archive objects exist, and are a table and a procedure
-SELECT plan(28);
+SELECT plan(35);
 SELECT has_table('lock_tree_history_archive',
                  'the archive table is there');
 
@@ -366,6 +366,67 @@ DROP ROLE lock_tree_archiver;
 
 SELECT is(:archiver_moved::int, 3,
           'and with SELECT and DELETE on the history plus SELECT and INSERT on the archive, the same role moves them');
+
+-- ------------------------------------------------- 1.1.7: the archive is visible to the sizing function
+--
+-- Asserted here rather than in test/15 because this file is the one that knows what the archive
+-- contains, and because the failure 1.1.7 fixes is only visible with an archive present at all.
+\o /dev/null
+\set QUIET 1
+TRUNCATE lock_tree_history;
+TRUNCATE lock_tree_history_archive;
+-- Two tables of known and different sizes, so a figure from one cannot pass for the other. 20 rows
+-- hot, 40 archived, and the pids differ so the tables cannot be confused.
+INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid)
+SELECT now() - make_interval(secs => g * 10), 100 + g, 0, 500 + g
+FROM generate_series(1, 20) g;
+INSERT INTO lock_tree_history_archive (sampled_at, root_pid, depth, pid)
+SELECT now() - make_interval(secs => g * 10), 200 + g, 0, 600 + g
+FROM generate_series(1, 40) g;
+VACUUM (ANALYZE) lock_tree_history;
+VACUUM (ANALYZE) lock_tree_history_archive;
+SELECT (SELECT rows              FROM lock_tree_history_size()) AS hs_rows,
+       (SELECT total_bytes      FROM lock_tree_history_size()) AS hs_bytes,
+       (SELECT archive_bytes    FROM lock_tree_history_size()) AS as_bytes \gset
+\o
+\set QUIET 0
+
+-- The property 1.1.7 exists to fix. Before it the archive was invisible to this function, so the
+-- thing an operator sizes a disk with could not see 40 rows sitting in the same database.
+SELECT is(:as_bytes::bigint, (SELECT pg_total_relation_size('lock_tree_history_archive')::bigint),
+          'archive_bytes is the archive relation''s own size, which before 1.1.7 was invisible here');
+
+SELECT ok(:as_bytes::bigint > 0, 'and it is nonzero with 40 archived rows');
+
+SELECT ok(:as_bytes::bigint <> :hs_bytes::bigint,
+          'and it differs from total_bytes, so it is not the hot relation reported twice');
+
+-- The eight columns that existed before 1.1.7 must be untouched. That is the whole claim of the
+-- release, and it is checked against the fixture rather than against a snapshot of the output.
+SELECT is(:hs_rows::bigint, 20::bigint,
+          'and rows still reports only the hot table, so the pre-existing columns are unchanged');
+
+SELECT is(:hs_bytes::bigint, (SELECT pg_total_relation_size('lock_tree_history')::bigint),
+          'total_bytes is still the hot relation alone, which is what lets a reader add the two');
+
+-- An empty archive must report ITS OWN size, not inherit the hot table's or a stale one. The first
+-- draft of this asserted zero, and zero is wrong: an empty table is still one heap page, a free
+-- space map and an index page, measured at 57,344 bytes here. The property is that the figure FOLLOWS
+-- the archive, which is what "its own size" means, and asserting zero would have passed for the
+-- wrong reason had the table not had a minimum footprint.
+\o /dev/null
+\set QUIET 1
+TRUNCATE lock_tree_history_archive;
+SELECT (SELECT archive_bytes FROM lock_tree_history_size()) AS empty_bytes \gset
+\o
+\set QUIET 0
+
+SELECT is(:empty_bytes::bigint,
+          (SELECT pg_total_relation_size('lock_tree_history_archive')::bigint),
+          'an emptied archive reports its own much smaller size, not the hot table''s figure');
+
+SELECT ok(:empty_bytes::bigint < :as_bytes::bigint,
+          'and that is smaller than it was with 40 rows in it, so the figure follows the archive');
 
 -- The index is asserted to be BRIN and to be the only one, above. Its SIZE is deliberately not
 -- asserted here, and the first draft of this file got that wrong twice.

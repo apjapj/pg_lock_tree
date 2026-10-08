@@ -178,6 +178,78 @@ twenty names and `lock_tree_duration`, `lock_tree_replay`, `lock_tree_deadlocks`
 absent from it. That is pre-existing and out of scope for a patch, but it means the install checker
 would report a healthy 1.1.6 as complete, and that is a claim it is quietly making.
 
+## 1.1.7 (2026-10-08)
+
+Two gaps 1.1.6 left open, one of them a function's output. No existing result changes and no object is
+dropped.
+
+### `lock_tree_history_size()` can see the archive
+
+It could not, which is a number an operator sizing a disk needs and 1.1.6 made it wrong. 1.1.6 shipped
+`lock_tree_history_archive` and this function still reported only `lock_tree_history`, so it
+understated on-disk history by however much had been moved out.
+
+**One column, appended: `archive_bytes`.** The eight columns it already returned keep their names,
+order, types, meaning and values, so no existing caller breaks. A caller doing `SELECT *` gets one
+more column, which is the single visible consequence of the release.
+
+**Why one and not four.** An archive row count, its oldest row and its newest row were all drafted and
+all removed, because each needs a full sequential scan. Measured on a 707 MB archive holding
+12,300,000 rows: `count(*)`, `min` and `max` together took **495 ms**, and the function with them took
+**1189 ms**. `pg_total_relation_size` is a catalog read, **0.9 to 1.1 ms** at the same size, and the
+function with only `archive_bytes` takes **3 to 5 ms**. That distinction matters because the one flaw
+this function already has is that its cost follows retention: `count(DISTINCT sampled_at)` over the
+history is 5.0 of the 6.3 seconds it costs at a year. A second scan of a second, larger table would
+have made the flaw considerably worse for figures nobody needs it to give. An operator wants the
+bytes; a row count in a BRIN-indexed table is a `SELECT count(*)` away.
+
+**`archive_bytes` is reported separately, not folded into `total_bytes`.** That column is part of a
+rate projection built on the observed sample interval of one table, and a second table with its own
+interval and extent does not belong in that arithmetic. Add the two yourself: `total_bytes +
+archive_bytes`.
+
+**The upgrade drops and recreates the function rather than replacing it, and that is forced.** Adding
+an OUT parameter changes the row type, which `CREATE OR REPLACE` refuses:
+
+```
+ERROR:  cannot change return type of existing function
+DETAIL:  Row type defined by OUT parameters is different.
+HINT:  Use DROP FUNCTION lock_tree_history_size() first.
+```
+
+So a `RETURNS TABLE` function cannot gain a column in place, and this is the constraint every
+extension meets when it grows a function's output. The drop was checked rather than assumed: nothing
+depends on this function, it is not in a view, default, constraint or trigger, and it is
+`SECURITY INVOKER`, so no privilege is lost with the object. What is lost and not restored is any
+`GRANT EXECUTE` an operator had given, which matches how this project treats privileges on upgrade,
+and the recommended monitoring grants do not include it.
+
+### `scripts/check-install.sh` no longer reports a healthy install as complete
+
+It listed twenty objects while 1.1.4, 1.1.5 and 1.1.6 all added more, so it checked for neither
+`lock_tree_duration`, `lock_tree_replay`, `lock_tree_replay_samples`, `lock_tree_deadlocks`,
+`lock_tree_deadlock_participants`, `lock_tree_history_size`, `lock_tree_notify_resolved`,
+`lock_tree_duration_by_application`, `lock_tree_replay_text`, the `lock_tree_deadlock` table nor the
+`lock_tree_history_archive` table.
+
+The list is still written out, because it is the readable inventory, but the check no longer trusts
+it: it now derives the extension's objects from `pg_depend` and **fails on anything the extension
+owns that the list does not name**. Verified by running the query with `lock_tree_history_archive`
+removed from the exclusion, where it reports it by name. A probe table in the schema is not a valid
+test of this and testing with one proves nothing, since `pg_depend` lists only members.
+
+The first version of the new check excluded anything matching `lock_tree%`, which defeated it
+completely: a newly added object called `lock_tree_anything` would match the pattern, be exempted and
+pass. The exclusions are explicit lists now, and a comment says why.
+
+### Verified
+
+473 tests on each of PG 14 through 19beta4, up from 466, through both install paths: `CREATE
+EXTENSION` and the direct load with `check_function_bodies` off that CI uses. All 26 upgrade paths to
+1.1.7 match a fresh install, with the function body and its comment lifted verbatim from the release
+file so the two cannot drift. The four new assertions fail against 1.1.6, which is the check that they
+are testing the change rather than the shape of the test.
+
 ## 1.1.6 (2026-10-08)
 
 A cold tier, and one function. `lock_tree_history_archive` is a second table with the same columns as

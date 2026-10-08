@@ -437,12 +437,18 @@ right, since the archive is a deliberate copy you made and pruning it by acciden
 does mean the archive only shrinks if you delete from it yourself, which is the one thing in this
 section that ships no function for.
 
-**`lock_tree_history_size()` does not count the archive.** Measured: zero rows in the hot table, two
-in the archive, and the function reported zero rows, because it reports
-`pg_total_relation_size('lock_tree_history')` and nothing else. So it understates your total on-disk
-history by however much you have archived, on top of its existing blind spot where it reports the hot
-file's high-water mark rather than its live rows. If you archive, size from the tables in this section
-rather than from that function.
+**`lock_tree_history_size()` did not count the archive. It does as of 1.1.7.** Measured on 1.1.6: zero
+rows in the hot table, two in the archive, and the function reported zero, because it reported
+`pg_total_relation_size('lock_tree_history')` and nothing else. It now also reports `archive_bytes`.
+**Add it to `total_bytes` yourself** rather than expecting the function to: the two are reported
+separately on purpose, because `total_bytes` is part of a rate projection built on one table's sample
+interval and a second table with its own interval does not belong in that arithmetic.
+
+It is one column rather than four, and that was measured rather than preferred. An archive row count
+and its oldest and newest rows each need a full sequential scan, **495 ms** at 12,300,000 rows on a
+707 MB archive, against **0.9 to 1.1 ms** for the catalog read behind `archive_bytes`. The whole
+function takes 3 to 5 ms with the one column and 1189 ms with the other three, and this function's
+one existing flaw is that its cost already follows retention.
 
 ### What `lock_tree_archive()` does, and what it costs
 

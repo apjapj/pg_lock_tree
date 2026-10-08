@@ -61,6 +61,27 @@ echo "  schema: $schema"
 # Summarise with a single aggregate rather than UNION ALL + head -1: UNION ALL returns two
 # rows, so head -1 always saw the pg_class count (0 for a function) and reported every
 # function as missing.
+#
+# The list is every object the release file creates, and it was twenty names for a long time
+# while 1.1.4, 1.1.5 and 1.1.6 all added objects without touching it. The list is now derived
+# from the extension's own objects rather than written out, because a hand-maintained list
+# silently stops checking things and this one did: check-install.sh would report a healthy 1.1.6
+# as complete while looking for neither lock_tree_duration, lock_tree_replay,
+# lock_tree_replay_samples, lock_tree_deadlocks, lock_tree_deadlock_participants,
+# lock_tree_history_size, lock_tree_notify_resolved, lock_tree_duration_by_application,
+# lock_tree_replay_text, the lock_tree_deadlock table nor the lock_tree_history_archive table.
+#
+# Derived, not a grep of the release file: a grep would also match the names inside function
+# bodies and inside COMMENT text, and would report objects the extension has not actually
+# created. pg_depend is the authority, since a relation or function that belongs to the
+# extension is recorded there, and it is the same source scripts/check-upgrade.sh uses to
+# decide what a fresh install should contain.
+#
+# The four indexes are named explicitly rather than derived, because an index is an
+# implementation detail of a table: the same four have carried the history's read path since
+# 0.11 and a change to them is a change worth a line here rather than a silent redefinition.
+# They are checked because an extension installed with CREATE EXTENSION and one loaded by
+# running the release SQL can differ in indexes without differing in tables.
 for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree_actions \
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
          lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune \
@@ -73,6 +94,83 @@ for f in lock_tree lock_tree_roots lock_tree_text lock_tree_text_short lock_tree
              + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
                  WHERE n.nspname='$schema' AND p.proname='$f')" 2>/dev/null)
     if [ "${found:-0}" -gt 0 ] 2>/dev/null; then ok "$f"; else bad "$f missing"; fi
+done
+
+step "every object the extension owns"
+# The completeness check the fixed list above cannot be. It asks the catalog whether anything
+# the extension owns is one of the names above, and the answer is meant to be none. It is a
+# different question from "are the listed names present" and it is the one that would have
+# caught this defect: an object added to the release and not to the list.
+#
+# A name is a relation in pg_class or a routine in pg_proc, in the extension's schema, and a
+# member of the extension per pg_depend. Sequences and types are included because the
+# extension creates none today, and a future one that did should fail here rather than pass.
+#
+# The exclusion is an explicit NOT IN list, never a name pattern. The first version exempted
+# anything matching 'lock_tree%', which defeated the whole check: a newly added object called
+# lock_tree_anything would match the pattern, be exempted, and pass. Found by planting exactly
+# such a function and watching the check report everything was fine. The list is therefore
+# maintained by hand here as well as in the loop above, which is duplication on purpose: the
+# loop is the readable inventory and this list is the thing that makes the check fail.
+#
+# Verified by running the query with lock_tree_history_archive removed from the exclusion, where it
+# reports it by name among the others. A check that has never been seen to fail is a check that has
+# not been shown to work, and a probe table in the schema is not a valid test of it: pg_depend only
+# lists objects that are members of the extension, so a plain CREATE TABLE in the same schema is
+# correctly ignored and testing with one would prove nothing.
+extra=$(psql -X -tAc "
+    SELECT coalesce(string_agg(name, ', '), '(none)')
+    FROM (
+      SELECT c.relname AS name
+      FROM pg_depend d
+      JOIN pg_extension e ON e.oid = d.refobjid AND d.refclassid = 'pg_extension'::regclass
+      JOIN pg_class c     ON c.oid = d.objid AND d.classid = 'pg_class'::regclass
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE e.extname = 'pg_lock_tree' AND n.nspname = '$schema'
+        AND c.relkind IN ('r','v','m','p','S','i')
+        AND c.relname NOT IN ('lock_tree','lock_tree_replay_samples',
+                              'lock_tree_history','lock_tree_history_archive',
+                              'lock_tree_alert','lock_tree_deadlock',
+                              'lock_tree_history_sampled_at_idx','lock_tree_history_pid_idx',
+                              'lock_tree_history_query_id_idx','lock_tree_history_application_idx',
+                              'lock_tree_history_archive_brin_idx',
+                              'lock_tree_alert_pkey','lock_tree_alert_last_notified_idx',
+                              'lock_tree_deadlock_pkey')
+      UNION ALL
+      SELECT p.proname
+      FROM pg_depend d
+      JOIN pg_extension e ON e.oid = d.refobjid AND d.refclassid = 'pg_extension'::regclass
+      JOIN pg_proc p       ON p.oid = d.objid AND d.classid = 'pg_proc'::regclass
+      JOIN pg_namespace n  ON n.oid = p.pronamespace
+      WHERE e.extname = 'pg_lock_tree' AND n.nspname = '$schema'
+        AND p.proname NOT IN ('lock_tree_roots','lock_tree_text','lock_tree_text_short',
+                              'lock_tree_actions','lock_tree_command','lock_tree_lines',
+                              'lock_tree_age','lock_tree_mode_short','lock_tree_state_short',
+                              'lock_tree_sample','lock_tree_incidents','lock_tree_prune',
+                              'lock_tree_wide','lock_tree_summary','lock_tree_statements',
+                              'lock_tree_notify','lock_tree_prune_alerts',
+                              'lock_tree_sampling_advice','lock_tree_history_statements',
+                              'lock_tree_duration','lock_tree_duration_by_application',
+                              'lock_tree_replay','lock_tree_replay_text','lock_tree_deadlocks',
+                              'lock_tree_deadlock_participants','lock_tree_history_size',
+                              'lock_tree_notify_resolved','lock_tree_redact',
+                              'lock_tree_prune_batched','lock_tree_archive')
+    ) s" 2>/dev/null)
+if [ "${extra:-}" = "(none)" ] || [ -z "$extra" ]; then
+    ok "no object of the extension goes unchecked: every relation and routine is named above"
+else
+    bad "these extension objects are not in the list above: $extra"
+fi
+
+# The indexes, named, because a table can be present and its index missing. Checked on the
+# four that carry the history read path plus the archive's BRIN, which is the index the whole
+# cold tier exists to make affordable.
+for i in lock_tree_history_sampled_at_idx lock_tree_history_pid_idx \
+         lock_tree_history_query_id_idx lock_tree_history_application_idx \
+         lock_tree_history_archive_brin_idx; do
+    found=$(psql -X -tAc "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                           WHERE n.nspname='$schema' AND c.relname='$i'" 2>/dev/null)
+    if [ "${found:-0}" -gt 0 ] 2>/dev/null; then ok "$i"; else bad "$i missing"; fi
 done
 
 step "queries (0 rows is correct; an error is not)"

@@ -397,24 +397,19 @@ fail on its first line.
   table and PostgreSQL refuses `cannot insert into view` for any view containing `UNION`. So the
   remaining option is dedicated archive read functions, a new API surface rather than a tuning knob,
   and the fingerprint question a recurrence report would need is still unanswered.
-- **The archive is never pruned and nothing reports its size.** `lock_tree_prune()` and
+- **The archive is never pruned by anything shipped.** `lock_tree_prune()` and
   `lock_tree_prune_batched()` do not touch it, deliberately, since it is a copy you made, so it only
-  shrinks if you delete from it yourself and no function does that. And `lock_tree_history_size()`
-  does not count it, so that function understates your on-disk history by however much you have
-  archived, on top of its existing blind spot where it reports the hot file's high-water mark rather
-  than its live rows. Both are stated on the procedure's `COMMENT` and in
-  [docs/history.md](history.md#retiring-old-history), and both are gaps rather than decisions.
+  shrinks if you delete from it yourself and no function does that. It is stated on the procedure's
+  `COMMENT` and in [docs/history.md](history.md#retiring-old-history). **Half closed in 1.1.7:**
+  `lock_tree_history_size()` now reports `archive_bytes`, so the size is at least visible. Whether a
+  prune for the archive should ship is still open, and the argument against is that deleting from a
+  cold tier on a schedule is a policy choice the operator has to make, not a default.
 - **An archive needs no re-scrub, and that is worth a second look.** 1.0.1 shipped a one-off `UPDATE`
   re-redacting rows written before 1.0.0, because until then the history kept whatever query text it
   was given. The archive has no equivalent and does not need one on the paths that exist, since the
   only supported way to fill it re-redacts on the way across. A direct `INSERT` bypasses redaction
   exactly as it does in the history. Recorded because the first person to find a credential in the
   archive will look for the scrub 1.0.1 has for the history.
-- **`scripts/check-install.sh` omits every object added since 0.16**, so it reports a healthy install
-  as complete. It lists twenty names and `lock_tree_duration`, `lock_tree_replay`,
-  `lock_tree_replay_samples`, `lock_tree_deadlocks`, `lock_tree_deadlock_participants`,
-  `lock_tree_history_size` and `lock_tree_history_archive` are all absent. Pre-existing, cheap, and
-  the right thing for a patch release.
 - **`scripts/bench-history.sh` does not clear the archive** when it truncates the history to build a
   fixture. No timing is wrong today because nothing reads the archive, but the script's contract is
   that it leaves a table matching the fixture it describes, and a future function reading both would
@@ -432,10 +427,14 @@ fail on its first line.
 - **A cheap `lock_tree_history_size()`**, which is the one function whose cost follows retention. It
   takes 6.3 s on the 365-day fixture, 5.0 s of which is `count(DISTINCT sampled_at)` over 63M rows. A
   `GROUP BY` rewrite measured 2.95 s on the same data, so this is a real saving and not a large one.
-  It is on the list rather than fixed because the same function reports `pg_total_relation_size`,
-  which is the file's high-water mark, so it cannot distinguish a table holding a week of rows in a
-  year-sized file from one holding a year of them. That is the more useful fix and it changes what
-  the function is for.
+  **Partly done in 1.1.7**, which added `archive_bytes` and made a point of adding no column that
+  needs a scan: an archive row count and its extrema would have cost 495 ms at 12.3M rows and given
+  the function a second cost that follows retention, so they were measured and refused. What remains
+  is the `count(DISTINCT)` itself, and the more useful change of what the function is for: it reports
+  `pg_total_relation_size`, which is the file's high-water mark, so it cannot distinguish a table
+  holding a week of rows in a year-sized file from one holding a year of them. That needs live rows
+  rather than a size, which is a different figure with a different meaning, and it is a decision
+  rather than a bug.
 - **How large a history is too large.** Asked and answered, at least for a year, by building the
   fixture instead of reasoning about it. There is no single threshold, because retention and read
   speed are independent: the read functions cost what you ask for, not what you keep, so a 63M-row
