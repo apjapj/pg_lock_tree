@@ -373,15 +373,20 @@ fail on its first line.
 
 ## Open questions, not commitments
 
-- **A `source` column, so one archive can hold several hosts.** Asked, and the answer is that the
-  table cannot support it today and the fix is not additive. There is no host identity anywhere in
-  `lock_tree_history`, and `pid` is unique only within a server, so rows from two hosts would
-  silently attribute one host's blocked session to another's. `sampled_at` does not separate them
-  either: hosts on a shared cron land on the same grid, 60,481 distinct samples for 1,209,600 rows,
-  identical timestamps with nothing to tell them apart. Per-host archives avoid the change entirely
-  and are what the tooling should assume, at the cost of no cross-host query without a `UNION ALL`
-  the caller writes. Adding `source` properly means re-deriving the move, the BRIN's usefulness and
-  every archive read around a column that rows moved before it existed do not have.
+- **A `source_host` column, so one archive can hold several hosts.** Asked for a review instance
+  holding about a dozen production servers, and declined, on two measured grounds rather than taste.
+  The value is the hard part: `inet_server_addr()` is the obvious candidate and returns **NULL over a
+  unix socket**, verified on a scratch cluster built for the purpose, which is exactly how a local
+  cron job calls `lock_tree_archive()`. `pg_control_system().system_identifier` works, is assigned
+  at `initdb` and so survives restarts and container rebuilds; `cluster_name` is settable and **empty
+  by default**, so forgetting it labels every host with the empty string. And a per-host partition
+  is the wrong answer twice, once for the 38% to 203% the roadmap has already measured partitioning to
+  cost the read side and once because a per-host partition is a schema-per-host under another name.
+  The migration is the other reason: 1.1.6 shipped, so a filled archive has rows with no host value
+  and `ADD COLUMN` gives NULL for all of them, starting the append-order exception for a column
+  nobody needs. **One archive table per host, with the host in the table or schema name**, answers the
+  scenario with no column and no migration. Storage for a dozen hosts is 0.33 TiB a year at
+  production-shaped query text and 0.15 TiB at the fixture's, with BRIN costing 384 kB in total.
 - **Reading across the archive boundary.** 1.1.6 ships `lock_tree_history_archive` and
   `lock_tree_archive()` and nothing reads the archive, so a `since` window silently stops at the hot
   table rather than erroring. The obvious fix, teaching the existing read functions to span both

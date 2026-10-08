@@ -105,6 +105,45 @@ buffers took 151 ms. Those are the numbers a general archive read function shoul
 and they are one to two orders of magnitude outside anything acceptable on the production hot path,
 which is the whole reason the read functions were not taught to span the archive.
 
+### A `source_host` column, considered: the value is the hard part, not the column
+
+Proposed for a multi-host review instance holding archives from about a dozen production servers.
+Adding a column is easy and is the smaller half of the problem. Three things were measured, and two
+of them change the answer.
+
+**The obvious source value does not exist.** `inet_server_addr()` is the first thing anyone would try
+and it returns **NULL over a unix socket**, verified on a scratch cluster built for the purpose: both
+`inet_server_addr()` and `inet_server_port()` came back NULL. A local cron job using a socket is the
+normal way to run `lock_tree_archive()`, so the source value would be NULL exactly where it is most
+likely to be set. In a container it is also the container's address, which is not the host's.
+
+**`pg_control_system().system_identifier` is the value that works.** Measured over a unix socket on
+the same scratch cluster: 7694203821877422042, non-null, and it is assigned at `initdb`, so it
+survives restarts, address changes and container rebuilds, and it is unique per cluster. The weaker
+alternative is `cluster_name`, which is a `GUC` a DBA can set and which is **empty by default**,
+verified. An operator who forgets to set it gets twelve hosts all labelled with the empty string, which
+is the exact failure the column exists to prevent.
+
+**A per-host PARTITION is the wrong answer twice.** Partitioning `lock_tree_history_archive` by a
+host column would give clean pruning, and the roadmap has already measured what partitioning costs on
+the read side: 38% to 203% depending on window, because the planner loses the index probe once the
+inner side of a join is a multi-way `Append`. A per-host partition is also a schema-per-host wearing a
+different hat, which is the simpler option already recommended.
+
+**So the shape is: one archive table per host, no column, and the `source_host` idea is declined for
+the archive itself.** It is however worth keeping in mind for the *review* instance, where a table
+holding many hosts genuinely cannot tell them apart, and where the fix is the caller's choice of
+schema or table name rather than a column in an extension they do not maintain. Storage for a dozen
+hosts is 0.33 TiB a year at production-shaped query text and 0.15 TiB at the fixture's, with BRIN
+costing 384 kB in total, so nothing here is a storage argument.
+
+**The migration cost is real and is the other reason to decline.** 1.1.6 is already shipped, so any
+archive a user has filled has rows with no host value, and `ALTER TABLE ADD COLUMN` gives NULL for
+every one of them. The roadmap already records that `ADD COLUMN` appends, which is why column order on
+these tables is a named and checked exception. Adding a column to the archive in 1.1.7 would start
+that exception for a column nobody needs, on the strength of a scenario the current design already
+answers by having one archive per host.
+
 ### A documentation review of 1.1.6, which found four things missing
 
 Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of
