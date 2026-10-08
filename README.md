@@ -136,7 +136,7 @@ no backend. A deadlock that is happening now is in
 ## Seeing it work
 
 ```bash
-make demo             # one incident, start to finish, on a scratch table it creates and drops
+make demo             # one incident, start to end. empties lock_tree_history: use a scratch database
 make scenarios        # eight incidents, each queried two ways, output captured
 ```
 

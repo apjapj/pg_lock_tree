@@ -6,7 +6,18 @@
 --
 --   psql -X -f demo.sql          as a superuser; needs the dblink contrib module
 --
--- Safe to re-run: everything it creates is terminated and dropped at the end.
+-- Safe to re-run, with one exception worth stating plainly rather than leaving to be
+-- discovered: everything it CREATES is terminated and dropped at the end, but it also
+-- TRUNCATEs lock_tree_history, at the start and again at the end, and that is a table it did
+-- not create. If the database you point this at holds real sampled history, the demo empties it
+-- and does not put it back. It does NOT touch lock_tree_history_archive, so a cold tier is safe
+-- from this script, which is the right way round: the demo reads the history and never reads the
+-- archive, so emptying the archive would destroy data while protecting no output of its own.
+--
+-- So: run this on a scratch database. On a database with history you care about, either skip it
+-- or take the history first, which is what scripts/bench-history.sh does with --force and what
+-- this script does not ask for.
+--
 -- Mechanical output (connecting, BEGIN, UPDATE 1) is suppressed. Only the
 -- interesting results are shown.
 --
