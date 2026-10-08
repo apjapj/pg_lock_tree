@@ -395,8 +395,47 @@ fail on its first line.
   data, and an **empty** archive still costs 50%, so installations that never archive would pay for a
   feature they do not use. It could not be a view either, since the sampler `INSERT`s into the history
   table and PostgreSQL refuses `cannot insert into view` for any view containing `UNION`. So the
-  remaining option is dedicated archive read functions, a new API surface rather than a tuning knob,
-  and the fingerprint question a recurrence report would need is still unanswered.
+  remaining option is dedicated archive read functions, a new API surface rather than a tuning knob.
+  **Closed in 1.1.8** by `lock_tree_archive_find()`, which searches the archive and nothing else, so
+  the boundary is a documented property of a separate function rather than a silent truncation inside
+  a shared one. Two measurements settled its shape. A bounded window over 10,160,640 archived rows
+  returns in **1.5 ms** using the BRIN index and an unbounded one over the same rows **did not finish
+  in 10 minutes**, so the function requires a `since` and refuses a NULL with the measurement in the
+  error. And the bound cannot be enforced from a `LANGUAGE sql` body: three attempts at a guard all
+  failed while looking correct, the third because a guard joined into the query sits below the
+  function's own `LIMIT` and a query returning no rows never reaches it. `LANGUAGE plpgsql` with the
+  check as the first statement is forced, not chosen.
+- **A recurrence report, and the fingerprint question it needed.** Asked for as "has this happened
+  before, and is it getting worse", on the reasoning that a review instance is where it would run and
+  speed does not matter there. Speed is not the obstacle: counting **every** incident in a 216,072-row
+  archive takes 271 ms, and a bounded search on six times that takes 1.9 ms. The shape is.
+
+  A fixture of 12 distinguishable incidents, 20 minutes each, queried the obvious way gives:
+
+  ```
+  tag           bursts   worst_wait
+  incident_01      900   00:01:40
+  ```
+
+  **900 is not 900 recurrences.** It is one incident, sampled 900 times. Segmenting the same data on
+  a 5-minute gap, which is what `lock_tree_incidents()` already does, gives 1, and 1 is the truth. A
+  report that says 900 when the truth is 1 is worse than no report, because it is confidently wrong.
+
+  **So the fingerprint question was the wrong question, and the data says so.** The candidates were
+  `waiting_for`, `waiting_for + application_name` and `query_id`, with cardinalities of 12, 20 and 2
+  distinct over 338,688 samples. But those cardinalities are a property of the fixture, and the first
+  fixture built for this had 12 tags where every sample contained every tag, so every fingerprint gave
+  the same answer. A fingerprint cannot be chosen from a fixture, because a fixture you design will
+  confirm whatever you expected. What decides it is the incident segmentation, which is why the report
+  has to be built on the gap logic rather than on a group-by.
+
+  `query_id` cannot be the fingerprint and should not be offered as one: NULL on every waiter row and
+  2 distinct values on a realistic archive, so it identifies a statement only on root rows, and a
+  recurrence is made of waiter rows.
+
+  The remaining question is a decision rather than a measurement. Against: the extension has no
+  reporting features, and this would be the first. For: the archive was write-only until 1.1.8 and is
+  now readable but still cannot answer the question it exists to answer.
 - **The archive is never pruned by anything shipped.** `lock_tree_prune()` and
   `lock_tree_prune_batched()` do not touch it, deliberately, since it is a copy you made, so it only
   shrinks if you delete from it yourself and no function does that. It is stated on the procedure's
@@ -497,5 +536,10 @@ changelog has the detail and a test has the proof.
 - **The non-public schema install** (`test/22_schema_install.sql` and `make check-schema`), for the
   one situation where an unqualified call to a sibling fails: both `search_path`-pinned functions.
   The end-to-end half needs a second database, so it is a make target rather than part of the suite.
+  **Both halves were blind until 1.1.8 found them.** Their comment strip had no `n` flag, so a bare
+  dot matched a newline and `$` anchored at end of string: `lock_tree_duration()` was reduced from
+  7391 characters to 1 before the assertion read it, so it could not fail. Found by planting an
+  unqualified `PERFORM` and watching a check report itself clean, which is the only way a check can be
+  shown to still catch the defect it exists for.
 - **The README's nine factual errors, and the split** into a short entry point plus `docs/` and
   `CONTRIBUTING.md`, with a link and anchor check so the moved sections cannot quietly break it again.

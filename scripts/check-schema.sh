@@ -130,10 +130,38 @@ done
 # lock_tree_command(1). The other twenty test files and their 398 assertions passed unchanged, which
 # is the claim this file and that one are both making: in a public install the defect is invisible,
 # and only a private-schema install exposes it. Both were restored and re-verified afterwards.
+# Comments and string literals are removed before this match, and BOTH steps were wrong until a
+# planted defect proved it. This check had reported every function clean since it was written, and
+# what follows is why, because the failure mode is the one this project keeps running into: a check
+# that cannot report its own blindness.
+#
+# 1. The comment strip was regexp_replace(..., '--.*$', '', 'g') with no newline flag. In PostgreSQL
+#    ARE a bare dot DOES match a newline and $ then anchors at end of string, so the strip removed
+#    everything from the first '--' in a body to the end of that body. Measured on a real install:
+#    lock_tree_duration() kept 1 of 7391 characters, lock_tree_archive_find() 9 of 4035 and
+#    lock_tree_incidents() 3 of 3593. The unqualified-call regex was being applied to a handful of
+#    characters of preamble, which is why it had never fired and why it looked so confident.
+#    The 'n' flag is what fixes it: those three now survive at 1626, 1649 and 1521 characters.
+#
+# 2. The string strip had no quotes in its pattern at all, '[^'']*'. A bracket class that is a
+#    negated set matches the EMPTY string at every position, so that expression deleted the whole
+#    body it was applied to. Anchoring the class between literal quotes fixes it, and the anchors are
+#    part of the pattern rather than of a wider class, so it cannot match empty.
+#
+# Order is strings first, then comments, and it has to be: a '--' inside a string literal would
+# otherwise end the strip early and the rest of that literal would be scanned as code. What
+#    remains after both steps is SQL, which is the only thing this check should ever have read.
+#
+# Found by planting PERFORM lock_tree_archive_since_guard(since) with the name unqualified and the
+# schema off the search_path, which is a real defect this project has made before, and watching a
+# check report itself clean. A relaxation that has not been shown to still catch the defect is not
+# a relaxation.
 n=$("${PSQL[@]}" -d "$SCRATCH" -c "SELECT count(*)::text FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = '$SCHEMA' AND p.prokind = 'f'
-        AND regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g')
+        AND regexp_replace(
+              regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
+              '--.*$', '', 'gn')
               ~ '(^|[^.a-z_])lock_tree_\w+\s*\('")
 total=$("${PSQL[@]}" -d "$SCRATCH" -c "SELECT count(*) FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -146,7 +174,9 @@ else
   "${PSQL[@]}" -d "$SCRATCH" -c "SELECT '          ' || p.proname FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = '$SCHEMA' AND p.prokind = 'f'
-          AND regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g')
+          AND regexp_replace(
+                regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
+                '--.*$', '', 'gn')
                 ~ '(^|[^.a-z_])lock_tree_\w+\s*\('"
 fi
 

@@ -140,7 +140,9 @@ SELECT ok((SELECT (proconfig @> ARRAY['search_path=pg_catalog']::text[]) FROM pg
 SELECT is((SELECT count(*)::text
              FROM pg_proc p
             WHERE p.proname = 'lock_tree_sample'
-              AND regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g')
+              AND regexp_replace(
+                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
+                        '--.*$', '', 'gn')
                   ~ '(^|[^.a-z_])lock_tree_\w+\s*\('), '0',
           'lock_tree_sample() contains no unqualified reference to a sibling, which is the one thing'
           || ' that would break a private-schema install and work everywhere else');
@@ -148,7 +150,9 @@ SELECT is((SELECT count(*)::text
 SELECT is((SELECT count(*)::text
              FROM pg_proc p
             WHERE p.proname = 'lock_tree_redact'
-              AND regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g')
+              AND regexp_replace(
+                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
+                        '--.*$', '', 'gn')
                   ~ '(^|[^.a-z_])lock_tree_\w+\s*\('), '0',
           'and neither does lock_tree_redact()');
 
@@ -175,12 +179,25 @@ CREATE TEMP TABLE bare_refs AS
 SELECT p.proname AS fn,
        (SELECT count(*)::int
           FROM regexp_matches(
-                 -- Comments removed first. A -- line that NAMES a sibling is prose about the call,
-                 -- not the call, and the body of lock_tree_sample() explains what it samples and why,
-                 -- which means it mentions several sibling names in comments. Counting those gave
-                 -- three failures on a function with no defect in it. Same trap as the assertion
-                 -- counter in scripts/lint-docs.sh, and the same fix.
-                 regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g'),
+                 -- String literals removed first, then comments, in that order.
+                 --
+                 -- Literals: a message that NAMES a sibling is prose, not a call.
+                 -- lock_tree_archive_since_guard() raises "lock_tree_archive_find() needs a since
+                 -- window", and a bare name inside a string is indistinguishable from a bare call.
+                 -- The class is ANCHORED between quotes on purpose: '[^'']*' on its own also matches
+                 -- the empty string at every position and would delete the whole body.
+                 --
+                 -- Comments: a -- line that names a sibling is the same trap, and the body of
+                 -- lock_tree_sample() explains what it samples, so it mentions several names. The
+                 -- 'n' flag matters more than it looks: without it a bare dot matches a newline and
+                 -- $ anchors at end of STRING, so the strip ate every body from its first -- onwards.
+                 -- Measured on a real install, lock_tree_duration() survived as 1 of 7391 characters,
+                 -- so the "no bare reference" assertion was being applied to a few characters of
+                 -- preamble and could not have failed. Found by planting one in 1.1.8 and watching
+                 -- this pass. Same trap as the assertion counter in lint-docs.sh, same fix.
+                 regexp_replace(
+                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
+                        '--.*$', '', 'gn'),
                  '(^|[^.a-z_])lock_tree_\w+\s*\(', 'g')) AS n
   FROM pg_proc p
   JOIN pg_depend d ON d.objid = p.oid AND d.classid = 'pg_proc'::regclass

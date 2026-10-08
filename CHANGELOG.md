@@ -1,182 +1,171 @@
-# Changelog
+## 1.1.8 (2026-10-08)
 
-All notable changes to `pg_lock_tree` are recorded here. Versions follow the extension's
-`default_version` in `pg_lock_tree.control`; `CREATE EXTENSION pg_lock_tree VERSION '0.10'`
-selects a release.
+The read side of the cold tier. `lock_tree_archive_find()` searches `lock_tree_history_archive` and
+is the first shipped function to read it: 1.1.6 shipped that table write-only. One new function, one
+to support it, and nothing existing is replaced or dropped.
 
-## Unreleased
+Records the measurements behind the decisions, so the next person does not rediscover them: what an
+archive-side read costs and must be bounded, that a recurrence report cannot be a sample count, and
+that the unqualified-call check had been blind since it was written.
 
-### Two things the 1.1.6 release taught, recorded rather than edited into a frozen release
+Also adds a defect fix to `scripts/check-schema.sh` and `test/22_schema_install.sql`, and
+`lock_tree_archive_find()` is the first function to touch a locked-down area (private schema
+installs), which is what exposed it.
 
-**A test assertion in 1.1.6 was wrong and CI caught it.** `test/23_archive.sql` compared
-`pg_extension.extconfig` to the string `EMPTY`; on a clean install it is `NULL`, so the assertion
-failed on every version. It passed locally only because the database it was written against had been
-set up by an earlier `CREATE EXTENSION`, and the two install paths were never checked against each
-other. The deeper fault is that the assertion returned `NULL` rather than false, which pgTAP reports
-as "test result was NULL": not a failure a reader can diagnose from the test's own name. Fixed in
-`715046b` and verified on all six versions through both install paths, 464 tests each.
+### The archive read: bounded by the BRIN, and the bound is required
 
-**The prove-the-scan-can-fail canary has now fired on a real release tag**, successful in 20s, rather
-than on the throwaway probe tag that proved the trigger worked. That is the case the trigger was
-opened for, and it is worth recording separately from the release because the release itself is
-already tagged and must not be rewritten to mention it.
+Measured on an archive of 10,160,640 rows spanning 16 days, PostgreSQL 18:
 
-### What else 1.1.6 broke, found by auditing rather than by tripping over it
+| query | time | plan |
+|---|---|---|
+| `count(distinct sampled_at)`, 1-day window | 1.6 ms | Bitmap Heap Scan on the BRIN |
+| same, 7-day window | 1.5 ms | Bitmap Heap Scan on the BRIN |
+| same, 14-day window | 1.4 ms | Bitmap Heap Scan on the BRIN |
+| same, no window | **did not finish in 10 minutes** | Parallel Seq Scan plus HashAggregate |
 
-The four gaps above were found by looking for them after the fact. This is the systematic pass, and it
-went looking at every place the repo enumerates extension objects, counts them, or assumes a fixed
-set. Six more things, of which one is a real defect and one is a near-miss that a test now rules out.
+The bounded cases are flat because the BRIN prunes the other ranges away, which is the whole reason
+the archive is BRIN-indexed rather than left unindexed. The unbounded case is the same work an
+unbounded `lock_tree_incidents()` does on the hot table, which is why that function's default is
+NULL and `lock_tree_archive_find()`'s is not.
 
-**A real defect: `scripts/bench-history.sh` builds a fixture and does not clear the archive.** It
-`TRUNCATE`s `lock_tree_history` to build a known fixture, and it does not touch
-`lock_tree_history_archive`. Nothing reads the archive, so no timing is wrong today. But the script's
-own contract is that it leaves a table matching a fixture it describes, and a future function that
-reads both would then be benchmarked against a table full of rows from the last run, with nothing in
-the output saying so. `demo.sql` has the same shape, truncating the history in two places.
+A search returns one row per sample instant rather than one per session, and on a 6,773,760-row
+archive a three-day bounded search took **1.9 ms**. The pattern match on `waiting_for` is a
+sequential scan and that is correct: BRIN cannot help a pattern, and on the archive there is no hot
+path to protect.
 
-**The archive has no 1.0.1-equivalent scrub, and that is a decision rather than an oversight.**
-`pg_lock_tree--1.0.0--1.0.1.sql` contains a one-off `UPDATE` that re-redacts rows written before
-1.0.0, because until that release the history stored whatever query text it was given and a password
-sat in it until pruning removed it. The archive has no equivalent. It does not need one on the paths
-that exist: the only supported way to fill it is `lock_tree_archive()`, which redacts on the way
-across. A direct `INSERT` into the archive bypasses redaction exactly as a direct `INSERT` into the
-history does, and that is the same exposure the history has always had, not a new one. Worth writing
-down rather than leaving to be rediscovered by someone who finds a credential in the archive and looks
-for the scrub that 1.0.1 has for the history.
+### A guard cannot be enforced from a SQL body, and three attempts at it failed
 
-**`scripts/check-install.sh` omits every object added since 0.16.** Already recorded above, and this pass
-confirms the extent: `lock_tree_duration`, `lock_tree_replay`, `lock_tree_replay_samples`,
-`lock_tree_deadlocks`, `lock_tree_deadlock_participants`, `lock_tree_history_size` and now the
-archive are all absent from its list of twenty. It reports a healthy install as complete.
+`lock_tree_archive_find()` requires a `since` window. Enforcing that in a `LANGUAGE sql` function is
+not possible, and the ways of trying all failed in ways worth recording, because each looked correct:
 
-**`test/23_archive.sql` had a weaker `pg_dump` check than the one already in the repo.** It compared
-`extconfig` to a rendering of itself. `test/02_permissions.sql` already makes the stronger argument
-by unnesting `extconfig` and resolving each oid, which catches a registration of any of our tables
-rather than only the one named. The archive now uses the same shape, verified by planting a real
-`pg_extension_config_dump()` registration in a scratch extension version and confirming the assertion
-fails with `have: 1, want: 0`. A check that has never been shown to fail is a check that has not been
-shown to work.
+1. **A guard function joined into the query, marked STABLE.** The planner inlines a STABLE function
+   whose result feeds nothing but a filter and drops it. `EXPLAIN` showed a plan with no call to it.
+2. **The same guard marked VOLATILE.** The call appeared in the plan and still did not fire, because
+   it sat below the function's own `LIMIT` and a query returning no rows never reaches the node
+   beneath it. The plan showed the call present and unreachable.
+3. **`archive_find` itself as a scalar subquery.** Under a LIMIT it is still elided.
 
-**Things that turned out to be fine, checked rather than assumed.** `DROP EXTENSION pg_lock_tree`
-removes the archive and its rows, verified with a row in it. `scripts/check-upgrade.sh` compares full index
-definitions via `pg_get_indexdef`, so the BRIN and its `pages_per_range = 32` are covered on all 25
-paths, not merely its existence. The archive's presence does not change any shipped function's plan
-or cost, since nothing reads it. And the 1.0.1 scrub is absent from the 1.1.6 release file by design:
-a fresh install creates an empty history, so there is nothing to scrub, and the scrub exists only for
-databases upgrading from 1.0.0 or earlier.
+The working shape is `LANGUAGE plpgsql` with the check as the first statement, before the query is
+assembled, so no plan shape can avoid it. The `LANGUAGE plpgsql` is forced by this, not preferred,
+and the comment in the release file says so.
 
-### A multi-host archive, considered and not planned: the table cannot tell you which host a row came from
+This is the third time in two releases that a check which cannot report its own failure has been the
+hardest thing to get right, and the pattern is consistent: a verification step that can be skipped is
+worse than none, because it reports success.
 
-Asked directly, and the answer is that this is a schema question rather than a query one, which is why
-it is answered here rather than deferred.
+### A recurrence report is not a sample count
 
-**`lock_tree_history` has no host identity.** Its columns are `sampled_at`, `root_pid`, `depth`,
-`pid`, `state`, `waiting_for`, `wait_age`, `application_name`, `query`, `root_object` and
-`query_id`. Nothing in that identifies a server, and there is nowhere to put it without changing the
-shape of every function that reads the table. So an archive holding several hosts' rows cannot answer
-"which host was this on", and worse, `pid` is only unique **within** a server: measured on a
-1,209,600-row fixture, 1,209,600 distinct pids, and on a second host those same pids mean entirely
-different sessions. A multi-host archive would silently attribute one host's blocked session to
-another's, which for a diagnostic tool is worse than having no archive.
+The question asked was whether archive tooling should support "has this happened before, and is it
+getting worse", on the reasoning that a review instance is where it would run and speed does not
+matter there. The answer on speed is yes and it is cheap: 271 ms to count **every** incident in a
+216,072-row archive, and 1.9 ms for a bounded search on six times that.
 
-**`sampled_at` does not separate hosts either.** It is a `timestamptz`, and hosts sampling on a
-shared cron land on the same grid: measured 60,481 distinct samples for 1,209,600 rows, which is
-exactly 20 sessions per sample. Two hosts on the same schedule produce two sets of rows with identical
-timestamps and no way to tell them apart, so "everything in the last 7 days" across two hosts cannot
-be split into per-host figures.
+The answer on shape is the interesting one, and it is a negative result. A fixture with 12
+distinguishable incidents, each 20 minutes long, was queried the obvious way, counting samples per
+lock tag:
 
-**So the realistic shape is one archive per host, or a `source` column added, and both are bigger
-than a read function.** A `source` column is the honest fix and it is not additive: it is
-distinguishable, yes, but every archive read function, the move, and the BRIN's usefulness all have
-to be re-derived around it, and rows moved before the column existed have no value for it. Per-host
-archives avoid the schema change entirely and are what the tooling should assume, at the cost of no
-cross-host query without a `UNION ALL` the caller writes.
+```
+tag           bursts   worst_wait
+incident_01      900   00:01:40
+incident_02      900   00:01:40
+...
+```
 
-**What is already true and does the work for a review instance.** `lock_tree_archive()` re-applies
-`lock_tree_redact()` as rows cross, so what leaves the production server is already redacted, and a
-dump or a table copy of the archive carries no credential that the hot table did not. Measured: an
-archive built by the move held 0 rows with query text on a fixture whose source rows had none. That
-is the security story for holding an archive off-box, and it needs no further work.
+**900 is not 900 recurrences.** It is one incident, sampled 900 times. Every tag gave the same
+figure, because the fixture is uniform, and a report that says "900 recurrences" when the truth is
+"1 incident, 12 times over" is worse than no report, because it is confidently wrong.
 
-**And speed is genuinely not the constraint there.** Measured on the archive shape at 1,209,600 rows
-and 95 MB, a BRIN index of 32 kB: a full aggregate over every `waiting_for` value, which is the
-question a review instance actually exists to ask, took **546 ms**. A 7-day range pruned to 12,143
-buffers took 151 ms. Those are the numbers a general archive read function should be designed against,
-and they are one to two orders of magnitude outside anything acceptable on the production hot path,
-which is the whole reason the read functions were not taught to span the archive.
+Segmenting on the same data, which is what `lock_tree_incidents()` already does and what a
+`PARTITION BY` over `lag()` on a 5-minute gap gives:
 
-### A `source_host` column, considered: the value is the hard part, not the column
+```
+tag           incidents   samples
+incident_01         1       900
+```
 
-Proposed for a multi-host review instance holding archives from about a dozen production servers.
-Adding a column is easy and is the smaller half of the problem. Three things were measured, and two
-of them change the answer.
+1 against 900, and 1 is the truth.
 
-**The obvious source value does not exist.** `inet_server_addr()` is the first thing anyone would try
-and it returns **NULL over a unix socket**, verified on a scratch cluster built for the purpose: both
-`inet_server_addr()` and `inet_server_port()` came back NULL. A local cron job using a socket is the
-normal way to run `lock_tree_archive()`, so the source value would be NULL exactly where it is most
-likely to be set. In a container it is also the container's address, which is not the host's.
+**So the fingerprint discussion was the wrong question, and the data says so.** The candidates were
+`waiting_for`, `waiting_for + application_name` and `query_id`. Measured cardinality over 338,688
+samples: `waiting_for` 12 distinct, `waiting_for + application_name` 20, and `query_id` 2 distinct
+with NULL on 6,435,072 of 6,773,760 rows. But the cardinalities are a property of the fixture, not
+of the schema, and the first fixture built for this had 12 tags where every sample contained every
+tag, so every fingerprint gave the same answer. **A fingerprint cannot be chosen from a fixture**,
+because a fixture you design will confirm whatever you expected. What decides it is the *incident*
+segmentation, which is why the report has to be built on the gap logic `lock_tree_incidents()` already
+implements rather than on a group-by.
 
-**`pg_control_system().system_identifier` is the value that works.** Measured over a unix socket on
-the same scratch cluster: 7694203821877422042, non-null, and it is assigned at `initdb`, so it
-survives restarts, address changes and container rebuilds, and it is unique per cluster. The weaker
-alternative is `cluster_name`, which is a `GUC` a DBA can set and which is **empty by default**,
-verified. An operator who forgets to set it gets twelve hosts all labelled with the empty string, which
-is the exact failure the column exists to prevent.
+### What the recurrence report should be, given that
 
-**A per-host PARTITION is the wrong answer twice.** Partitioning `lock_tree_history_archive` by a
-host column would give clean pruning, and the roadmap has already measured what partitioning costs on
-the read side: 38% to 203% depending on window, because the planner loses the index probe once the
-inner side of a join is a multi-way `Append`. A per-host partition is also a schema-per-host wearing a
-different hat, which is the simpler option already recommended.
+Not a new fingerprint but the existing incident segmentation applied to the archive and grouped by
+whatever the caller names. The shape is: segment the archive into incidents per fingerprint, then
+report count, worst wait and total session-samples per fingerprint, newest first. That is
+`lock_tree_archive_find()` plus the `lag()` window it does not currently do, which is a small
+addition rather than a new idea.
 
-**So the shape is: one archive table per host, no column, and the `source_host` idea is declined for
-the archive itself.** It is however worth keeping in mind for the *review* instance, where a table
-holding many hosts genuinely cannot tell them apart, and where the fix is the caller's choice of
-schema or table name rather than a column in an extension they do not maintain. Storage for a dozen
-hosts is 0.33 TiB a year at production-shaped query text and 0.15 TiB at the fixture's, with BRIN
-costing 384 kB in total, so nothing here is a storage argument.
+`query_id` cannot be the fingerprint and should not be offered as one: NULL on every waiter row,
+2 distinct values on a realistic archive, so it identifies a statement only on root rows and a
+recurrence is made of waiter rows.
 
-**The migration cost is real and is the other reason to decline.** 1.1.6 is already shipped, so any
-archive a user has filled has rows with no host value, and `ALTER TABLE ADD COLUMN` gives NULL for
-every one of them. The roadmap already records that `ADD COLUMN` appends, which is why column order on
-these tables is a named and checked exception. Adding a column to the archive in 1.1.7 would start
-that exception for a column nobody needs, on the strength of a scenario the current design already
-answers by having one archive per host.
+### The unqualified-call check had been blind since it was written, and a planted defect proved it
 
-### A documentation review of 1.1.6, which found four things missing
+Not part of 1.1.8's feature work, found while adding to it, and it changes what the previous
+release's verification actually established.
 
-Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of
-the four are gaps in the release itself and one is in the documentation around it.
+`scripts/check-schema.sh` and `test/22_schema_install.sql` both assert that no function in the
+extension schema calls a sibling without qualifying it, which is what breaks a private-schema
+install while working everywhere else. Both strip `--` comments before matching. The strip was:
 
-**The archive table is not optional, and nothing said so.** It is created empty on every install and
-every upgrade path, exactly as `lock_tree_history` is: no flag, no enablement, no function to call
-first. What is optional is using it. Both `INSTALL.md` and `docs/history.md` now say so, and give
-the reason, which is that a function creating it would have to be `SECURITY DEFINER` to be usable by
-an operator without `CREATE` on the schema.
+```sql
+regexp_replace(pg_get_functiondef(p.oid), '--.*$', '', 'g')
+```
 
-**`lock_tree_archive()` needs four privileges across two tables, and none were documented.** It is
-`SECURITY INVOKER`, so the grants for reading the history do not carry over. Measured one at a time:
-`SELECT, DELETE` on `lock_tree_history`, `SELECT, INSERT` on `lock_tree_history_archive`, and
-`EXECUTE` on the procedure. The error names the table and not the missing privilege, so the natural
-reading of `permission denied for table lock_tree_history_archive` is that the table is missing rather
-than that the caller lacks `INSERT` on it. A new `Grants for the archive` section in `INSTALL.md` sets
-it out, the procedure's own `COMMENT` carries it, and `test/23_archive.sql` now asserts both halves:
-that a role with the monitoring grant alone moves nothing, and that the same role moves rows once
-given the rest.
+In PostgreSQL ARE a bare dot **does** match a newline, and `$` then anchors at end of *string*, not
+end of line. So the strip removed everything from the first `--` in a body to the end of that body.
+Measured on a real install of 1.1.8:
 
-**Two silent behaviours.** `lock_tree_prune()` and `lock_tree_prune_batched()` do not touch the
-archive, measured: two rows in, `lock_tree_prune(interval '7 days')`, two rows still there. And
-`lock_tree_history_size()` does not count it, measured: zero hot rows, two archived, and the function
-reported zero. Both are correct, both are now stated on the procedure's `COMMENT` where the reader
-hits them, and the second means that if you archive you must size from the documentation rather than
-from the sizing function.
+| function | body | what survived the strip |
+|---|---|---|
+| `lock_tree_duration()` | 7391 chars | **1 char** |
+| `lock_tree_archive_find()` | 4035 chars | **9 chars** |
+| `lock_tree_incidents()` | 3593 chars | **3 chars** |
+| `lock_tree_actions()` | 2332 chars | 289 chars |
 
-**`scripts/check-install.sh` does not know about 1.1.6's objects**, or 1.1.4's or 1.1.5's. It lists
-twenty names and `lock_tree_duration`, `lock_tree_replay`, `lock_tree_deadlocks`,
-`lock_tree_deadlock_participants`, `lock_tree_history_size` and `lock_tree_replay_samples` are all
-absent from it. That is pre-existing and out of scope for a patch, but it means the install checker
-would report a healthy 1.1.6 as complete, and that is a claim it is quietly making.
+The assertion was being applied to a handful of characters of preamble, so it could not fail. It had
+reported every function clean since it was written, which is exactly the failure mode this project
+keeps meeting: a check that cannot report its own blindness reads as a check that passes.
+
+The fix is the `n` flag, and the three bodies above now survive at 1626, 1649 and 1521 characters.
+
+**The second defect only appeared because the first was fixed.** With real bodies being scanned, the
+guard's exception message `lock_tree_archive_find() needs a since window` matched as a bare call. A
+message that names a sibling is prose. Stripping string literals fixes it, and the class has to be
+anchored between quotes: `[^']*` on its own also matches the empty string at every position, and an
+anchored version that did that deleted the whole body again. Found by planting a bare
+`PERFORM lock_tree_archive_since_guard(since)` and watching the check stay silent.
+
+Both checks were then re-verified against that planted defect in the private schema and in the
+public one, and both fire:
+
+```
+FAIL  1 unqualified sibling calls in lt_check
+        lock_tree_archive_find
+
+test/22: Failed tests 8-9, naming lock_tree_archive_find(1)
+```
+
+and both are clean once the file is restored. That is the whole claim: not that the corrected
+expression is right, but that a known defect in it is now caught.
+
+### What is not answered
+
+Whether to ship this at all is a decision, not a measurement. The case for it is that the archive is
+currently write-only except for one search function, and the case against is that it is a reporting
+feature on a diagnostic tool and the extension has no reporting features. The honest position is
+that item 5 is not blocked by anything technical: the segmentation is measured at 271 ms, the
+fingerprint question is answered by the data above, and what remains is whether a Friday 21:00 job is
+a use case this project wants to own.
+
 
 ## 1.1.7 (2026-10-08)
 
@@ -435,6 +424,178 @@ The job needs no apt, no docker and no socket: `pg-start`, `make install`, `CREA
 
 All eight pass in CI on PostgreSQL 18, in about 1m50s. See `docs/roadmap.md` for the four bugs
 found on the way, all of which a green run would have hidden.
+
+### Two things the 1.1.6 release taught, recorded rather than edited into a frozen release
+
+**A test assertion in 1.1.6 was wrong and CI caught it.** `test/23_archive.sql` compared
+`pg_extension.extconfig` to the string `EMPTY`; on a clean install it is `NULL`, so the assertion
+failed on every version. It passed locally only because the database it was written against had been
+set up by an earlier `CREATE EXTENSION`, and the two install paths were never checked against each
+other. The deeper fault is that the assertion returned `NULL` rather than false, which pgTAP reports
+as "test result was NULL": not a failure a reader can diagnose from the test's own name. Fixed in
+`715046b` and verified on all six versions through both install paths, 464 tests each.
+
+**The prove-the-scan-can-fail canary has now fired on a real release tag**, successful in 20s, rather
+than on the throwaway probe tag that proved the trigger worked. That is the case the trigger was
+opened for, and it is worth recording separately from the release because the release itself is
+already tagged and must not be rewritten to mention it.
+
+### What else 1.1.6 broke, found by auditing rather than by tripping over it
+
+The four gaps above were found by looking for them after the fact. This is the systematic pass, and it
+went looking at every place the repo enumerates extension objects, counts them, or assumes a fixed
+set. Six more things, of which one is a real defect and one is a near-miss that a test now rules out.
+
+**A real defect: `scripts/bench-history.sh` builds a fixture and does not clear the archive.** It
+`TRUNCATE`s `lock_tree_history` to build a known fixture, and it does not touch
+`lock_tree_history_archive`. Nothing reads the archive, so no timing is wrong today. But the script's
+own contract is that it leaves a table matching a fixture it describes, and a future function that
+reads both would then be benchmarked against a table full of rows from the last run, with nothing in
+the output saying so. `demo.sql` has the same shape, truncating the history in two places.
+
+**The archive has no 1.0.1-equivalent scrub, and that is a decision rather than an oversight.**
+`pg_lock_tree--1.0.0--1.0.1.sql` contains a one-off `UPDATE` that re-redacts rows written before
+1.0.0, because until that release the history stored whatever query text it was given and a password
+sat in it until pruning removed it. The archive has no equivalent. It does not need one on the paths
+that exist: the only supported way to fill it is `lock_tree_archive()`, which redacts on the way
+across. A direct `INSERT` into the archive bypasses redaction exactly as a direct `INSERT` into the
+history does, and that is the same exposure the history has always had, not a new one. Worth writing
+down rather than leaving to be rediscovered by someone who finds a credential in the archive and looks
+for the scrub that 1.0.1 has for the history.
+
+**`scripts/check-install.sh` omits every object added since 0.16.** Already recorded above, and this pass
+confirms the extent: `lock_tree_duration`, `lock_tree_replay`, `lock_tree_replay_samples`,
+`lock_tree_deadlocks`, `lock_tree_deadlock_participants`, `lock_tree_history_size` and now the
+archive are all absent from its list of twenty. It reports a healthy install as complete.
+
+**`test/23_archive.sql` had a weaker `pg_dump` check than the one already in the repo.** It compared
+`extconfig` to a rendering of itself. `test/02_permissions.sql` already makes the stronger argument
+by unnesting `extconfig` and resolving each oid, which catches a registration of any of our tables
+rather than only the one named. The archive now uses the same shape, verified by planting a real
+`pg_extension_config_dump()` registration in a scratch extension version and confirming the assertion
+fails with `have: 1, want: 0`. A check that has never been shown to fail is a check that has not been
+shown to work.
+
+**Things that turned out to be fine, checked rather than assumed.** `DROP EXTENSION pg_lock_tree`
+removes the archive and its rows, verified with a row in it. `scripts/check-upgrade.sh` compares full index
+definitions via `pg_get_indexdef`, so the BRIN and its `pages_per_range = 32` are covered on all 25
+paths, not merely its existence. The archive's presence does not change any shipped function's plan
+or cost, since nothing reads it. And the 1.0.1 scrub is absent from the 1.1.6 release file by design:
+a fresh install creates an empty history, so there is nothing to scrub, and the scrub exists only for
+databases upgrading from 1.0.0 or earlier.
+
+### A multi-host archive, considered and not planned: the table cannot tell you which host a row came from
+
+Asked directly, and the answer is that this is a schema question rather than a query one, which is why
+it is answered here rather than deferred.
+
+**`lock_tree_history` has no host identity.** Its columns are `sampled_at`, `root_pid`, `depth`,
+`pid`, `state`, `waiting_for`, `wait_age`, `application_name`, `query`, `root_object` and
+`query_id`. Nothing in that identifies a server, and there is nowhere to put it without changing the
+shape of every function that reads the table. So an archive holding several hosts' rows cannot answer
+"which host was this on", and worse, `pid` is only unique **within** a server: measured on a
+1,209,600-row fixture, 1,209,600 distinct pids, and on a second host those same pids mean entirely
+different sessions. A multi-host archive would silently attribute one host's blocked session to
+another's, which for a diagnostic tool is worse than having no archive.
+
+**`sampled_at` does not separate hosts either.** It is a `timestamptz`, and hosts sampling on a
+shared cron land on the same grid: measured 60,481 distinct samples for 1,209,600 rows, which is
+exactly 20 sessions per sample. Two hosts on the same schedule produce two sets of rows with identical
+timestamps and no way to tell them apart, so "everything in the last 7 days" across two hosts cannot
+be split into per-host figures.
+
+**So the realistic shape is one archive per host, or a `source` column added, and both are bigger
+than a read function.** A `source` column is the honest fix and it is not additive: it is
+distinguishable, yes, but every archive read function, the move, and the BRIN's usefulness all have
+to be re-derived around it, and rows moved before the column existed have no value for it. Per-host
+archives avoid the schema change entirely and are what the tooling should assume, at the cost of no
+cross-host query without a `UNION ALL` the caller writes.
+
+**What is already true and does the work for a review instance.** `lock_tree_archive()` re-applies
+`lock_tree_redact()` as rows cross, so what leaves the production server is already redacted, and a
+dump or a table copy of the archive carries no credential that the hot table did not. Measured: an
+archive built by the move held 0 rows with query text on a fixture whose source rows had none. That
+is the security story for holding an archive off-box, and it needs no further work.
+
+**And speed is genuinely not the constraint there.** Measured on the archive shape at 1,209,600 rows
+and 95 MB, a BRIN index of 32 kB: a full aggregate over every `waiting_for` value, which is the
+question a review instance actually exists to ask, took **546 ms**. A 7-day range pruned to 12,143
+buffers took 151 ms. Those are the numbers a general archive read function should be designed against,
+and they are one to two orders of magnitude outside anything acceptable on the production hot path,
+which is the whole reason the read functions were not taught to span the archive.
+
+### A `source_host` column, considered: the value is the hard part, not the column
+
+Proposed for a multi-host review instance holding archives from about a dozen production servers.
+Adding a column is easy and is the smaller half of the problem. Three things were measured, and two
+of them change the answer.
+
+**The obvious source value does not exist.** `inet_server_addr()` is the first thing anyone would try
+and it returns **NULL over a unix socket**, verified on a scratch cluster built for the purpose: both
+`inet_server_addr()` and `inet_server_port()` came back NULL. A local cron job using a socket is the
+normal way to run `lock_tree_archive()`, so the source value would be NULL exactly where it is most
+likely to be set. In a container it is also the container's address, which is not the host's.
+
+**`pg_control_system().system_identifier` is the value that works.** Measured over a unix socket on
+the same scratch cluster: 7694203821877422042, non-null, and it is assigned at `initdb`, so it
+survives restarts, address changes and container rebuilds, and it is unique per cluster. The weaker
+alternative is `cluster_name`, which is a `GUC` a DBA can set and which is **empty by default**,
+verified. An operator who forgets to set it gets twelve hosts all labelled with the empty string, which
+is the exact failure the column exists to prevent.
+
+**A per-host PARTITION is the wrong answer twice.** Partitioning `lock_tree_history_archive` by a
+host column would give clean pruning, and the roadmap has already measured what partitioning costs on
+the read side: 38% to 203% depending on window, because the planner loses the index probe once the
+inner side of a join is a multi-way `Append`. A per-host partition is also a schema-per-host wearing a
+different hat, which is the simpler option already recommended.
+
+**So the shape is: one archive table per host, no column, and the `source_host` idea is declined for
+the archive itself.** It is however worth keeping in mind for the *review* instance, where a table
+holding many hosts genuinely cannot tell them apart, and where the fix is the caller's choice of
+schema or table name rather than a column in an extension they do not maintain. Storage for a dozen
+hosts is 0.33 TiB a year at production-shaped query text and 0.15 TiB at the fixture's, with BRIN
+costing 384 kB in total, so nothing here is a storage argument.
+
+**The migration cost is real and is the other reason to decline.** 1.1.6 is already shipped, so any
+archive a user has filled has rows with no host value, and `ALTER TABLE ADD COLUMN` gives NULL for
+every one of them. The roadmap already records that `ADD COLUMN` appends, which is why column order on
+these tables is a named and checked exception. Adding a column to the archive in 1.1.7 would start
+that exception for a column nobody needs, on the strength of a scenario the current design already
+answers by having one archive per host.
+
+### A documentation review of 1.1.6, which found four things missing
+
+Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of
+the four are gaps in the release itself and one is in the documentation around it.
+
+**The archive table is not optional, and nothing said so.** It is created empty on every install and
+every upgrade path, exactly as `lock_tree_history` is: no flag, no enablement, no function to call
+first. What is optional is using it. Both `INSTALL.md` and `docs/history.md` now say so, and give
+the reason, which is that a function creating it would have to be `SECURITY DEFINER` to be usable by
+an operator without `CREATE` on the schema.
+
+**`lock_tree_archive()` needs four privileges across two tables, and none were documented.** It is
+`SECURITY INVOKER`, so the grants for reading the history do not carry over. Measured one at a time:
+`SELECT, DELETE` on `lock_tree_history`, `SELECT, INSERT` on `lock_tree_history_archive`, and
+`EXECUTE` on the procedure. The error names the table and not the missing privilege, so the natural
+reading of `permission denied for table lock_tree_history_archive` is that the table is missing rather
+than that the caller lacks `INSERT` on it. A new `Grants for the archive` section in `INSTALL.md` sets
+it out, the procedure's own `COMMENT` carries it, and `test/23_archive.sql` now asserts both halves:
+that a role with the monitoring grant alone moves nothing, and that the same role moves rows once
+given the rest.
+
+**Two silent behaviours.** `lock_tree_prune()` and `lock_tree_prune_batched()` do not touch the
+archive, measured: two rows in, `lock_tree_prune(interval '7 days')`, two rows still there. And
+`lock_tree_history_size()` does not count it, measured: zero hot rows, two archived, and the function
+reported zero. Both are correct, both are now stated on the procedure's `COMMENT` where the reader
+hits them, and the second means that if you archive you must size from the documentation rather than
+from the sizing function.
+
+**`scripts/check-install.sh` does not know about 1.1.6's objects**, or 1.1.4's or 1.1.5's. It lists
+twenty names and `lock_tree_duration`, `lock_tree_replay`, `lock_tree_deadlocks`,
+`lock_tree_deadlock_participants`, `lock_tree_history_size` and `lock_tree_replay_samples` are all
+absent from it. That is pre-existing and out of scope for a patch, but it means the install checker
+would report a healthy 1.1.6 as complete, and that is a claim it is quietly making.
 
 ## 1.1.5 (2026-10-07)
 
