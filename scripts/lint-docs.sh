@@ -26,6 +26,14 @@ pass=0
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail + 1)); }
 
+# No check in this file pipes into grep -q; every one takes its input as a here-string. Under the
+# pipefail set above, grep -q exiting on its first match closes the pipe, the producer takes SIGPIPE,
+# and the pipeline reports "not found" for a match it found, once the input is over the 64 KiB pipe
+# buffer. Found in the Objects-row check added after 1.1.10, which reported real rows missing at
+# random. Twelve older sites had the same shape and none could fire on today's inputs: the largest
+# is a 1,473-byte fenced block in INSTALL.md. They were changed anyway, so nobody has to work out which
+# are safe.
+
 # The newest full release script, i.e. what CREATE EXTENSION installs by default.
 # Release files are pg_lock_tree--X.Y.sql. Update paths are pg_lock_tree--X.Y--Z.W.sql,
 # and are identified by the second separator, so the anchored pattern below keeps
@@ -162,7 +170,7 @@ fi
 # that rather than DATA (which legitimately does not list them).
 step "every SQL file gets installed"
 for f in pg_lock_tree--*.sql; do
-    if echo "$f" | grep -qE '^pg_lock_tree--[0-9]+(\.[0-9]+)*--[0-9]+(\.[0-9]+)*\.sql$'; then
+    if grep -qE '^pg_lock_tree--[0-9]+(\.[0-9]+)*--[0-9]+(\.[0-9]+)*\.sql$' <<<"$f"; then
         # An update path. These are deliberately NOT in DATA: PGXS copies DATA by
         # name, and an update script is found by a different convention, so the
         # Makefile installs them from a wildcard instead.
@@ -353,7 +361,7 @@ for f in $DOCS_ALL; do
           # newline separated: the characters around a target are newlines, not the spaces the pattern
           # asks for. Every link therefore fell through to the bare-name branch and the two rules
           # collapsed into one, which is the bug this whole change set was about.
-          if printf '%s\n' "$link_targets" | grep -qxF -- "$p"; then
+          if grep -qxF -- "$p" <<<"$link_targets"; then
               if [ "$dir" = "." ]; then
                       if [ -e "$t" ]; then
                           ok "$f -> $t"
@@ -715,19 +723,18 @@ step "every example is either captured or marked as written"
 # The marker may sit above the fence, as generated markers do, or inside it. Both count.
 classified() {
     local f=$1 lo=$2 hi=$3
-    sed -n "${lo},${hi}p" "$f" \
-        | grep -qE '<!-- (generated|illustrative):' && return 0
+    grep -qE '<!-- (generated|illustrative):' <<<"$(sed -n "${lo},${hi}p" "$f")" && return 0
     # and the four lines above the block, for a marker followed by a blank line
     local start=$(( lo > 4 ? lo - 4 : 1 ))
-    sed -n "${start},$(( lo - 1 ))p" "$f" | grep -qE '<!-- (generated|illustrative):'
+    grep -qE '<!-- (generated|illustrative):' <<<"$(sed -n "${start},$(( lo - 1 ))p" "$f")"
 }
 
 looks_like_output() {
     # $1 is the block body
-    printf '%s\n' "$1" | grep -qE 'postgres=#|^\s*[a-z_][a-z_ ]*\|' \
-        || printf '%s\n' "$1" | grep -qE '^\s*\|?\s*[0-9]+\s*\|' \
-        || printf '%s\n' "$1" | grep -qE '^\s*[├└│]' \
-        || printf '%s\n' "$1" | grep -qE '^\s*\|[-= ]{3,}'
+    grep -qE 'postgres=#|^\s*[a-z_][a-z_ ]*\|' <<<"$1" \
+        || grep -qE '^\s*\|?\s*[0-9]+\s*\|' <<<"$1" \
+        || grep -qE '^\s*[├└│]' <<<"$1" \
+        || grep -qE '^\s*\|[-= ]{3,}' <<<"$1"
 }
 
 # CHANGELOG.md is excluded, for the reason check_object excludes it: a changelog is a record of what
@@ -807,7 +814,7 @@ else
     masked=$(printf '%s\n' "$probe" | mask_text "${MASK_EXPRS[@]}")
     if [ "$masked" = "$probe" ]; then
         bad "the mask changed nothing, so a generated example is compared verbatim and drift in a pid or a wait would be invisible"
-    elif printf '%s' "$masked" | grep -qE '[0-9]{3,}|3\.5s|1m30s|[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+    elif grep -qE '[0-9]{3,}|3\.5s|1m30s|[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$masked"; then
         bad "the mask left a volatile token behind: $masked"
     else
         # The replacement text is part of what is being checked, not just the fact of replacement.
@@ -995,7 +1002,7 @@ step "every make target is phony, so none can be silently up to date"
 all_targets=$(grep -oE '^[a-z][a-z0-9-]*:' Makefile | tr -d ':' | sort -u)
 phony=$(sed -n 's/^\.PHONY:[[:space:]]*//p' Makefile | tr ' ' '\n' | grep -v '^$' | sort -u)
 for t in $all_targets; do
-    if printf '%s\n' "$phony" | grep -qx "$t"; then
+    if grep -qx "$t" <<<"$phony"; then
         ok "make $t is declared .PHONY"
     else
         bad "make $t is not declared .PHONY"
@@ -1015,7 +1022,7 @@ collide=0
 for t in $all_targets; do
     if [ -e "$t" ]; then
         collide=$((collide + 1))
-        if printf '%s\n' "$phony" | grep -qx "$t"; then
+        if grep -qx "$t" <<<"$phony"; then
             ok "make $t shares its name with the $t path in the tree, and is phony, so it runs"
         fi
     fi
@@ -1064,8 +1071,8 @@ REFDOC=docs/reference.md
 if [ -f "$REFDOC" ]; then
     if grep -qx '## Objects' "$REFDOC"; then
         ok "$REFDOC has its ## Objects section"
-        if awk '/^## Objects$/{f=1;next} f&&/^## /{exit} f' "$REFDOC" \
-             | grep -A1 -x '| Object | Use |' | grep -qx '|---|---|'; then
+        if grep -qx '|---|---|' <<<"$(awk '/^## Objects$/{f=1;next} f&&/^## /{exit} f' "$REFDOC" \
+                                       | grep -A1 -x '| Object | Use |')"; then
             ok "the Objects table in $REFDOC has its header row and separator"
         else
             bad "the Objects table in $REFDOC has lost its '| Object | Use |' header or separator"
