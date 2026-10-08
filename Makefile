@@ -89,7 +89,7 @@ explain-alert:
 # server and superuser.
 check-deadlock:
 	./scripts/check-deadlock.sh $(if $(DEADLOCK_TIMEOUT),--deadlock-timeout=$(DEADLOCK_TIMEOUT),)
-# The read-side benchmark. It TRUNCATEs lock_tree_history to build a known fixture, so it
+# The read-side benchmark. It TRUNCATEs lock_tree_history and the archive to build a known fixture, so it
 # passes --force itself rather than relying on you having read this comment. Needs a server.
 bench-history:
 	./scripts/bench-history.sh --force $(if $(DAYS),--days=$(DAYS),) $(if $(EVERY),--every=$(EVERY),) $(if $(SESSIONS),--sessions=$(SESSIONS),) $(if $(KEEP),--keep,)

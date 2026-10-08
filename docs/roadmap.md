@@ -477,11 +477,16 @@ fail on its first line.
   only supported way to fill it re-redacts on the way across. A direct `INSERT` bypasses redaction
   exactly as it does in the history. Recorded because the first person to find a credential in the
   archive will look for the scrub 1.0.1 has for the history.
-- **`scripts/bench-history.sh` does not clear the archive** when it truncates the history to build a
-  fixture. No timing is wrong today because nothing reads the archive, but the script's contract is
-  that it leaves a table matching the fixture it describes, and a future function reading both would
-  be benchmarked against rows from the previous run with nothing in the output saying so. `demo.sql`
-  has the same shape.
+- **`scripts/bench-history.sh` did not clear the archive** when it truncated the history to build a
+  fixture. This entry said no timing was wrong because nothing read the archive; by the time it was
+  fixed that was no longer true, since `lock_tree_history_size()` has reported `archive_bytes` since
+  1.1.7 and `lock_tree_archive_find()` reads it since 1.1.8. **Closed after 1.1.10:** the script now
+  truncates both tables, says so in the `--force` refusal, prints the archive's row count with the
+  fixture, and refuses to time anything if it is not 0. Run for real with 5,000 rows planted in the
+  archive first: they were cleared, the run reported `archive | 0 rows`, and every plan check passed.
+  **Still open for `demo.sql`**, which truncates `lock_tree_history` at lines 257 and 410 and never
+  touches the archive. Nothing it prints reads the archive today, so it is the same shape without
+  the consequence, and it is left for a change that runs the demo.
 - **What each root *holds* that its waiters want**, not only what the waiters ask for. The wait side is
   reported; the hold side is `pg_locks` and the lock tags, and the interesting version is a diff
   against what the waiter is asking for.

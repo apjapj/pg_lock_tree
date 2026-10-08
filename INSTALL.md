@@ -543,7 +543,7 @@ Everything else is unchanged, and it is all a replace, so no grants are revoked.
 make bench-history     # time the read side against a synthetic 1.2M row history
 ```
 
-That **truncates `lock_tree_history`**. Run it against a scratch database.
+That **truncates `lock_tree_history` and `lock_tree_history_archive`**. Run it against a scratch database.
 
 **Updating from 1.1.8 drops and recreates `lock_tree_archive_find()`.** 1.1.9 removed its `samples`
 output column, which was the constant 1, and an output column cannot be removed by a replace. If you

@@ -6,7 +6,11 @@
 # build a history of a stated shape, run each read function, print the times.
 #
 # It builds its own data and prunes it afterwards, so it is safe to run against a scratch database.
-# It does TRUNCATE lock_tree_history, and it says so and refuses to run without --force.
+# It does TRUNCATE lock_tree_history AND lock_tree_history_archive, and it says so and refuses to run
+# without --force. The archive joined in 1.1.10: before that the script emptied only the history, so a
+# fixture it described as N rows sat beside whatever a previous run or a real archive left in the cold
+# tier, and anything reading archive_bytes or the archive was measured against rows the output never
+# mentioned. A fixture is only a fixture if the script controls every table the measured code reads.
 #
 # Usage:
 #   ./scripts/bench-history.sh                     # 7 days, 10s interval, 20 blocked sessions
@@ -47,7 +51,8 @@ say_bad() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=1; }
 
 if [ "$force" -ne 1 ]; then
     cat >&2 <<'MSG'
-  This script TRUNCATEs lock_tree_history to build a known fixture, and then prunes it.
+  This script TRUNCATEs lock_tree_history AND lock_tree_history_archive to build a known
+  fixture, and empties the history again afterwards. The archive is not restored.
 
   Run it against a scratch database, or pass --force to confirm you mean it.
 MSG
@@ -69,6 +74,7 @@ printf '\n  \033[1mfixture\033[0m: %s days, every %s, %s blocked sessions per sa
 # from a lateral. Writing AS t(at, n) is a syntax error, which is what the first version did.
 psql -X -q >/dev/null 2>&1 <<SQL
 TRUNCATE lock_tree_history;
+TRUNCATE lock_tree_history_archive;
 INSERT INTO lock_tree_history
   (sampled_at, root_pid, depth, pid, state, waiting_for, wait_age,
    application_name, query, root_object, query_id)
@@ -95,6 +101,17 @@ SELECT '  rows', count(*),
        'size', pg_size_pretty(pg_total_relation_size('lock_tree_history'))
   FROM lock_tree_history" | sed 's/^/ /'
 
+# And the archive, stated rather than assumed: it is part of the fixture now, and empty is its shape.
+# A non-empty archive here means the TRUNCATE above did not run, and lock_tree_history_size() would
+# report archive_bytes for rows this output does not describe.
+archived=$(psql -X -tA -c "SELECT count(*) FROM lock_tree_history_archive" 2>&1)
+if [ "$archived" = 0 ]; then
+    printf '   archive | 0 rows, as the fixture requires\n'
+else
+    say_bad "lock_tree_history_archive holds ${archived} rows after the fixture was built; refusing to time it"
+    exit 1
+fi
+
 # VACUUM, and not ANALYZE alone, because a fixture loaded by one big INSERT has no visibility map at
 # all. Without one, an index-only scan cannot skip the heap and falls back to fetching every page, so
 # the timings below would describe a table no real one ever looks like: a real history is appended to
@@ -119,7 +136,17 @@ SELECT '  rows', count(*),
 # been vacuumed. Hence the second half of the fix, which is the important half: capture the output
 # and refuse to report timings from a fixture that is not in the state the numbers assume.
 vacout=$(psql -X -q -c 'VACUUM (ANALYZE, PARALLEL 0) lock_tree_history' 2>&1)
-if printf '%s' "$vacout" | grep -qi 'ERROR'; then
+# Every test of captured text in this script uses a here-string, never printf piped into grep -q. Under
+# the pipefail set at the top, grep -q exiting on its first match closes the pipe, printf takes SIGPIPE
+# (exit 141), and the pipeline reports "not found" for a match it found. That needs input over the
+# 64 KiB pipe buffer, and nothing here captures that much: measured on PostgreSQL 18, the largest is the
+# by_application() plan at 5,989 bytes, and the VACUUM output is empty on success. A plan's size follows
+# the query, not the history, so a bigger fixture does not grow it. So this is the pattern removed
+# before any input grows into it, not a bug that was firing. Demonstrated with pipefail on: a
+# 303,013-byte input with an early match exits 141 five times out of five through printf | grep -q and
+# 0 five times out of five through the here-string. Nested greps take the inner result as a
+# here-string too, so no pipe is left feeding a grep -q.
+if grep -qi 'ERROR' <<<"$vacout"; then
   printf '  \033[31merror\033[0m  the VACUUM failed, so every timing below would describe an\n'
   printf '         unvacuumed table and must not be read as a result:\n'
   printf '%s\n' "$vacout" | sed 's/^/           /' | head -6
@@ -226,7 +253,7 @@ printf '\n  \033[1mindex usage\033[0m, the claim that the plan actually seeks\n\
 # needs no ANALYZE and no timing, and it cannot pass vacuously the way a time bound can.
 plan=$(psql -X -tA -c "
 EXPLAIN SELECT count(*) FROM lock_tree_duration(interval '1 millisecond')" 2>/dev/null)
-if printf '%s' "$plan" | grep -q 'Index Cond'; then
+if grep -q 'Index Cond' <<<"$plan"; then
     say_ok "the window lower bound became an Index Cond on sampled_at, not a Filter over the index"
 else
     say_bad "no Index Cond: the window bound is still a filter over the whole index"
@@ -241,8 +268,8 @@ fi
 # question. The signature is a node carrying "Filter: (depth > 0)" with no index bound beside it.
 for fn in lock_tree_duration lock_tree_duration_by_application; do
   wp=$(psql -X -tA -c "EXPLAIN SELECT * FROM ${fn}(interval '7 days')" 2>/dev/null)
-  if printf '%s\n' "$wp" | grep -q 'Filter: (depth > 0)'; then
-    if printf '%s\n' "$wp" | grep -B2 'Filter: (depth > 0)' | grep -q 'Index Cond'; then
+  if grep -q 'Filter: (depth > 0)' <<<"$wp"; then
+    if grep -q 'Index Cond' <<<"$(grep -B2 'Filter: (depth > 0)' <<<"$wp")"; then
       say_ok "${fn} keeps its waiter-side scan inside the window"
     else
       say_bad "${fn} reads every retained waiter row: a node carries Filter: (depth > 0) with no index bound, so the cost follows retention rather than the window"
@@ -263,7 +290,7 @@ done
 byapp_star=$(psql -X -tA -c "EXPLAIN SELECT * FROM lock_tree_duration_by_application()" 2>/dev/null)
 byapp_count=$(psql -X -tA -c "EXPLAIN SELECT count(*) FROM lock_tree_duration_by_application()" 2>/dev/null)
 
-if printf '%s' "$byapp_star" | grep -q 'Group Key: lock_tree_history.application_name'; then
+if grep -q 'Group Key: lock_tree_history.application_name' <<<"$byapp_star"; then
     say_ok "lock_tree_duration_by_application() still computes its ids column, so its timing is real"
 else
     say_bad "the ids aggregation is missing from the SELECT * plan, so the timing measured less work"
@@ -272,7 +299,7 @@ fi
 
 # The other half, and the reason the check is worth having: count(*) drops exactly that CTE. If this
 # ever stops being true the timings have stopped meaning what the comment above claims they mean.
-if printf '%s' "$byapp_count" | grep -q 'Group Key: lock_tree_history.application_name'; then
+if grep -q 'Group Key: lock_tree_history.application_name' <<<"$byapp_count"; then
     say_bad "count(*) now computes the ids column too, so the reason for SELECT * is gone; re-measure"
 else
     say_ok "and discriminating: count(*) still drops the ids CTE, which is why the timings use SELECT *"
@@ -294,14 +321,14 @@ plan=$(psql -X -tA -c "EXPLAIN SELECT count(*) FROM lock_tree_replay(now())" 2>/
 # NOT EVIDENCE. This one passes on 0.14 as well, because the outer join to the chosen sample is an
 # index seek in both the old and the new shape. It is kept because its absence would mean something
 # is genuinely wrong, but it does not on its own show the old behaviour is gone. The two below do.
-if printf '%s' "$plan" | grep -q 'Index Cond'; then
+if grep -q 'Index Cond' <<<"$plan"; then
     say_ok "replay's plan contains an index seek on sampled_at (necessary, not sufficient)"
 else
     say_bad "replay has no index seek at all on sampled_at"
     printf '%s\n' "$plan" | sed 's/^/        /' | head -14
 fi
 
-if printf '%s' "$plan" | grep -q 'Seq Scan on lock_tree_history'; then
+if grep -q 'Seq Scan on lock_tree_history' <<<"$plan"; then
     say_bad "replay still sequential-scans the history to find one sample"
     printf '%s\n' "$plan" | sed 's/^/        /' | head -14
 else
@@ -312,7 +339,7 @@ if [ "$keep" -eq 1 ]; then
     printf '\n  fixture left in place (--keep)\n\n'
 else
     psql -X -q -c 'TRUNCATE lock_tree_history' >/dev/null 2>&1
-    printf '\n  fixture truncated; the history is as you left it\n\n'
+    printf '\n  fixture truncated: the history and the archive are both empty\n\n'
 fi
 
 if [ "$fail" -eq 0 ]; then
