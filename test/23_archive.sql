@@ -45,7 +45,7 @@ $ext$;
 -- file is about 1.1.6. A guard that skipped would be a test that passes without testing anything.
 \o
 \echo # the archive objects exist, and are a table and a procedure
-SELECT plan(26);
+SELECT plan(28);
 SELECT has_table('lock_tree_history_archive',
                  'the archive table is there');
 
@@ -258,6 +258,100 @@ SELECT is(:arch_again::int, :arch_after::int,
 -- two zeroes and pass or fail for no reason, which is the kind of check that reports its own
 -- broken state as a pass.
 --
+-- The grants, because they are four privileges across two tables and none of them come from the
+-- monitoring grants in INSTALL.md. Without this section the failure is "permission denied for table
+-- lock_tree_history_archive", which names the table and not the missing privilege, and the natural
+-- reading of it is that the archive table is missing rather than that the caller lacks INSERT on it.
+--
+-- The role is created and dropped inside this file, like test/02 does, so nothing is left behind and
+-- no existing role is modified. The procedure is a procedure, so CALL, and it needs EXECUTE on it.
+-- Cleared the way test/02_permissions.sql clears its role, which is the only way that works: a bare
+-- DROP ROLE is refused while the role still holds grants, so a run that failed part way would leave
+-- the role behind and the next run would stop at CREATE ROLE rather than at the assertion that was
+-- actually wrong. That is a test that reports the wrong failure twice.
+DO $role$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lock_tree_archiver') THEN
+    EXECUTE 'DROP OWNED BY lock_tree_archiver';
+  END IF;
+END
+$role$;
+DROP ROLE IF EXISTS lock_tree_archiver;
+CREATE ROLE lock_tree_archiver;
+\o /dev/null
+\set QUIET 1
+GRANT USAGE ON SCHEMA public TO lock_tree_archiver;
+GRANT SELECT ON lock_tree_history TO lock_tree_archiver;   -- the documented monitoring grant
+INSERT INTO lock_tree_history (sampled_at, root_pid, depth, pid, application_name, query)
+SELECT now() - interval '60 days', 4000, 0, 4000, 'archtest', 'SELECT 1'
+FROM generate_series(1, 3);
+\o
+\set QUIET 0
+
+-- The grants cannot be tested with throws_ok or lives_ok, and the reason is worth stating because it
+-- cost this section two wrong attempts. Both wrap the statement in a subtransaction, and a procedure
+-- that COMMITs is refused there with 2D000 "invalid transaction termination" before it ever reaches
+-- a privilege check. So the call under test never ran: the first attempt asserted a permission error
+-- and got the transaction error, the second asserted success and got the same. test/15 hits the same
+-- wall with lock_tree_prune_batched() and asserts the effect by counting rows instead.
+--
+-- So: assert by effect. A role with only SELECT on the history cannot move anything, which is the
+-- privilege claim being made, and a role with the full set can.
+\o /dev/null
+\set QUIET 1
+SELECT count(*) AS before_denied FROM lock_tree_history WHERE application_name = 'archtest' \gset
+\o
+\set QUIET 0
+
+-- ON_ERROR_STOP is off for this one statement, deliberately, and it is the only place in this file
+-- where an error is expected and allowed to stop nothing. The call is refused on the ARCHIVE table,
+-- which is the second of the four privileges, and the error aborts the file under ON_ERROR_STOP and
+-- takes the twenty-six assertions after it with it. Refusing is the point: the role cannot get past
+-- the history read without the archive INSERT, and the row count after proves nothing moved.
+\set ON_ERROR_STOP 0
+SET ROLE lock_tree_archiver;
+CALL lock_tree_archive(interval '1 day');
+RESET ROLE;
+\set ON_ERROR_STOP 1
+
+\o /dev/null
+\set QUIET 1
+SELECT count(*) AS after_denied FROM lock_tree_history WHERE application_name = 'archtest' \gset
+\o
+\set QUIET 0
+
+SELECT is(:after_denied::int, :before_denied::int,
+          'SELECT on the history alone is not enough: nothing was moved');
+
+-- Now the full set, and the call really does run this time.
+\o /dev/null
+\set QUIET 1
+GRANT DELETE ON lock_tree_history TO lock_tree_archiver;
+GRANT SELECT, INSERT ON lock_tree_history_archive TO lock_tree_archiver;
+GRANT EXECUTE ON PROCEDURE lock_tree_archive(interval, integer) TO lock_tree_archiver;
+\o
+\set QUIET 0
+
+SET ROLE lock_tree_archiver;
+CALL lock_tree_archive(interval '1 day');
+RESET ROLE;
+
+\o /dev/null
+\set QUIET 1
+SELECT count(*) AS archiver_moved FROM lock_tree_history_archive
+ WHERE application_name = 'archtest' \gset
+DO $role$
+BEGIN
+  EXECUTE 'DROP OWNED BY lock_tree_archiver';
+END
+$role$;
+DROP ROLE lock_tree_archiver;
+\o
+\set QUIET 0
+
+SELECT is(:archiver_moved::int, 3,
+          'and with SELECT and DELETE on the history plus SELECT and INSERT on the archive, the same role moves them');
+
 -- The index is asserted to be BRIN and to be the only one, above. Its SIZE is deliberately not
 -- asserted here, and the first draft of this file got that wrong twice.
 --

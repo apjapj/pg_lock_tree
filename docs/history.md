@@ -416,6 +416,34 @@ same columns indexed by BRIN and nothing else, and `lock_tree_archive()`, which 
 in committed batches. What follows is the reasoning and the measured costs behind them, and the one
 limitation to know about before relying on it.
 
+### The archive table already exists
+
+`lock_tree_history_archive` is created empty by the extension on every install and on every upgrade
+path, exactly as `lock_tree_history` is. **There is nothing to enable and no function to call
+first.** What is optional is using it: nothing reads it, nothing writes to it, and if you never call
+`lock_tree_archive()` it stays empty forever. An empty table with an empty BRIN index is a few pages.
+
+It is created unconditionally rather than on demand because a function that created it would have to
+be `SECURITY DEFINER` to be usable by an operator without `CREATE` on the schema, and that is a large
+privilege to hand a function whose job is to move rows.
+
+### Two things that are silent, and need saying out loud
+
+Both are deliberate and neither is a bug, but both would be discovered as one if you had to wait.
+
+**`lock_tree_prune()` and `lock_tree_prune_batched()` do not touch the archive.** Measured: two rows
+in the archive, then `SELECT lock_tree_prune(interval '7 days')`, and two rows still there. That is
+right, since the archive is a deliberate copy you made and pruning it by accident would be worse. It
+does mean the archive only shrinks if you delete from it yourself, which is the one thing in this
+section that ships no function for.
+
+**`lock_tree_history_size()` does not count the archive.** Measured: zero rows in the hot table, two
+in the archive, and the function reported zero rows, because it reports
+`pg_total_relation_size('lock_tree_history')` and nothing else. So it understates your total on-disk
+history by however much you have archived, on top of its existing blind spot where it reports the hot
+file's high-water mark rather than its live rows. If you archive, size from the tables in this section
+rather than from that function.
+
 ### What `lock_tree_archive()` does, and what it costs
 
 ```sql

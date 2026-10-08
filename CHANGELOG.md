@@ -21,6 +21,40 @@ than on the throwaway probe tag that proved the trigger worked. That is the case
 opened for, and it is worth recording separately from the release because the release itself is
 already tagged and must not be rewritten to mention it.
 
+### A documentation review of 1.1.6, which found four things missing
+
+Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of
+the four are gaps in the release itself and one is in the documentation around it.
+
+**The archive table is not optional, and nothing said so.** It is created empty on every install and
+every upgrade path, exactly as `lock_tree_history` is: no flag, no enablement, no function to call
+first. What is optional is using it. Both `INSTALL.md` and `docs/history.md` now say so, and give
+the reason, which is that a function creating it would have to be `SECURITY DEFINER` to be usable by
+an operator without `CREATE` on the schema.
+
+**`lock_tree_archive()` needs four privileges across two tables, and none were documented.** It is
+`SECURITY INVOKER`, so the grants for reading the history do not carry over. Measured one at a time:
+`SELECT, DELETE` on `lock_tree_history`, `SELECT, INSERT` on `lock_tree_history_archive`, and
+`EXECUTE` on the procedure. The error names the table and not the missing privilege, so the natural
+reading of `permission denied for table lock_tree_history_archive` is that the table is missing rather
+than that the caller lacks `INSERT` on it. A new `Grants for the archive` section in `INSTALL.md` sets
+it out, the procedure's own `COMMENT` carries it, and `test/23_archive.sql` now asserts both halves:
+that a role with the monitoring grant alone moves nothing, and that the same role moves rows once
+given the rest.
+
+**Two silent behaviours.** `lock_tree_prune()` and `lock_tree_prune_batched()` do not touch the
+archive, measured: two rows in, `lock_tree_prune(interval '7 days')`, two rows still there. And
+`lock_tree_history_size()` does not count it, measured: zero hot rows, two archived, and the function
+reported zero. Both are correct, both are now stated on the procedure's `COMMENT` where the reader
+hits them, and the second means that if you archive you must size from the documentation rather than
+from the sizing function.
+
+**`scripts/check-install.sh` does not know about 1.1.6's objects**, or 1.1.4's or 1.1.5's. It lists
+twenty names and `lock_tree_duration`, `lock_tree_replay`, `lock_tree_deadlocks`,
+`lock_tree_deadlock_participants`, `lock_tree_history_size` and `lock_tree_replay_samples` are all
+absent from it. That is pre-existing and out of scope for a patch, but it means the install checker
+would report a healthy 1.1.6 as complete, and that is a claim it is quietly making.
+
 ## 1.1.6 (2026-10-08)
 
 A cold tier, and one function. `lock_tree_history_archive` is a second table with the same columns as

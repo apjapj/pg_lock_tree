@@ -201,4 +201,16 @@ COMMENT ON PROCEDURE @extschema@.lock_tree_archive(interval, integer) IS
   'preserve a laxer redaction policy than the one you run now. A procedure, not a function, because '
   'only a procedure called outside a transaction block may COMMIT. Put the CALL on its own line: '
   'inside BEGIN/COMMIT it is refused, and it checks for that before moving anything. No shipped '
-  'read function reads the archive.';
+  'read function reads the archive. '
+  ''
+  'The grants, because the error names the table and not the missing privilege. This procedure is '
+  'SECURITY INVOKER and needs, measured one at a time: SELECT and DELETE on lock_tree_history, '
+  'SELECT and INSERT on lock_tree_history_archive, and EXECUTE here. The monitoring grants for '
+  'reading the history are not enough and none of them carry over. See INSTALL.md, Grants for the '
+  'archive. DELETE is the wide one: a role that can call this can destroy history, so it belongs '
+  'to a maintenance role rather than a monitoring one. '
+  ''
+  'Two things this deliberately does not do, since both would otherwise be discovered by their '
+  'absence: it does not prune the archive, which only shrinks if you delete from it yourself, and '
+  'lock_tree_history_size() does not count it, so that function understates your on-disk history '
+  'by however much you have archived.';

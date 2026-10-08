@@ -257,6 +257,11 @@ ERROR:  permission denied for view lock_tree
   The grant is not restored for anyone on upgrade, on purpose. Reinstating it silently would put the
   hole back for exactly the roles that had it.
 
+**If the same role also archives**, which since 1.1.6 is a separate decision from sampling, see
+[Grants for the archive](#grants-for-the-archive) below. It is four privileges across two tables and
+none of them come from the grants above, so a role that samples and reads successfully will still get
+`permission denied` from `lock_tree_archive()` until you add them.
+
 **If the same role also raises alerts**, `lock_tree_notify()` and `lock_tree_notify_resolved()` need
 access to `lock_tree_alert`, and it is more than one privilege. Measured on 1.0.1:
 
@@ -291,6 +296,54 @@ the missing privilege, which is why it is written down here.
 ```sql
 GRANT USAGE ON SCHEMA monitoring TO monitoring;
 GRANT SELECT ON monitoring.lock_tree TO monitoring;
+```
+
+## Grants for the archive
+
+**The archive table already exists.** `lock_tree_history_archive` is created empty by the extension
+on every install, and by every upgrade path, exactly as `lock_tree_history` is. There is nothing to
+enable, no flag, and no function to call first, and there is no way to install 1.1.6 without it. An
+empty table with an empty BRIN index is a few pages.
+
+If you have read somewhere that it is optional, what is optional is **using** it: nothing reads it,
+nothing writes to it, and if you never call `lock_tree_archive()` it stays empty forever. The reason
+it is created unconditionally rather than on demand is that a function which created it would have to
+be `SECURITY DEFINER` to be usable by an operator without `CREATE` on the schema, and handing that
+privilege to a function whose job is to move rows is a poor trade for a few pages of disk.
+
+`lock_tree_archive()`, added in 1.1.6, moves rows out of `lock_tree_history` and into
+`lock_tree_history_archive`. It is `SECURITY INVOKER`, so it runs as the caller and needs table
+privileges of its own. **None of the grants above are sufficient**, and the error names the table
+rather than the privilege, so the four below are written out rather than left to be discovered.
+
+```sql
+GRANT SELECT, DELETE ON lock_tree_history          TO monitoring;
+GRANT SELECT, INSERT ON lock_tree_history_archive  TO monitoring;
+GRANT EXECUTE ON PROCEDURE lock_tree_archive(interval, integer) TO monitoring;
+```
+
+Measured, one privilege at a time, on 1.1.6:
+
+| Grants | Result |
+|---|---|
+| none | `permission denied for table lock_tree_history` |
+| `SELECT ON lock_tree_history` | `permission denied for table lock_tree_history_archive` |
+| the three above | moves rows |
+
+`DELETE` on the history is required and is the widest privilege in the set. It is there because the
+procedure's job is to remove what it has copied, and a role that can call it can therefore destroy
+history: it is a maintenance role, not a monitoring one. `lock_tree_prune()` and
+`lock_tree_prune_batched()` need the same privilege for the same reason, and this is not a new shape,
+but it is a fourth thing to think about before handing a role to a job.
+
+**Give this to the role that runs the archive job, not to the role that samples or alerts.** They are
+separate jobs on separate cadences, and a read-only monitoring role has no business deleting history.
+
+For a non-public schema, qualify the table names:
+
+```sql
+GRANT SELECT, DELETE ON monitoring.lock_tree_history         TO monitoring;
+GRANT SELECT, INSERT ON monitoring.lock_tree_history_archive TO monitoring;
 ```
 
 ## Verify the install
