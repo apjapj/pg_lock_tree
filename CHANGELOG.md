@@ -21,6 +21,50 @@ than on the throwaway probe tag that proved the trigger worked. That is the case
 opened for, and it is worth recording separately from the release because the release itself is
 already tagged and must not be rewritten to mention it.
 
+### What else 1.1.6 broke, found by auditing rather than by tripping over it
+
+The four gaps above were found by looking for them after the fact. This is the systematic pass, and it
+went looking at every place the repo enumerates extension objects, counts them, or assumes a fixed
+set. Six more things, of which one is a real defect and one is a near-miss that a test now rules out.
+
+**A real defect: `scripts/bench-history.sh` builds a fixture and does not clear the archive.** It
+`TRUNCATE`s `lock_tree_history` to build a known fixture, and it does not touch
+`lock_tree_history_archive`. Nothing reads the archive, so no timing is wrong today. But the script's
+own contract is that it leaves a table matching a fixture it describes, and a future function that
+reads both would then be benchmarked against a table full of rows from the last run, with nothing in
+the output saying so. `demo.sql` has the same shape, truncating the history in two places.
+
+**The archive has no 1.0.1-equivalent scrub, and that is a decision rather than an oversight.**
+`pg_lock_tree--1.0.0--1.0.1.sql` contains a one-off `UPDATE` that re-redacts rows written before
+1.0.0, because until that release the history stored whatever query text it was given and a password
+sat in it until pruning removed it. The archive has no equivalent. It does not need one on the paths
+that exist: the only supported way to fill it is `lock_tree_archive()`, which redacts on the way
+across. A direct `INSERT` into the archive bypasses redaction exactly as a direct `INSERT` into the
+history does, and that is the same exposure the history has always had, not a new one. Worth writing
+down rather than leaving to be rediscovered by someone who finds a credential in the archive and looks
+for the scrub that 1.0.1 has for the history.
+
+**`scripts/check-install.sh` omits every object added since 0.16.** Already recorded above, and this pass
+confirms the extent: `lock_tree_duration`, `lock_tree_replay`, `lock_tree_replay_samples`,
+`lock_tree_deadlocks`, `lock_tree_deadlock_participants`, `lock_tree_history_size` and now the
+archive are all absent from its list of twenty. It reports a healthy install as complete.
+
+**`test/23_archive.sql` had a weaker `pg_dump` check than the one already in the repo.** It compared
+`extconfig` to a rendering of itself. `test/02_permissions.sql` already makes the stronger argument
+by unnesting `extconfig` and resolving each oid, which catches a registration of any of our tables
+rather than only the one named. The archive now uses the same shape, verified by planting a real
+`pg_extension_config_dump()` registration in a scratch extension version and confirming the assertion
+fails with `have: 1, want: 0`. A check that has never been shown to fail is a check that has not been
+shown to work.
+
+**Things that turned out to be fine, checked rather than assumed.** `DROP EXTENSION pg_lock_tree`
+removes the archive and its rows, verified with a row in it. `scripts/check-upgrade.sh` compares full index
+definitions via `pg_get_indexdef`, so the BRIN and its `pages_per_range = 32` are covered on all 25
+paths, not merely its existence. The archive's presence does not change any shipped function's plan
+or cost, since nothing reads it. And the 1.0.1 scrub is absent from the 1.1.6 release file by design:
+a fresh install creates an empty history, so there is nothing to scrub, and the scrub exists only for
+databases upgrading from 1.0.0 or earlier.
+
 ### A documentation review of 1.1.6, which found four things missing
 
 Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of

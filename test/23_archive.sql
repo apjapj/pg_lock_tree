@@ -82,18 +82,33 @@ SELECT ok((SELECT am.amname = 'brin' FROM pg_class c
 -- tables. A physical backup or a replica will still copy it, which is exactly why the move
 -- re-redacts rather than trusting the policy that was in force when each row was sampled.
 --
--- The property is that the archive is not among the relations pg_dump would dump, which is extconfig
--- being NULL or empty. The first version compared it to the string 'EMPTY' and that was wrong twice
--- over: extconfig is NULL rather than an empty array on a clean install, so the comparison failed on
--- every version, and a NULL result made the whole assertion NULL rather than false, which is a third
--- way to be wrong. Asserting the property with IS NULL or a coalesce cannot fail either way.
+-- The property is that the archive is not among the relations pg_dump would dump, and it is asserted
+-- by resolving extconfig rather than by comparing it to a rendering of itself. test/02_permissions.sql
+-- already makes this argument for the extension as a whole, and its version is the stronger one: it
+-- unnests extconfig and resolves each oid, so it catches a registration of ANY of our tables rather
+-- than only the one named. This is the same check narrowed to the new table, and it is here because a
+-- table added to an extension is exactly the thing that gets registered by habit.
 --
--- The COALESCE around the subquery matters: CI loads the release SQL directly rather than through
--- CREATE EXTENSION, so there is no extension row at all, and a bare scalar subquery over no rows
--- returns NULL, which is not a passing answer to a question about privileges.
-SELECT ok(coalesce((SELECT extconfig IS NULL
-                    FROM pg_extension WHERE extname = 'pg_lock_tree'), true),
-          'the archive is not in a pg_dump, matching the three existing tables');
+-- The first version of this compared extconfig to the string 'EMPTY', which was wrong twice: extconfig
+-- is NULL rather than an empty array on a clean install, so the comparison failed on every version, and
+-- a NULL result made the whole assertion NULL rather than false, which pgTAP reports as "test result
+-- was NULL", a third way to be wrong and the least legible. The coalesce also matters because CI loads
+-- the release SQL directly rather than through CREATE EXTENSION, so there is no extension row at all
+-- and a bare scalar subquery returns NULL, which is not a passing answer to a question about privileges.
+\o /dev/null
+\set QUIET 1
+SELECT (SELECT count(*)::int
+          FROM pg_extension e,
+               unnest(coalesce(e.extconfig, '{}'::oid[])) AS cfg(oid),
+               pg_class c
+         WHERE e.extname = 'pg_lock_tree'
+           AND c.oid = cfg.oid
+           AND c.relname LIKE 'lock\_tree%') AS any_registered \gset
+\o
+\set QUIET 0
+
+SELECT is(:any_registered::int, 0,
+          'the archive is not in a pg_dump, and neither is any other lock_tree table');
 
 -- Argument checks, before anything moves.
 SELECT throws_ok('CALL lock_tree_archive(NULL);',

@@ -350,10 +350,15 @@ fail on its first line.
 
   What survives is the hot-set win and the API gap. A 30-day hot window on a weekly archive makes the
   hot table 2.8 GB instead of 28.1 GB, ten times smaller, for about two seconds of copying a week.
-  Total disk is a wash. And the read functions still cannot see the archive, so a `since` window
-  silently truncates to what is hot, which is the one problem a cadence does not solve and the reason
-  this stays on the list rather than shipping. The costs, the BRIN recipe and the cadence arithmetic
-  are all in [docs/history.md](history.md#retiring-old-history).
+  Total disk is a wash. The costs, the BRIN recipe and the cadence arithmetic are all in
+  [docs/history.md](history.md#retiring-old-history).
+
+  **Shipped in 1.1.6, with the API gap left open on purpose.** `lock_tree_history_archive` and
+  `lock_tree_archive()` are in the release, and this entry is the record of why the read functions
+  were not changed with them: the 9.6 times slowdown on the root-to-waiter join, the 50% cost of an
+  empty archive, and the fact that a boundary-spanning read cannot be a view because the sampler
+  inserts into the history table. The remaining work is dedicated archive read functions, which is
+  an API decision rather than a tuning one, and it sits in the open questions below rather than here.
 - **Registering the tables for `pg_dump`.** Decided against, with reasons per table, and the decision
   is now pinned by a test and written up in [`INSTALL.md`](../INSTALL.md#backups-and-restores). The short
   version: `lock_tree_history` grows without bound and describes pids and timestamps that mean
@@ -368,6 +373,39 @@ fail on its first line.
 
 ## Open questions, not commitments
 
+- **Reading across the archive boundary.** 1.1.6 ships `lock_tree_history_archive` and
+  `lock_tree_archive()` and nothing reads the archive, so a `since` window silently stops at the hot
+  table rather than erroring. The obvious fix, teaching the existing read functions to span both
+  tables, was measured and rejected: with the archive as a `UNION ALL` on the inner side of the
+  root-to-waiter join the planner stops choosing the index probe, 96 ms to **924 ms** on the same
+  data, and an **empty** archive still costs 50%, so installations that never archive would pay for a
+  feature they do not use. It could not be a view either, since the sampler `INSERT`s into the history
+  table and PostgreSQL refuses `cannot insert into view` for any view containing `UNION`. So the
+  remaining option is dedicated archive read functions, a new API surface rather than a tuning knob,
+  and the fingerprint question a recurrence report would need is still unanswered.
+- **The archive is never pruned and nothing reports its size.** `lock_tree_prune()` and
+  `lock_tree_prune_batched()` do not touch it, deliberately, since it is a copy you made, so it only
+  shrinks if you delete from it yourself and no function does that. And `lock_tree_history_size()`
+  does not count it, so that function understates your on-disk history by however much you have
+  archived, on top of its existing blind spot where it reports the hot file's high-water mark rather
+  than its live rows. Both are stated on the procedure's `COMMENT` and in
+  [docs/history.md](history.md#retiring-old-history), and both are gaps rather than decisions.
+- **An archive needs no re-scrub, and that is worth a second look.** 1.0.1 shipped a one-off `UPDATE`
+  re-redacting rows written before 1.0.0, because until then the history kept whatever query text it
+  was given. The archive has no equivalent and does not need one on the paths that exist, since the
+  only supported way to fill it re-redacts on the way across. A direct `INSERT` bypasses redaction
+  exactly as it does in the history. Recorded because the first person to find a credential in the
+  archive will look for the scrub 1.0.1 has for the history.
+- **`scripts/check-install.sh` omits every object added since 0.16**, so it reports a healthy install
+  as complete. It lists twenty names and `lock_tree_duration`, `lock_tree_replay`,
+  `lock_tree_replay_samples`, `lock_tree_deadlocks`, `lock_tree_deadlock_participants`,
+  `lock_tree_history_size` and `lock_tree_history_archive` are all absent. Pre-existing, cheap, and
+  the right thing for a patch release.
+- **`scripts/bench-history.sh` does not clear the archive** when it truncates the history to build a
+  fixture. No timing is wrong today because nothing reads the archive, but the script's contract is
+  that it leaves a table matching the fixture it describes, and a future function reading both would
+  be benchmarked against rows from the previous run with nothing in the output saying so. `demo.sql`
+  has the same shape.
 - **What each root *holds* that its waiters want**, not only what the waiters ask for. The wait side is
   reported; the hold side is `pg_locks` and the lock tags, and the interesting version is a diff
   against what the waiter is asking for.
