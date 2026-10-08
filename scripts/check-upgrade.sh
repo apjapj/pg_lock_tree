@@ -226,5 +226,102 @@ else
   fi
 fi
 
+# ------------------------------------------------------------------ the 1.1.8 dependents guard
+#
+# 1.1.9 drops and recreates lock_tree_archive_find(), because its `samples` column was removed and an
+# OUT column cannot be removed by CREATE OR REPLACE. The check before that DROP, shipped in
+# pg_lock_tree--1.1.8--1.1.9.sql, was wrong: it reported a dependent view only when the view sat in the
+# extension's own schema, and then printed the function's name rather than the view's. 1.1.9 is a
+# frozen tag, so the corrected check ships in a DIRECT pg_lock_tree--1.1.8--1.1.10.sql, which
+# PostgreSQL prefers because it takes the shortest path. Everything below is about that one path.
+#
+# Run only when this server offers 1.1.8 as a starting point and the default is past 1.1.9. A FROM=
+# run that excludes 1.1.8 skips it too, since it chose not to exercise that path.
+guard_cases() {
+  local has
+  has=$("${PSQL[@]}" -d postgres -c "SELECT count(*) FROM pg_extension_update_paths('$EXT')
+                                      WHERE source = '1.1.8' AND target = '$DEFAULT' AND path IS NOT NULL")
+  [ "$has" = 1 ] || return 0
+  case " ${FROM:-1.1.8} " in *" 1.1.8 "*) ;; *) return 0 ;; esac
+  [ "$DEFAULT" != "1.1.9" ] || return 0
+
+  # 1. The path PostgreSQL actually takes from 1.1.8 is the direct one. pg_extension_update_paths()
+  #    reports the shortest path, and the shortest is what ALTER EXTENSION ... UPDATE runs, so this is
+  #    the direct statement of which script a 1.1.8 database executes.
+  local path
+  path=$("${PSQL[@]}" -d postgres -c "SELECT path FROM pg_extension_update_paths('$EXT')
+                                       WHERE source = '1.1.8' AND target = '$DEFAULT'")
+  if [ "$path" = "1.1.8--$DEFAULT" ]; then
+    echo "ok    1.1.8 -> $DEFAULT takes the direct script, not 1.1.8--1.1.9: $path"
+  else
+    echo "FAIL  1.1.8 -> $DEFAULT takes $path, so the corrected dependents guard never runs"
+    failed+=("guard-path")
+  fi
+
+  # 2. A dependent view refuses the update, names the view by its own schema-qualified name, gives the
+  #    six-columns recovery, and leaves the database exactly as it was. Two placements: another schema,
+  #    which 1.1.9's check missed entirely, and the extension's own schema, where it printed the wrong
+  #    name. The view selects `samples` on purpose: that is the column whose removal is the reason the
+  #    function is dropped, so it is the view an operator would actually have.
+  local where db err ver cols
+  for where in other_schema extension_schema; do
+    db="${PREFIX}_guard_${where}"
+    createdb "$db"
+    if [ "$where" = other_schema ]; then
+      view="reports.archive_peaks"
+      "${PSQL[@]}" -d "$db" -c "CREATE EXTENSION $EXT VERSION '1.1.8'" -c "CREATE SCHEMA reports"
+    else
+      view="public.archive_peaks"
+      "${PSQL[@]}" -d "$db" -c "CREATE EXTENSION $EXT VERSION '1.1.8'"
+    fi
+    "${PSQL[@]}" -d "$db" -c "CREATE VIEW $view AS
+      SELECT sampled_at, samples, peak_sessions FROM public.lock_tree_archive_find(interval '1 day')"
+
+    if "${PSQL[@]}" -d "$db" -c "ALTER EXTENSION $EXT UPDATE" 2>"$WORK/guard_$where.txt"; then
+      echo "FAIL  1.1.8 -> $DEFAULT with a view in the $where: the update succeeded, so the view was dropped or broken"
+      failed+=("guard-$where"); dropdb "$db"; continue
+    fi
+    err=$(cat "$WORK/guard_$where.txt")
+    ver=$("${PSQL[@]}" -d "$db" -c "SELECT extversion FROM pg_extension WHERE extname = '$EXT'")
+    cols=$("${PSQL[@]}" -d "$db" -c "SELECT string_agg(name, ',' ORDER BY ord) FROM pg_proc p,
+             unnest(p.proargnames) WITH ORDINALITY AS t(name, ord)
+            WHERE p.proname = 'lock_tree_archive_find' AND p.proargmodes[ord] = 't'")
+    local bad=""
+    case "$err" in *"these depend on it: view $view"*) ;; *) bad="$bad; the message does not name view $view" ;; esac
+    case "$err" in *"six columns, not seven"*) ;; *) bad="$bad; the message does not give the six-column recovery" ;; esac
+    case "$err" in *"plpgsql or string SQL body"*) ;; *) bad="$bad; the message does not warn about undetectable wrappers" ;; esac
+    case "$err" in *"lock_tree_archive_find, "*|*"these depend on it: public.lock_tree_archive_find"*)
+      bad="$bad; the message names the function instead of the view, which is the 1.1.9 defect" ;; esac
+    [ "$ver" = "1.1.8" ] || bad="$bad; the version is $ver, so the update did not roll back"
+    [ "$cols" = "sampled_at,samples,peak_sessions,longest_wait,total_wait,applications,queries" ] \
+      || bad="$bad; the function's columns are now $cols, so it was not left intact"
+    if [ -z "$bad" ]; then
+      echo "ok    1.1.8 -> $DEFAULT refuses with a view in the $where, names $view, and rolls back to 1.1.8"
+    else
+      echo "FAIL  1.1.8 -> $DEFAULT with a view in the $where${bad}"; sed 's/^/      /' "$WORK/guard_$where.txt"
+      failed+=("guard-$where")
+    fi
+
+    # 3. The documented caveat, pinned so it cannot quietly become untrue: an explicit UPDATE TO
+    #    '1.1.9' still runs the frozen 1.1.8--1.1.9 script and its faulty check. It is still SAFE,
+    #    because the DROP refuses on its own, but the error is PostgreSQL's generic one. If this ever
+    #    starts naming the view, the 1.1.9 script was edited, and the tag is no longer what shipped.
+    if "${PSQL[@]}" -d "$db" -c "ALTER EXTENSION $EXT UPDATE TO '1.1.9'" 2>"$WORK/guard19_$where.txt"; then
+      echo "FAIL  an explicit UPDATE TO '1.1.9' with a view in the $where succeeded"
+      failed+=("guard19-$where")
+    else
+      ver=$("${PSQL[@]}" -d "$db" -c "SELECT extversion FROM pg_extension WHERE extname = '$EXT'")
+      if [ "$ver" = 1.1.8 ] && ! grep -q "these depend on it: view" "$WORK/guard19_$where.txt"; then
+        echo "ok    an explicit UPDATE TO '1.1.9' still refuses and rolls back, with the old message: $(grep -m1 ERROR "$WORK/guard19_$where.txt" | cut -c1-110)"
+      else
+        echo "FAIL  an explicit UPDATE TO '1.1.9' with a view in the $where: version $ver, or the frozen script changed"
+        sed 's/^/      /' "$WORK/guard19_$where.txt"; failed+=("guard19-$where")
+      fi
+    fi
+    dropdb "$db"
+  done
+}
+guard_cases
+
 if [ ${#failed[@]} -gt 0 ]; then echo "upgrade paths that differ: ${failed[*]}"; exit 1; fi
 echo "all upgrade paths to $DEFAULT match a fresh install"

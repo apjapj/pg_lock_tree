@@ -1,3 +1,85 @@
+## 1.1.10 (2026-10-08)
+
+A soak release: one defect fix in an upgrade path, the text corrections that review of 1.1.9 found,
+and nothing else. No function behaves differently. No payload changes: the `tool` key the
+pg_incident_watch umbrella asks for waits for 1.2.0 and the shared contract it depends on.
+
+### The 1.1.8 -> 1.1.9 dependents check was wrong, and 1.1.10 goes around it
+
+1.1.9 drops and recreates `lock_tree_archive_find()` to remove `samples`, and checks first for objects
+depending on it. Found by review and reproduced before fixing, three ways that check was wrong:
+
+1. **A view outside the extension's schema passed silently.** It found the dependent view and then
+   joined `pg_proc` on `proname = 'lock_tree_archive_find'` inside the *view's* schema, which matched
+   nothing anywhere else.
+2. **A view inside the extension's schema was reported by the wrong name**: the function's,
+   `public.lock_tree_archive_find`, not the view's.
+3. **Its comment claimed an aborted upgrade leaves the extension with a function missing.** It does
+   not. `ALTER EXTENSION ... UPDATE` is one transaction and `DROP FUNCTION` without CASCADE refuses on
+   its own, so the update rolled back whole: version still 1.1.8, function intact, `samples` still
+   there. That is the real safety story, and it held in 1.1.9 too. The message was what was missing.
+
+1.1.9 is a frozen tag, and a `1.1.9--1.1.10` step cannot fix a check that has already run. So 1.1.10
+ships a **direct `pg_lock_tree--1.1.8--1.1.10.sql`**, which PostgreSQL takes because it is the
+shortest path. Its check **refuses** with `2BP01`, the code the DROP itself would raise, names every
+dependent view, materialized view and `BEGIN ATOMIC` function by its schema-qualified name, gives the
+six-columns recovery, and says in so many words that a plpgsql or string-body SQL function calling
+`lock_tree_archive_find()` records no dependency and must be checked by hand. Refuse rather than warn,
+because warning was never available: the DROP that follows refuses on the same dependency, and the
+only way past it is CASCADE, which would delete the operator's views.
+
+**An explicit `ALTER EXTENSION pg_lock_tree UPDATE TO '1.1.9'` still runs the old check.** It is
+still safe, with PostgreSQL's generic error. Update from 1.1.8 to 1.1.10, which a plain `UPDATE`
+does. [INSTALL.md](INSTALL.md) says so.
+
+`scripts/check-upgrade.sh` now proves each part: that `pg_extension_update_paths()` reports
+`1.1.8--1.1.10` as the path from 1.1.8; that a view in another schema, and one in the extension's
+schema, each refuse the update, are named, get the recovery text, and leave the database at 1.1.8
+with the seven-column function intact; and that an explicit `UPDATE TO '1.1.9'` still refuses with
+the old message, so an edit to the frozen script would be noticed. Shown to fail: with the new check's
+`RAISE` disabled in an installed copy, both view cases report FAIL; restored, both pass.
+
+### Two figures 1.1.9 shipped were not measurements of what they described
+
+**"At full coverage the index costs about 2.5 times an unbounded scan"** was in 1.1.9's
+`COMMENT ON FUNCTION lock_tree_archive_find`, and "the index is a small penalty" in its release-file
+comments and in the entries below. It came from reading a 60-day single-backend bitmap scan (820 ms)
+against an unbounded two-worker parallel sequential scan (319 ms), which differ in parallelism rather
+than in the index. Measured for 1.1.10 with only the plan changed: 1,209,600 archived rows aged 7 to
+14 days in `sampled_at` order, `pg_stats` correlation 1.0, PostgreSQL 18, 128 MB shared buffers, best
+of three, `count(*)` and `count(DISTINCT sampled_at)` over the window:
+
+| window | rows read | planner (bitmap) | forced seq scan | forced seq, no parallel |
+|---|---|---|---|---|
+| 8 days | 172,760 | 71 ms | 164 ms | 296 ms |
+| 10 days | 518,340 | 249 ms | 389 ms | 399 ms |
+| 11 days | 691,140 | 346 ms | 450 ms | 456 ms |
+| 13 days | 1,036,700 | 495 ms | 526 ms | 531 ms |
+| none | 1,209,600 | no bound: seq scan, 353 to 381 ms | | |
+
+The bitmap scan wins at every coverage measured. An independent run on a fixture of the same size
+reported correlation 0.9998619 and the same ordering at every coverage including 100%; that run is
+recorded as reported, not repeated here. **"A bound usually saves a factor of two to four"**, in the
+guard's error, does not survive either: `lock_tree_archive_find()` itself took 467 ms, 1.42 s, 1.88 s,
+2.25 s and 2.63 s on those windows, four to seven times the scan, because the per-sample aggregation is
+the expensive part. The saving follows the rows a window excludes and no single factor describes it.
+The comment and the error now say that, and test/24 asserts the new error text.
+
+### Also corrected
+
+- **`docs/reference.md` lost its first 31 lines in 1.1.9**: the heading, the introduction, the
+  monitoring-roles note, the table header and fifteen object rows from `lock_tree` to
+  `lock_tree_history_archive`. Restored from 1.1.8, where they were last correct.
+- **`lock_tree_history_size()`'s 6.3 s at a year, re-measured with its row count**, since 1.1.8 showed
+  a timing without one can be a timing of nothing: 7.10, 6.67 and 6.71 s on a rebuilt 63,072,020-row,
+  3,153,601-sample, 14 GB fixture, all pages all-visible, PostgreSQL 18. The figure stands.
+- **`scripts/check-schema.sh` still described the two-pass strip** that 1.1.9 replaced. It now
+  describes the single alternating pass, and notes what that pass does not handle: a dollar-quoted
+  string nested inside a body, and `/* */` comments. Neither occurs in a shipped body (a `/*` or `$`
+  inside an ordinary literal, as in `lock_tree_redact()`, is consumed by the string branch first).
+- **test/24 still said VOLATILE is load-bearing** in the comment above the assertion that pins it.
+  Corrected to what 1.1.9 established: position, not volatility, is what makes the guard unskippable.
+
 ## 1.1.9 (2026-10-08)
 
 Four defect fixes, all found by review of 1.1.8 rather than by a failing test, and all recorded

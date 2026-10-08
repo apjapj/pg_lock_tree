@@ -402,9 +402,13 @@ fail on its first line.
   message gives the corrected figures: on 5,184,000 archived rows spread over 7 to 67 days, a window
   reading 1,122,915 rows took 241 ms and no window over all 5,184,000 took 319 ms. **1.1.8 shipped two
   false figures here** and the correction is recorded in CHANGELOG.md: its three fast windows matched
-  zero rows, and its "did not finish in 10 minutes" was autovacuum contention. The bound is therefore
-  a 2-to-4-times win when the window prunes and a small penalty when it does not, not a difference
-  between working and hanging, and the guard does not cap `since`. The bound also cannot be enforced
+  zero rows, and its "did not finish in 10 minutes" was autovacuum contention. 1.1.9 then called the
+  index a small penalty at full coverage, and **that was wrong too**: it compared a single-backend
+  bitmap scan with a two-worker parallel scan. Measured in 1.1.10 with the plan forced and nothing
+  else changed, the bitmap scan wins at every coverage from 14% to 86%, and the function's own
+  per-sample aggregation costs four to seven times the scan. So a window saves time in proportion to
+  the rows it excludes, it is never the difference between working and hanging, and the guard does
+  not cap `since`. The bound also cannot be enforced
   from a `LANGUAGE sql` body: three attempts at a guard failed while looking correct, the third
   because a guard joined into the query sits below the function's own `LIMIT` and a query returning no
   rows never reaches it. `LANGUAGE plpgsql` with the check as the first statement is forced, not
@@ -488,7 +492,7 @@ fail on its first line.
   it plausible. The thing most likely to fail is whether `pg_blocking_pids()` is reachable under
   `pg_tle`, so that is what to check first.
 - **A cheap `lock_tree_history_size()`**, which is the one function whose cost follows retention. It
-  takes 6.3 s on the 365-day fixture, 5.0 s of which is `count(DISTINCT sampled_at)` over 63M rows. A
+  takes 6.3 s on the 365-day fixture (6.7 s when re-measured with its row count in 1.1.10), 5.0 s of which is `count(DISTINCT sampled_at)` over 63M rows. A
   `GROUP BY` rewrite measured 2.95 s on the same data, so this is a real saving and not a large one.
   **Partly done in 1.1.7**, which added `archive_bytes` and made a point of adding no column that
   needs a scan: an archive row count and its extrema would have cost 495 ms at 12.3M rows and given

@@ -215,7 +215,7 @@ one place because several things people ask about at that size are not what they
 | `incidents()`, whole history, no window | 89.0 s |
 | `history_statements()`, whole history | 470 ms |
 | `duration()` at a 1-millisecond window | 0.4 ms |
-| `history_size()` | **6.3 s** |
+| `history_size()` | **6.3 s** (6.7 s re-measured in 1.1.10, below) |
 | `lock_tree_notify()` | 6 to 24 ms |
 
 **The live path does not care how much history you keep.** `lock_tree_notify()` is the function an
@@ -226,7 +226,7 @@ live-tree only and the history table is written by it but never read by it. So a
 cannot slow down alerting, and you do not need to choose between keeping a year and alerting on it.
 
 **`history_size()` is the one function that got slow, and it is the one you would call to find that
-out.** It costs 6.3 s at a year, of which 5.0 s is `count(DISTINCT sampled_at)` over 63M rows. It is
+out.** It costs 6.3 s at a year, of which 5.0 s is `count(DISTINCT sampled_at)` over 63M rows. Re-measured for 1.1.10, because 1.1.8 showed that a timing recorded without its row count can be a timing of nothing: 7.10, 6.67 and 6.71 s on a rebuilt fixture of 63,072,020 rows and 3,153,601 samples, 14 GB, every page all-visible, PostgreSQL 18, an empty archive. The figure stands; it was a little optimistic, not empty. It is
 also, by construction, unable to tell you that your disk is wasted: it reports
 `pg_total_relation_size`, which is the file's high-water mark, so a table holding one week of rows in
 a file sized for a year reports the year's size. If you are sizing a disk, size it from the table

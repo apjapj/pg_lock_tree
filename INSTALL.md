@@ -545,12 +545,29 @@ make bench-history     # time the read side against a synthetic 1.2M row history
 
 That **truncates `lock_tree_history`**. Run it against a scratch database.
 
+**Updating from 1.1.8 drops and recreates `lock_tree_archive_find()`.** 1.1.9 removed its `samples`
+output column, which was the constant 1, and an output column cannot be removed by a replace. If you
+built a view or a `BEGIN ATOMIC` function on it, the update refuses, names each one by its
+schema-qualified name, and changes nothing: the extension stays at 1.1.8. Save their definitions, drop
+them, update, and recreate them against the six columns that remain. A plpgsql function, or a
+`LANGUAGE sql` function with a string body, that calls it records no dependency, so no check can list
+it: look for those yourself, because they fail on their next call rather than at the update.
+
+**Go from 1.1.8 straight to 1.1.10 or later, not to 1.1.9.** The check that produces that message
+was wrong in 1.1.9: it missed views outside the extension's schema and named the function instead of
+the view. The update was still safe, because the `DROP` refuses on its own and the whole update
+rolls back, but the error was PostgreSQL's generic one. 1.1.10 ships a direct
+`pg_lock_tree--1.1.8--1.1.10.sql` with the corrected check, and a plain `ALTER EXTENSION pg_lock_tree
+UPDATE` takes it, because PostgreSQL chooses the shortest path. An explicit `UPDATE TO '1.1.9'` still
+runs the 1.1.9 script and its old message, since 1.1.9 is a released tag and is not edited.
+
 **Downgrade is not supported.** There is no `0.15--0.14` script, and `ALTER EXTENSION ... UPDATE TO`
 will not go backwards. To get 0.14 behaviour back, install 0.14 in a scratch database alongside it.
 
 **Upgrading from an earlier version chains automatically.** There is no `0.2--0.4` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the
-chain itself. Verified:
+chain itself. The one exception is `1.1.8--1.1.10`, a deliberate shortcut past 1.1.9's faulty check,
+described above. Verified:
 
 ```sql
 SELECT source, target, path FROM pg_extension_update_paths('pg_lock_tree') ORDER BY source;

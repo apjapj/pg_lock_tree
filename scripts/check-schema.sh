@@ -148,9 +148,19 @@ done
 #    body it was applied to. Anchoring the class between literal quotes fixes it, and the anchors are
 #    part of the pattern rather than of a wider class, so it cannot match empty.
 #
-# Order is strings first, then comments, and it has to be: a '--' inside a string literal would
-# otherwise end the strip early and the rest of that literal would be scanned as code. What
-#    remains after both steps is SQL, which is the only thing this check should ever have read.
+# 3. Both of those were then replaced in 1.1.9, because running them as two passes was blind too, in
+#    either order. Strings-then-comments pairs an apostrophe in one comment with an apostrophe in a
+#    LATER comment and deletes the real code between them: 88% of lock_tree_sampling_advice, 56% of
+#    lock_tree_notify. Comments-then-strings ends a string early at a '--' inside it. The expression
+#    below is ONE left-to-right pass alternating between the two, '''[^'']*''|--[^\n]*', so a
+#    position inside a comment cannot match the string branch and one inside a literal cannot match
+#    the comment branch. A doubled quote, 'it''s', is two adjacent literals and is consumed whole.
+#
+#    What it does NOT handle, and does not need to today: a dollar-quoted string NESTED inside a body
+#    ($q$...$q$ within $function$...$function$) and /* */ block comments. A '/*' or a '$' inside an
+#    ordinary '...' literal is harmless, since the string branch consumes it first, and that is the
+#    only form either appears in (lock_tree_redact's credential patterns). Checked by hand in 1.1.10;
+#    a body that introduces either construct needs this pattern extended before it is trusted.
 #
 # Found by planting PERFORM lock_tree_archive_since_guard(since) with the name unqualified and the
 # schema off the search_path, which is a real defect this project has made before, and watching a

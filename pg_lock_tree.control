@@ -1,6 +1,12 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '1.1.9'
+default_version = '1.1.10'
+# 1.1.10 adds a DIRECT pg_lock_tree--1.1.8--1.1.10.sql beside the normal 1.1.9--1.1.10 step, and
+# that is deliberate: the dependents check in pg_lock_tree--1.1.8--1.1.9.sql named the wrong object
+# and missed views outside the extension's schema, 1.1.9 is a frozen tag, and PostgreSQL takes the
+# shortest path, so a 1.1.8 database updating to 1.1.10 runs the corrected check and never the old
+# one. An explicit UPDATE TO '1.1.9' still runs the old one. See CHANGELOG.md.
+#
 # 1.1.2 changes one function body, lock_tree_incidents(), for speed and not for output: the same rows
 # and arrays as 1.1.1, measured on the standard fixture and on small fixtures with NULLs in them.
 # See pg_lock_tree--1.1.1--1.1.2.sql.

@@ -39,11 +39,9 @@ SELECT throws_ok('SELECT count(*) FROM lock_tree_archive_find(NULL)',
                  'lock_tree_archive_find() needs a since window, because a NULL cannot become an index '
                  || 'bound and would scan the whole archive. Note that since is not a performance '
                  || 'limit: a window wider than the archive is accepted and reads all of it. '
-                 || 'Measured on 5,184,000 archived rows spread over 7 to 67 days on PostgreSQL 18, '
-                 || 'a window reading 1,122,915 rows took 241 ms and an unbounded query over all '
-                 || '5,184,000 took 319 ms, so a bound usually saves a factor of two to four but is '
-                 || 'not the difference between working and hanging.',
-                 'a NULL window is refused, and the message gives real figures rather than the ones 1.1.8 shipped');
+                 || 'Cost follows the rows the window contains, so a narrower window is cheaper in '
+                 || 'proportion, but the window is never the difference between working and hanging.',
+                 'a NULL window is refused, and the message claims no figure it cannot support (1.1.10)');
 
 -- The guard on its own raises for the same input. It is not useful to a caller, but asserting it
 -- separately pins the behaviour to the guard rather than to something in the caller's path, which is
@@ -53,16 +51,16 @@ SELECT throws_ok('SELECT lock_tree_archive_since_guard(NULL)',
                  'lock_tree_archive_find() needs a since window, because a NULL cannot become an index '
                  || 'bound and would scan the whole archive. Note that since is not a performance '
                  || 'limit: a window wider than the archive is accepted and reads all of it. '
-                 || 'Measured on 5,184,000 archived rows spread over 7 to 67 days on PostgreSQL 18, '
-                 || 'a window reading 1,122,915 rows took 241 ms and an unbounded query over all '
-                 || '5,184,000 took 319 ms, so a bound usually saves a factor of two to four but is '
-                 || 'not the difference between working and hanging.',
+                 || 'Cost follows the rows the window contains, so a narrower window is cheaper in '
+                 || 'proportion, but the window is never the difference between working and hanging.',
                  'and the guard itself raises for a NULL, so the refusal is in the guard and not in a caller');
 
--- VOLATILE is load-bearing, and this is the assertion that says so. A STABLE guard was inlined and
--- dropped by the planner; so was a VOLATILE one, because it sat below the caller's LIMIT. VOLATILE
--- is the only property that makes the call survive into the plan and run, so it is pinned here
--- rather than left to a comment explaining why it matters.
+-- The guard is VOLATILE, pinned so a change to it is a decision rather than an accident. This
+-- comment said in 1.1.8 and 1.1.9 that VOLATILE is load-bearing and the only property that makes the
+-- call run; that was the reason for the SQL-body shape that failed, and it is not true of the plpgsql
+-- PERFORM that shipped, which fires whatever the volatility (see the CHANGELOG for 1.1.9). What makes
+-- the check unskippable is its position, asserted at the end of this file. VOLATILE is kept because
+-- it is the honest description of a function that raises.
 SELECT is((SELECT p.provolatile::text FROM pg_proc p WHERE p.proname = 'lock_tree_archive_since_guard'),
           'v',
           'the guard is VOLATILE, which is what stops the planner eliding the check');

@@ -19,7 +19,7 @@ make check-alert        # prove a real NOTIFY reaches a real listening client
 make check-deadlock     # prove a real deadlock moves the counter and the sample records it
 make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the cycle AND the count
 make bench-history      # time the read side against a synthetic 1.2M row history (truncates it)
-make check-upgrade      # every upgrade path ends in the same objects as a fresh install
+make check-upgrade      # every upgrade path ends in the same objects as a fresh install, plus the 1.1.8 dependents refusal
 make check-schema       # install into a private schema, then use it from a caller that cannot see it
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
