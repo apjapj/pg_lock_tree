@@ -65,6 +65,46 @@ or cost, since nothing reads it. And the 1.0.1 scrub is absent from the 1.1.6 re
 a fresh install creates an empty history, so there is nothing to scrub, and the scrub exists only for
 databases upgrading from 1.0.0 or earlier.
 
+### A multi-host archive, considered and not planned: the table cannot tell you which host a row came from
+
+Asked directly, and the answer is that this is a schema question rather than a query one, which is why
+it is answered here rather than deferred.
+
+**`lock_tree_history` has no host identity.** Its columns are `sampled_at`, `root_pid`, `depth`,
+`pid`, `state`, `waiting_for`, `wait_age`, `application_name`, `query`, `root_object` and
+`query_id`. Nothing in that identifies a server, and there is nowhere to put it without changing the
+shape of every function that reads the table. So an archive holding several hosts' rows cannot answer
+"which host was this on", and worse, `pid` is only unique **within** a server: measured on a
+1,209,600-row fixture, 1,209,600 distinct pids, and on a second host those same pids mean entirely
+different sessions. A multi-host archive would silently attribute one host's blocked session to
+another's, which for a diagnostic tool is worse than having no archive.
+
+**`sampled_at` does not separate hosts either.** It is a `timestamptz`, and hosts sampling on a
+shared cron land on the same grid: measured 60,481 distinct samples for 1,209,600 rows, which is
+exactly 20 sessions per sample. Two hosts on the same schedule produce two sets of rows with identical
+timestamps and no way to tell them apart, so "everything in the last 7 days" across two hosts cannot
+be split into per-host figures.
+
+**So the realistic shape is one archive per host, or a `source` column added, and both are bigger
+than a read function.** A `source` column is the honest fix and it is not additive: it is
+distinguishable, yes, but every archive read function, the move, and the BRIN's usefulness all have
+to be re-derived around it, and rows moved before the column existed have no value for it. Per-host
+archives avoid the schema change entirely and are what the tooling should assume, at the cost of no
+cross-host query without a `UNION ALL` the caller writes.
+
+**What is already true and does the work for a review instance.** `lock_tree_archive()` re-applies
+`lock_tree_redact()` as rows cross, so what leaves the production server is already redacted, and a
+dump or a table copy of the archive carries no credential that the hot table did not. Measured: an
+archive built by the move held 0 rows with query text on a fixture whose source rows had none. That
+is the security story for holding an archive off-box, and it needs no further work.
+
+**And speed is genuinely not the constraint there.** Measured on the archive shape at 1,209,600 rows
+and 95 MB, a BRIN index of 32 kB: a full aggregate over every `waiting_for` value, which is the
+question a review instance actually exists to ask, took **546 ms**. A 7-day range pruned to 12,143
+buffers took 151 ms. Those are the numbers a general archive read function should be designed against,
+and they are one to two orders of magnitude outside anything acceptable on the production hot path,
+which is the whole reason the read functions were not taught to span the archive.
+
 ### A documentation review of 1.1.6, which found four things missing
 
 Reviewing what 1.1.6 shipped rather than what it intended to, against a real installation. Three of

@@ -373,6 +373,15 @@ fail on its first line.
 
 ## Open questions, not commitments
 
+- **A `source` column, so one archive can hold several hosts.** Asked, and the answer is that the
+  table cannot support it today and the fix is not additive. There is no host identity anywhere in
+  `lock_tree_history`, and `pid` is unique only within a server, so rows from two hosts would
+  silently attribute one host's blocked session to another's. `sampled_at` does not separate them
+  either: hosts on a shared cron land on the same grid, 60,481 distinct samples for 1,209,600 rows,
+  identical timestamps with nothing to tell them apart. Per-host archives avoid the change entirely
+  and are what the tooling should assume, at the cost of no cross-host query without a `UNION ALL`
+  the caller writes. Adding `source` properly means re-deriving the move, the BRIN's usefulness and
+  every archive read around a column that rows moved before it existed do not have.
 - **Reading across the archive boundary.** 1.1.6 ships `lock_tree_history_archive` and
   `lock_tree_archive()` and nothing reads the archive, so a `since` window silently stops at the hot
   table rather than erroring. The obvious fix, teaching the existing read functions to span both
