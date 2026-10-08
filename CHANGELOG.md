@@ -244,6 +244,8 @@ pass. The exclusions are explicit lists now, and a comment says why.
 
 ### Verified
 
+The canary fired on the v1.1.7 tag, successful in 24s, its second release tag in a row.
+
 473 tests on each of PG 14 through 19beta4, up from 466, through both install paths: `CREATE
 EXTENSION` and the direct load with `check_function_bodies` off that CI uses. All 26 upgrade paths to
 1.1.7 match a fresh install, with the function body and its comment lifted verbatim from the release
