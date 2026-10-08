@@ -11,7 +11,7 @@ what catches a rename that half the documentation has not caught up with.
 ```bash
 make check              # the checks that need no server: the documentation lint, and a note
 make lint-docs          # documentation, objects, paths, links and anchors, and the test table
-make prove              # 413 pgTAP tests against the server your libpq env vars point at
+make prove              # 501 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -57,7 +57,7 @@ terminate backends rather than mocking anything:
 | `test/21_redaction.sql` | the credentials `lock_tree_redact()` must catch, including the five it must not, and the deliberate over-redaction of `VALID UNTIL` |
 | `test/22_schema_install.sql` | installed in a private schema: nothing lands in `public`, the two `search_path`-pinned functions resolve from a caller that cannot see the extension, and `pg_dump` registers none of the three tables |
 | `test/23_archive.sql` | the cold tier: that the move loses nothing, which is the assertion that fires if the batch is taken twice rather than captured once; that `lock_tree_redact()` runs on the way across; that the procedure refuses inside a transaction block **before** moving a row; that nothing shipped reads the archive; and the four privileges it needs. The fixture puts twenty rows on each `sampled_at` and archives in batches of seven, so every batch boundary lands inside a tie, which is what makes the loss bug fire rather than pass by luck. The grant checks assert by row count rather than `throws_ok`, because a procedure that COMMITs is refused inside the subtransaction those wrap in, so the call under test never runs. It also carries the 1.1.7 assertions that `lock_tree_history_size()` reports the archive, that the eight columns it already returned are unchanged, and that `archive_bytes` follows the archive rather than the hot table |
-| `test/24_archive_find.sql` | searching the archive: that a NULL window is **refused** with the measurement in the message rather than left to hang, that the guard is VOLATILE so the planner cannot elide it, that the result is one row per sample rather than per session, and that each of the four filters narrows the answer. The refusal is asserted in full because the guard was built three ways and every one of them looked right while not working |
+| `test/24_archive_find.sql` | searching the archive: that a NULL window is **refused**, that the guard `PERFORM` comes before the query rather than merely being in the body, that the result is one row per sample rather than per session, that each filter narrows the answer, and the three 1.1.9 corrections: `samples` is absent from the OUT columns, `%` and `_` in `waiting_like` are literals so a name that does not exist returns nothing, and a `since` wider than the archive is accepted rather than refused |
 There is no `test/20`. Nothing was ever written at that number, and renumbering to close the gap
 would change three filenames in the history for no benefit.
 

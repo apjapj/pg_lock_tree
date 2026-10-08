@@ -22,7 +22,7 @@ END
 $ext$;
 \o
 \echo # the search function exists, and the guard that makes its window mandatory
-SELECT plan(18);
+SELECT plan(28);
 
 SELECT has_function('lock_tree_archive_find',
                     ARRAY['interval','interval','text','text','interval','integer'],
@@ -36,23 +36,27 @@ SELECT has_function('lock_tree_archive_since_guard', ARRAY['interval'],
 -- be P0001, and a caller catching this wants to tell it apart from a syntax error.
 SELECT throws_ok('SELECT count(*) FROM lock_tree_archive_find(NULL)',
                  '22023',
-                 'lock_tree_archive_find() needs a since window. Measured on 10,160,640 archived '
-                 || 'rows spanning 16 days: a 7-day window returns in 1.5 ms using the BRIN index, '
-                 || 'and an unbounded query over the same rows did not finish in 10 minutes. Pass a '
-                 || 'since, or write the query yourself against lock_tree_history_archive, which is '
-                 || 'a plain table and will scan it.',
-                 'a NULL window is refused with the measurement in the message, not left to hang');
+                 'lock_tree_archive_find() needs a since window, because a NULL cannot become an index '
+                 || 'bound and would scan the whole archive. Note that since is not a performance '
+                 || 'limit: a window wider than the archive is accepted and reads all of it. '
+                 || 'Measured on 5,184,000 archived rows spread over 7 to 67 days on PostgreSQL 18, '
+                 || 'a window reading 1,122,915 rows took 241 ms and an unbounded query over all '
+                 || '5,184,000 took 319 ms, so a bound usually saves a factor of two to four but is '
+                 || 'not the difference between working and hanging.',
+                 'a NULL window is refused, and the message gives real figures rather than the ones 1.1.8 shipped');
 
 -- The guard on its own raises for the same input. It is not useful to a caller, but asserting it
 -- separately pins the behaviour to the guard rather than to something in the caller's path, which is
 -- what changed three times while this was being built.
 SELECT throws_ok('SELECT lock_tree_archive_since_guard(NULL)',
                  '22023',
-                 'lock_tree_archive_find() needs a since window. Measured on 10,160,640 archived '
-                 || 'rows spanning 16 days: a 7-day window returns in 1.5 ms using the BRIN index, '
-                 || 'and an unbounded query over the same rows did not finish in 10 minutes. Pass a '
-                 || 'since, or write the query yourself against lock_tree_history_archive, which is '
-                 || 'a plain table and will scan it.',
+                 'lock_tree_archive_find() needs a since window, because a NULL cannot become an index '
+                 || 'bound and would scan the whole archive. Note that since is not a performance '
+                 || 'limit: a window wider than the archive is accepted and reads all of it. '
+                 || 'Measured on 5,184,000 archived rows spread over 7 to 67 days on PostgreSQL 18, '
+                 || 'a window reading 1,122,915 rows took 241 ms and an unbounded query over all '
+                 || '5,184,000 took 319 ms, so a bound usually saves a factor of two to four but is '
+                 || 'not the difference between working and hanging.',
                  'and the guard itself raises for a NULL, so the refusal is in the guard and not in a caller');
 
 -- VOLATILE is load-bearing, and this is the assertion that says so. A STABLE guard was inlined and
@@ -149,6 +153,85 @@ SELECT ok((SELECT applications = ARRAY['checkout'] FROM lock_tree_archive_find(i
 SELECT ok((SELECT queries @> ARRAY['UPDATE orders SET status = $1']
              FROM lock_tree_archive_find(interval '1 day') LIMIT 1),
           'and queries holds the distinct statements, so twelve waiters on one SELECT is one entry');
+
+
+-- ------------------------------------------------------------------ 1.1.9 corrections
+--
+-- Three behaviours changed in 1.1.9 and each is asserted here, because each one is a case where 1.1.8
+-- claimed something it did not do.
+
+-- 1. `samples` is gone. It was 1::bigint, because the result is already one row per instant, so it
+-- had one distinct value across 100,000 rows. Asserted by name rather than by value: a column that
+-- exists and is constant is the defect, and `SELECT 1 FROM ... LIMIT 0` would prove the absence while
+-- a `is()` on a dropped column proves it too. The column list is the direct statement of intent.
+-- proargnames holds IN and OUT names together for a function with OUT parameters, so the six IN
+-- names are stripped off and what is left is the result's own column list.
+SELECT is((SELECT string_agg(t.name, ',' ORDER BY t.ord)
+             FROM pg_proc p,
+                  LATERAL unnest(p.proargnames) WITH ORDINALITY AS t(name, ord)
+            WHERE p.proname = 'lock_tree_archive_find'
+              AND t.name NOT IN ('since','until','waiting_like','application','min_wait','limit_rows')),
+          'sampled_at,peak_sessions,longest_wait,total_wait,applications,queries',
+          'the OUT columns are the six that carry information, and samples is not among them');
+
+-- 2. `waiting_like` is a SUBSTRING, not a pattern. The fixture's only lock tag is
+-- 'relation public.orders_pkey', so the two characters that used to act as wildcards are both
+-- present in it: an underscore and, as a literal, a percent would have to be escaped.
+--
+-- Asserted in the direction that matters: a search for a name that does NOT exist must return
+-- nothing, rather than returning everything. On 1.1.8 't_' matched every tag in a 5,184,000-row
+-- archive, which is a wrong answer rather than a loose one.
+SELECT is((SELECT count(*) FROM lock_tree_archive_find(interval '1 day',
+                                                      waiting_like => 'orders_pk_y'))::int, 0,
+          'an underscore in waiting_like is a literal, so a name that does not exist returns nothing');
+
+SELECT is((SELECT count(*) FROM lock_tree_archive_find(interval '1 day',
+                                                      waiting_like => 'orders%'))::int, 0,
+          'and a percent sign is a literal too, rather than matching any run of characters');
+
+-- And the substring search itself still works, which is the point of escaping rather than removing
+-- the filter: a DBA searching for a relation still gets a substring match.
+SELECT is((SELECT count(*) FROM lock_tree_archive_find(interval '1 day',
+                                                      waiting_like => 'orders_pkey'))::int, 20,
+          'and a real substring of a real tag still matches every sample that carries it');
+
+SELECT is((SELECT count(*) FROM lock_tree_archive_find(interval '1 day',
+                                                      waiting_like => 'PUBLIC.ORDERS'))::int, 20,
+          'case-insensitively, because a lock tag is a relation name and nobody types its case');
+
+-- 3. `since` is required but is NOT a performance bound, and the message says so. The behaviour is
+-- asserted directly: a window far wider than the archive is accepted, not refused. Refusing it would
+-- need the archive's span, which changes as rows are archived, so it is deliberately not done.
+SELECT lives_ok('SELECT count(*) FROM lock_tree_archive_find(interval ''100 years'')',
+                'a since far wider than the archive is accepted rather than refused, because the '
+                || 'span changes as rows are archived and computing it would cost the scan');
+
+-- And the fixture is only a few minutes old, so that wide window still returns its 20 instants. If a
+-- future change capped since against anything, this is the assertion that would notice.
+SELECT is((SELECT count(*) FROM lock_tree_archive_find(interval '100 years'))::int, 20,
+          'and it returns the whole archive rather than an error, which is the documented contract');
+
+-- The guard is VOLATILE in 1.1.8 and still is, but the reason has changed and the old reason was
+-- misleading. Volatility was necessary for the SQL-body shape that did not work and is irrelevant
+-- for the plpgsql PERFORM that shipped: a STABLE guard called from a STABLE plpgsql PERFORM fires
+-- perfectly. What makes the check reliable is being the first statement, so that is asserted too, by
+-- pinning that the PERFORM precedes the query rather than the volatility.
+SELECT ok((SELECT prosrc LIKE '%PERFORM %lock_tree_archive_since_guard(since);%'
+             FROM pg_proc WHERE proname = 'lock_tree_archive_find'),
+          'the guard call is in the body at all, which the first statement below depends on');
+
+-- The installed body has @extschema@ already substituted, so the guard is matched by its bare name.
+-- What is asserted is ORDER, and strpos says it more directly than a regex would: the PERFORM has to
+-- come before the query, because a statement that has already run cannot be skipped by any plan.
+SELECT ok((SELECT p.prosrc LIKE '%PERFORM %lock_tree_archive_since_guard(since);%'
+             FROM pg_proc p WHERE p.proname = 'lock_tree_archive_find'),
+          'the guard call is in the body, which the position assertion below depends on');
+
+SELECT ok((SELECT strpos(p.prosrc, 'lock_tree_archive_since_guard(since);')
+                < strpos(p.prosrc, 'RETURN QUERY')
+             FROM pg_proc p WHERE p.proname = 'lock_tree_archive_find'),
+          'and it comes BEFORE the query, which is what makes it unskippable: no plan shape can '
+          || 'avoid a statement that has already run');
 
 \o /dev/null
 TRUNCATE lock_tree_history;

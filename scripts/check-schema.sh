@@ -159,9 +159,8 @@ done
 n=$("${PSQL[@]}" -d "$SCRATCH" -c "SELECT count(*)::text FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
       WHERE n.nspname = '$SCHEMA' AND p.prokind = 'f'
-        AND regexp_replace(
-              regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
-              '--.*$', '', 'gn')
+        AND regexp_replace(pg_get_functiondef(p.oid),
+                        '''[^'']*''|--[^\n]*', ' ', 'g')
               ~ '(^|[^.a-z_])lock_tree_\w+\s*\('")
 total=$("${PSQL[@]}" -d "$SCRATCH" -c "SELECT count(*) FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -174,9 +173,8 @@ else
   "${PSQL[@]}" -d "$SCRATCH" -c "SELECT '          ' || p.proname FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = '$SCHEMA' AND p.prokind = 'f'
-          AND regexp_replace(
-                regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
-                '--.*$', '', 'gn')
+          AND regexp_replace(pg_get_functiondef(p.oid),
+                          '''[^'']*''|--[^\n]*', ' ', 'g')
                 ~ '(^|[^.a-z_])lock_tree_\w+\s*\('"
 fi
 

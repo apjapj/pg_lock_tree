@@ -140,9 +140,8 @@ SELECT ok((SELECT (proconfig @> ARRAY['search_path=pg_catalog']::text[]) FROM pg
 SELECT is((SELECT count(*)::text
              FROM pg_proc p
             WHERE p.proname = 'lock_tree_sample'
-              AND regexp_replace(
-                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
-                        '--.*$', '', 'gn')
+              AND regexp_replace(pg_get_functiondef(p.oid),
+                              '''[^'']*''|--[^\n]*', ' ', 'g')
                   ~ '(^|[^.a-z_])lock_tree_\w+\s*\('), '0',
           'lock_tree_sample() contains no unqualified reference to a sibling, which is the one thing'
           || ' that would break a private-schema install and work everywhere else');
@@ -150,9 +149,8 @@ SELECT is((SELECT count(*)::text
 SELECT is((SELECT count(*)::text
              FROM pg_proc p
             WHERE p.proname = 'lock_tree_redact'
-              AND regexp_replace(
-                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
-                        '--.*$', '', 'gn')
+              AND regexp_replace(pg_get_functiondef(p.oid),
+                              '''[^'']*''|--[^\n]*', ' ', 'g')
                   ~ '(^|[^.a-z_])lock_tree_\w+\s*\('), '0',
           'and neither does lock_tree_redact()');
 
@@ -179,25 +177,32 @@ CREATE TEMP TABLE bare_refs AS
 SELECT p.proname AS fn,
        (SELECT count(*)::int
           FROM regexp_matches(
-                 -- String literals removed first, then comments, in that order.
+                 -- ONE left-to-right pass, alternating between the two constructs:
                  --
-                 -- Literals: a message that NAMES a sibling is prose, not a call.
-                 -- lock_tree_archive_since_guard() raises "lock_tree_archive_find() needs a since
-                 -- window", and a bare name inside a string is indistinguishable from a bare call.
-                 -- The class is ANCHORED between quotes on purpose: '[^'']*' on its own also matches
-                 -- the empty string at every position and would delete the whole body.
+                 --   regexp_replace(def, '''[^'']*''|--[^\n]*', ' ', 'g')
                  --
-                 -- Comments: a -- line that names a sibling is the same trap, and the body of
-                 -- lock_tree_sample() explains what it samples, so it mentions several names. The
-                 -- 'n' flag matters more than it looks: without it a bare dot matches a newline and
-                 -- $ anchors at end of STRING, so the strip ate every body from its first -- onwards.
-                 -- Measured on a real install, lock_tree_duration() survived as 1 of 7391 characters,
-                 -- so the "no bare reference" assertion was being applied to a few characters of
-                 -- preamble and could not have failed. Found by planting one in 1.1.8 and watching
-                 -- this pass. Same trap as the assertion counter in lint-docs.sh, same fix.
-                 regexp_replace(
-                        regexp_replace(pg_get_functiondef(p.oid), '''[^'']*''', '', 'g'),
-                        '--.*$', '', 'gn'),
+                 -- Two passes cannot do this, in EITHER order, and both orders shipped by mistake
+                 -- across two releases. Strings-then-comments pairs an apostrophe in one comment
+                 -- with an apostrophe in a LATER comment, deleting every real code character in
+                 -- between: on that release it removed 88% of lock_tree_sampling_advice and 47% of
+                 -- lock_tree_duration. Comments-then-strings has the mirror fault, since a '--'
+                 -- inside a string ends the comment strip early.
+                 --
+                 -- An alternation makes the ordering question disappear. A scanner position inside a
+                 -- comment cannot match the string branch, and one inside a literal cannot match the
+                 -- comment branch, so each is consumed whole and in the right order.
+                 --
+                 -- Also fixed here, and it is what let the above stay invisible longer: the comment
+                 -- strip was '--.*$' with no newline flag, so a bare dot matched a newline and $
+                 -- anchored at end of STRING. lock_tree_duration() reached this assertion as 1
+                 -- character out of 7391. The 'n' flag fixes that, and the alternation removes the
+                 -- need for a separate pass at all.
+                 --
+                 -- Found by planting a defect in lock_tree_notify(), which has 57 apostrophes,
+                 -- after planting the same defect in lock_tree_archive_find(), which has none, and
+                 -- being surprised that it was caught. A fixture that cannot fail proves nothing.
+                 regexp_replace(pg_get_functiondef(p.oid),
+                                        '''[^'']*''|--[^\n]*', ' ', 'g'),
                  '(^|[^.a-z_])lock_tree_\w+\s*\(', 'g')) AS n
   FROM pg_proc p
   JOIN pg_depend d ON d.objid = p.oid AND d.classid = 'pg_proc'::regclass

@@ -398,13 +398,37 @@ fail on its first line.
   remaining option is dedicated archive read functions, a new API surface rather than a tuning knob.
   **Closed in 1.1.8** by `lock_tree_archive_find()`, which searches the archive and nothing else, so
   the boundary is a documented property of a separate function rather than a silent truncation inside
-  a shared one. Two measurements settled its shape. A bounded window over 10,160,640 archived rows
-  returns in **1.5 ms** using the BRIN index and an unbounded one over the same rows **did not finish
-  in 10 minutes**, so the function requires a `since` and refuses a NULL with the measurement in the
-  error. And the bound cannot be enforced from a `LANGUAGE sql` body: three attempts at a guard all
-  failed while looking correct, the third because a guard joined into the query sits below the
-  function's own `LIMIT` and a query returning no rows never reaches it. `LANGUAGE plpgsql` with the
-  check as the first statement is forced, not chosen.
+  a shared one. The window is required because a NULL cannot become an index bound, and 1.1.9's
+  message gives the corrected figures: on 5,184,000 archived rows spread over 7 to 67 days, a window
+  reading 1,122,915 rows took 241 ms and no window over all 5,184,000 took 319 ms. **1.1.8 shipped two
+  false figures here** and the correction is recorded in CHANGELOG.md: its three fast windows matched
+  zero rows, and its "did not finish in 10 minutes" was autovacuum contention. The bound is therefore
+  a 2-to-4-times win when the window prunes and a small penalty when it does not, not a difference
+  between working and hanging, and the guard does not cap `since`. The bound also cannot be enforced
+  from a `LANGUAGE sql` body: three attempts at a guard failed while looking correct, the third
+  because a guard joined into the query sits below the function's own `LIMIT` and a query returning no
+  rows never reaches it. `LANGUAGE plpgsql` with the check as the first statement is forced, not
+  chosen, and the VOLATILE that 1.1.8 called load-bearing turned out to be irrelevant to that shape.
+- **The `tool` key, and the shared alert contract.** Raised by the pg_incident_watch umbrella, which
+  groups this extension with `pg_bloat_cause` and `pg_limit_runway` and promises that all three emit
+  the same JSON payload shape so one listener can route all of them. The umbrella lists this as its
+  own step 5, to be done "in that project, not here", and says to raise it on this roadmap. Raised,
+  and not implemented, because the shared contract it depends on does not exist yet. That contract is
+  to be written in the umbrella's own directory rather than in this repository, and inventing a
+  payload shape here would produce exactly the local version the umbrella says not to invent.
+
+  What is already compatible: this extension's stability rule is "NOTIFY payload keys: additive only",
+  so adding `tool` is a minor release and not a break. Its `event` values are `alerting` and `cleared`
+  today, and the umbrella wants `alerting`, `escalated`, `cleared`, with the open question of whether
+  `escalated` is added here or the umbrella adopts these two. `escalated` is the only thing this
+  extension would actually need to add, and its `lock_tree_alert` table already stores the value at
+  the last notification, which is what an escalation edge has to compare against. **Blocked on the
+  contract, not on anything here.**
+
+  Two other umbrella notes worth recording rather than acting on. It flags that PG 14 reaches end of
+  life on 2026-11-12 and recommends the umbrella floor at 15 while this extension keeps 14; and it
+  asks for a job that installs all three extensions into one database, which is the only real test of
+  "works alongside" and cannot exist until the other two do.
 - **A recurrence report, and the fingerprint question it needed.** Asked for as "has this happened
   before, and is it getting worse", on the reasoning that a review instance is where it would run and
   speed does not matter there. Speed is not the obstacle: counting **every** incident in a 216,072-row

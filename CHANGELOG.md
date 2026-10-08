@@ -1,3 +1,46 @@
+## 1.1.9 (2026-10-08)
+
+Four defect fixes, all found by review of 1.1.8 rather than by a failing test, and all recorded
+rather than edited into the frozen 1.1.8 entry above. Two of the four had reached a place a caller
+relies on: an error message and the reference table.
+
+### What changed
+
+1. **`samples` is gone from `lock_tree_archive_find()`.** It was `1::bigint`, because the result is
+   already one row per sample instant, so it had one distinct value across 100,000 rows. A column
+   that cannot vary is a column every caller has to wonder about. This is the only breaking change,
+   and it is why the upgrade drops and recreates the function.
+2. **`waiting_like` escapes `%` and `_`, so it is a substring and not a pattern.** On 1.1.8 it went
+   straight into `ILIKE`. Measured on the 5,184,000-row fixture, `waiting_like => 't_'` returned
+   2,708,221 samples across four different tags, and `'t%'` returned every sample in the window, where
+   no relation was named `t_` at all. Both now return nothing, and a real tag still matches. Corrected
+   as a fix rather than preserved as a documented pattern behaviour, because a search that silently
+   returns rows the caller did not ask for is a wrong answer.
+3. **The `since` guard no longer claims to bound anything it cannot measure.** It refuses NULL and
+   says what a wide window costs. It does not cap `since`.
+4. **Every timing in 1.1.8 was measured on windows containing no rows.** Corrected throughout, with
+   row counts beside every figure.
+
+### A guard cannot be enforced from a SQL body, and three attempts at it failed
+
+`lock_tree_archive_find()` requires a `since` window. Three ways of enforcing that from a `LANGUAGE
+sql` body all failed while looking correct:
+
+1. **A guard function joined into the query, marked STABLE.** The planner inlines a STABLE function
+   whose result feeds nothing but a filter and drops it. `EXPLAIN` showed a plan with no call to it.
+2. **The same guard marked VOLATILE.** The call appeared in the plan and still did not fire, because it
+   sat below the function's own `LIMIT` and a query returning no rows never reaches the node beneath
+   it.
+3. **The guard as a scalar subquery in the outer list.** Recorded in 1.1.8 as "still elided", which
+   was never tested and is false: `select count(*) from (select lock_tree_archive_since_guard(NULL)
+   as ok limit 1) t` raises. Dropped rather than restated.
+
+The working shape is `LANGUAGE plpgsql` with the check as the first statement. **VOLATILE is kept but
+1.1.8's reason for it was wrong**: it was called load-bearing, and while volatility was necessary for
+the SQL-body shape that failed, it is irrelevant to the plpgsql `PERFORM` that shipped. A STABLE guard
+called from a STABLE plpgsql `PERFORM` fires perfectly. What makes the check reliable is being the
+first statement, and `test/24_archive_find.sql` now asserts that order rather than the volatility.
+
 ## 1.1.8 (2026-10-08)
 
 The read side of the cold tier. `lock_tree_archive_find()` searches `lock_tree_history_archive` and
@@ -14,7 +57,7 @@ installs), which is what exposed it.
 
 ### The archive read: bounded by the BRIN, and the bound is required
 
-Measured on an archive of 10,160,640 rows spanning 16 days, PostgreSQL 18:
+**This section was wrong in 1.1.8 and is corrected here.** The table below is what 1.1.8 recorded:
 
 | query | time | plan |
 |---|---|---|
@@ -23,15 +66,40 @@ Measured on an archive of 10,160,640 rows spanning 16 days, PostgreSQL 18:
 | same, 14-day window | 1.4 ms | Bitmap Heap Scan on the BRIN |
 | same, no window | **did not finish in 10 minutes** | Parallel Seq Scan plus HashAggregate |
 
-The bounded cases are flat because the BRIN prunes the other ranges away, which is the whole reason
-the archive is BRIN-indexed rather than left unindexed. The unbounded case is the same work an
-unbounded `lock_tree_incidents()` does on the hot table, which is why that function's default is
-NULL and `lock_tree_archive_find()`'s is not.
+Two claims in it were false, and both were load-bearing. **The three fast windows were empty.** The
+fixture was built as `now()` minus an offset and then `CALL lock_tree_archive(interval '28 days')`
+moved every row already older than 28 days into the archive, so a "7-day window" matched **zero rows**:
+the BRIN pruned every range and the query returned nothing in about a millisecond. That was recorded as
+the cost of reading the archive. **And the unbounded case does not hang.** It finishes in 319 ms. The
+10 minutes was an autovacuum of a freshly-archived 1.3 GB table competing for a 128 MB buffer pool,
+and the contention was recorded as the query's cost.
 
-A search returns one row per sample instant rather than one per session, and on a 6,773,760-row
-archive a three-day bounded search took **1.9 ms**. The pattern match on `waiting_for` is a
-sequential scan and that is correct: BRIN cannot help a pattern, and on the archive there is no hot
-path to protect.
+Re-measured on a fixture with an **explicit age distribution**, 5,184,000 rows spread from 7 to 67 days
+at 664 MB, PostgreSQL 18. The rows-read column is `count(*)` over the same window, so a figure cannot
+be read as the cost of reading nothing:
+
+| window | rows read | time | plan |
+|---|---|---|---|
+| 7 days | **0** | 1.5 ms | Bitmap Heap Scan, every range pruned |
+| 14 days | 604,523 | 133.7 ms | Bitmap Heap Scan |
+| 20 days | 1,122,915 | 240.6 ms | Bitmap Heap Scan |
+| 30 days | 1,986,923 | 386.1 ms | Bitmap Heap Scan |
+| 40 days | 2,850,915 | 473.9 ms | Bitmap Heap Scan |
+| 60 days | 4,578,922 | 820.3 ms | Bitmap Heap Scan |
+| no window | 5,184,000 | 319.1 ms | Parallel Seq Scan |
+
+The bounded cases are **not** flat, and 1.1.8's flat 1.6/1.5/1.4 ms were three empty windows rather
+than a plane the BRIN produced. And the honest version of the design's justification is narrower than
+the one that shipped: when the window prunes, the BRIN wins and cost is roughly linear in rows read;
+when it does not prune, the index is a small **penalty**, since a 60-day bitmap scan at 820 ms is
+slower than an unbounded parallel sequential scan at 319 ms over the same table. A bound is worth
+having because it usually makes a search 2 to 4 times faster, not because the alternative hangs.
+
+`since` is therefore required (a NULL cannot become an index bound) and is **not** a performance
+bound. A window of `interval '10 years'` is accepted and reads all of it, measured at 13.2 seconds on
+the fixture above. The guard refuses NULL and says what a wide window costs; it does not cap, because
+the archive's span changes as rows are archived and computing it would cost the scan the check exists
+to avoid.
 
 ### A guard cannot be enforced from a SQL body, and three attempts at it failed
 
@@ -108,6 +176,33 @@ addition rather than a new idea.
 recurrence is made of waiter rows.
 
 ### The unqualified-call check had been blind since it was written, and a planted defect proved it
+
+**Fixed again in 1.1.9, because the 1.1.8 fix was also wrong.** Two passes cannot do this
+job, in either order. Strings first, then comments, is what 1.1.8 shipped, and it pairs an apostrophe
+in one comment with an apostrophe in a *later* comment, deleting every real code character between
+them. Measured against the true code of the shipped bodies:
+
+| function | real code | what 1.1.8 read | lost |
+|---|---|---|---|
+| `lock_tree_sampling_advice` | 770 | 93 | **677, 88%** |
+| `lock_tree_history_size` | 914 | 248 | 666, 73% |
+| `lock_tree_duration` | 2267 | 1199 | 1068, 47% |
+| `lock_tree_notify` | 3422 | 1493 | 1929, 56% |
+
+And the 1.1.8 planted defect was planted in `lock_tree_archive_find()`, which has **zero**
+apostrophes, so the strip happened to work on it. The same defect planted in `lock_tree_notify()`
+(57 apostrophes) is **missed** by the 1.1.8 expression and **caught** by the one below.
+
+The replacement is a single left-to-right pass whose pattern alternates between the two constructs,
+so a scanner never has to decide which one comes first:
+
+```sql
+regexp_replace(prosrc, '''[^'']*''|--[^\n]*', ' ', 'g')
+```
+
+One pass loses **zero** real code characters on every shipped body, still ignores a name inside a
+genuine string literal, and is shorter than the two passes it replaces.
+
 
 Not part of 1.1.8's feature work, found while adding to it, and it changes what the previous
 release's verification actually established.
