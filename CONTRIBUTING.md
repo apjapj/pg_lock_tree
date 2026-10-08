@@ -165,6 +165,25 @@ pass, and recorded that the check's non-vacuity was unproved. It was not unprove
 never changed. Every negative check in this repository needs all four steps, and "the test passed" is
 only evidence once step 2 has actually happened.
 
+**Copying a file into a test container by hand: check the copy landed.** A copy that silently does
+nothing means the next check reports a result about code that is not installed, and that is how two
+separate defects in this project presented as passing tests. A container has no history, so nothing
+else will notice: git cannot see it, and the extension directory looks exactly as it did.
+
+This is for a human moving a file by hand, with `docker cp` and a `cp` inside the container. It is not
+needed for `scripts/matrix.sh` or the `make -s install` in step 2 above, which copy the whole source
+tree and delegate to `make install`, so PGXS installs exactly what the Makefile lists: no
+hand-named destination, no glob, no shell quoting to get wrong. When copying by hand:
+
+- **Name the destination file.** A `cp` whose destination is the extension directory itself installs
+  the file under its temporary source name, which PostgreSQL never looks for.
+- **Take the list of files from an explicit list, not a glob.** A glob skips a file that does not
+  exist yet without a word, which is how eight files were "verified" while one was never copied.
+- **Quote the inner `$(pg_config ...)`** in a `docker exec ... sh -c`. Unquoted, it expands on the
+  host, where it is empty, and the `cp` fails with a path error that a `2>/dev/null` hides.
+- **`md5sum` the destination and compare it with the source**, and treat a mismatch as a failed
+  install, not noise.
+
 **Two more shapes worth recognising:**
 
 - **An assertion count on an empty set.** `scripts/lint-docs.sh` counts the assertions it expects
