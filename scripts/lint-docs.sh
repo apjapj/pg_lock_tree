@@ -1022,6 +1022,104 @@ for t in $all_targets; do
 done
 [ "$collide" -eq 0 ] && ok "no make target shares its name with a path in the tree"
 
+step "every document still has the shape a reader needs"
+# Added in 1.1.10 because 1.1.9 shipped docs/reference.md with its first 31 lines gone: the H1, the
+# introduction, the monitoring-roles note, the Objects heading, the table's header row and fifteen
+# object rows. Every check above still passed, 608 of them. Each one asks whether something the docs
+# NAME exists, and a headless file satisfies that perfectly: the surviving rows still named real
+# objects, and the functions whose rows were cut were still named lower down, in the stability
+# section, so "appears somewhere in reference.md" stayed true for all of them.
+#
+# These assert STRUCTURE, not content, so ordinary editing does not trip them and nothing has to be
+# regenerated when a document changes. A checksum manifest was considered and rejected: it detects
+# change rather than damage, fires on every legitimate edit, and is refreshed by a blind overwrite
+# that would record the truncated file as the new truth. Git already holds every version, and
+# `git show v1.1.8:docs/reference.md` is what restored this one.
+#
+# Each assertion was shown to fail on the real damage: with 1.1.9's reference.md put back, all four
+# below fail and name the file.
+
+# 1. Every document opens with its H1. A cut from the top, which is what happened, removes it first.
+#    CHANGELOG.md is the one exception and is checked for its own shape instead: it opens with the
+#    newest release heading, which the version checks above already pin to the control file.
+for f in $DOCS_ALL; do
+    [ -f "$f" ] || continue
+    first=$(head -n 1 "$f")
+    if [ "$f" = CHANGELOG.md ]; then
+        case "$first" in
+            "## "[0-9]*) ok "$f opens with a release heading" ;;
+            *) bad "$f does not open with a release heading; its first line is: $first" ;;
+        esac
+        continue
+    fi
+    case "$first" in
+        "# "*) ok "$f opens with its H1" ;;
+        *) bad "$f does not open with an H1, so something has cut its top; first line: ${first:0:60}" ;;
+    esac
+done
+
+# 2. The reference keeps its Objects section, and the table in it keeps the header row that makes it a
+#    table. Without the header, markdown renders the surviving rows as a paragraph of pipes.
+REFDOC=docs/reference.md
+if [ -f "$REFDOC" ]; then
+    if grep -qx '## Objects' "$REFDOC"; then
+        ok "$REFDOC has its ## Objects section"
+        if awk '/^## Objects$/{f=1;next} f&&/^## /{exit} f' "$REFDOC" \
+             | grep -A1 -x '| Object | Use |' | grep -qx '|---|---|'; then
+            ok "the Objects table in $REFDOC has its header row and separator"
+        else
+            bad "the Objects table in $REFDOC has lost its '| Object | Use |' header or separator"
+        fi
+    else
+        bad "$REFDOC has no '## Objects' heading"
+    fi
+fi
+
+# 3. A floor of lines per document, at about 80% of its size on 1.1.10. It sits well below what
+#    ordinary editing moves, and above what a lost section costs: reference.md went from 120 to 89
+#    lines, so a floor of half would have passed it. A document with no floor FAILS rather than
+#    passing unchecked, so a new one cannot quietly join the list without being given one. Lower a
+#    floor deliberately, in the same commit as the cut that justifies it.
+declare -A FLOOR=(
+    [README.md]=155 [INSTALL.md]=555 [CONTRIBUTING.md]=170 [CHANGELOG.md]=3200
+    [scenarios/README.md]=85 [docs/after-the-incident.md]=245 [docs/alerting.md]=270
+    [docs/design-notes.md]=65 [docs/history.md]=510 [docs/incident.md]=250
+    [docs/reference.md]=100 [docs/roadmap.md]=460
+)
+for f in $DOCS_ALL; do
+    [ -f "$f" ] || continue
+    n=$(wc -l < "$f")
+    if [ -z "${FLOOR[$f]:-}" ]; then
+        bad "$f has no line floor; give it one in scripts/lint-docs.sh"
+    elif [ "$n" -lt "${FLOOR[$f]}" ]; then
+        bad "$f has $n lines, below its floor of ${FLOOR[$f]}: check nothing was cut"
+    else
+        ok "$f has $n lines, at or above its floor of ${FLOOR[$f]}"
+    fi
+done
+
+# 4. Every object the release defines is a ROW of the Objects table, not merely a word somewhere in the
+#    file. The check above ("every function ... appears in the Objects table") greps the whole file,
+#    which is why it passed on 1.1.9: lock_tree_roots() had lost its row and was still mentioned in
+#    the stability section. This one reads only the table rows under ## Objects, and covers views,
+#    tables and procedures as well as functions.
+if [ -f "$REFDOC" ]; then
+    rows=$(awk '/^## Objects$/{f=1;next} f&&/^## /{exit} f' "$REFDOC" | grep '^|' || true)
+    missing=""
+    for o in $(grep -oE '^CREATE (OR REPLACE )?(FUNCTION|VIEW|TABLE|PROCEDURE) @extschema@\.lock_tree[a-z_]*' "$latest" \
+                 | sed 's/.*\.//' | sort -u); do
+        # A here-string, not printf piped into grep -q: grep -q exits on its first match, the printf
+        # then takes SIGPIPE, and under pipefail the pipeline reports failure. That reported real rows
+        # as missing at random, lock_tree_text on one run and nothing on the next.
+        grep -qE "(^|[^a-z_])${o}([^a-z_]|$)" <<<"$rows" || missing="$missing $o"
+    done
+    if [ -z "$missing" ]; then
+        ok "every object in $latest has a row in the Objects table in $REFDOC"
+    else
+        bad "objects in $latest with no row in the Objects table in $REFDOC:$missing"
+    fi
+fi
+
 step "house style"
 # Neither character can appear literally in this file, or the check below would always
 # flag itself. They are built from their UTF-8 bytes, not with printf '\u2014': printf only
