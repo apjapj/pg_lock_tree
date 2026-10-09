@@ -170,8 +170,9 @@ Every key is always present, `null` excepted where there is genuinely nothing to
 enforces an 8000-byte payload limit and this is far below it.
 
 `tool`, `subject` and `sampled_at` are **new in 1.1.11**, and they come from a shared contract
-across the pg_incident_watch family of extensions, which two more tools will join. The contract is
-written in that project's own ALERTS.md, which is not in this repository; what matters here is what
+across the [pg_incident_watch](https://github.com/apjapj/pg_incident_watch) family of extensions,
+which two more tools will join. The contract is written as ALERTS.md in that project, which is not in
+this repository; what matters here is what
 the three keys are for and why this extension sends them.
 
 `tool` is `pg_lock_tree`, always. Until 1.1.11 the only thing saying which extension sent a message
