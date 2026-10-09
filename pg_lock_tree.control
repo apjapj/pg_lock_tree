@@ -1,6 +1,6 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '1.1.10'
+default_version = '1.1.11'
 # 1.1.10 adds a DIRECT pg_lock_tree--1.1.8--1.1.10.sql beside the normal 1.1.9--1.1.10 step, and
 # that is deliberate: the dependents check in pg_lock_tree--1.1.8--1.1.9.sql named the wrong object
 # and missed views outside the extension's schema, 1.1.9 is a frozen tag, and PostgreSQL takes the

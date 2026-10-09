@@ -159,7 +159,8 @@ rather than a slightly later one.
 ## The payload
 
 ```json
-{"channel":"lock_tree","event":"alerting","root_pid":179,
+{"tool":"pg_lock_tree","subject":"pid 179","sampled_at":"2026-10-09T14:22:31+01:00",
+ "channel":"lock_tree","event":"alerting","root_pid":179,
  "application_name":"nightly_reconciliation",
  "blocked_sessions":40,"max_depth":2,"longest_wait":"3m12s",
  "waiting_for":"AccessShareLock on ledger"}
@@ -168,11 +169,35 @@ rather than a slightly later one.
 Every key is always present, `null` excepted where there is genuinely nothing to say. The server
 enforces an 8000-byte payload limit and this is far below it.
 
-`event` is **new in 0.12**, and is the only change to this payload. It exists because 0.12 adds a
-second kind of notification on the same channel, and a consumer needs one field to branch on rather
-than inferring which kind it got from the presence or absence of some other key. It is additive:
-JSON consumers read by key, so a listener written before 0.12 that ignores fields it does not
-recognise is unaffected.
+`tool`, `subject` and `sampled_at` are **new in 1.1.11**, and they come from a shared contract
+across the pg_incident_watch family of extensions, which two more tools will join. The contract is
+written in that project's own ALERTS.md, which is not in this repository; what matters here is what
+the three keys are for and why this extension sends them.
+
+`tool` is `pg_lock_tree`, always. Until 1.1.11 the only thing saying which extension sent a message
+was the channel name, which works right up until you run more than one of these extensions and then a
+listener has to hard-code the mapping somewhere outside the payload.
+
+`subject` is the alert's identity: the prepared transaction's lock name where there is one, and
+`pid N` otherwise. It is stable for as long as the incident lasts, so it is the thing to pair an
+escalation with its onset, and a clearing with both. **Prefer it to `root_pid`** for the same reason
+`application_name` is preferred below, and for one more: when the root is a prepared transaction
+there is no session to name and the pid alone cannot tell two of them apart.
+
+`sampled_at` is when the payload was formed. There is no sampled instant behind it. An alert is about
+the live tree, not about a history row, so this is the statement's own timestamp and nothing more.
+
+**This extension does not send an `escalated` event.** The contract defines one and lets a tool omit
+it, which this one does: it sends `alerting` for both an onset and an escalation, and says so here
+rather than claiming a distinction it does not make. Sending `escalated` is a behaviour change and is
+not in 1.1.11.
+
+`event` itself is **new in 0.12**, and was the only change to this payload until 1.1.11. It exists
+because 0.12 adds a second kind of notification on the same channel, and a consumer needs one field
+to branch on rather than inferring which kind it got from the presence or absence of some other key.
+It is additive: JSON consumers read by key, so a listener written before 0.12 that ignores fields it
+does not recognise is unaffected. The same is true of the three keys above, and that is this
+project's rule for this payload: keys are added, never removed or renamed.
 
 `application_name` is the one to key on rather than `root_pid`. A pid identifies one session for
 as long as that session lives, which is the wrong key for correlating a page with a log or a
@@ -194,7 +219,8 @@ from the start rather than escalating against a high-water mark from a previous 
 that never alerted produces nothing, because a resolution notice with no matching alert is noise.
 
 ```json
-{"event":"cleared","channel":"lock_tree","root_pid":179,"root_object":null,
+{"tool":"pg_lock_tree","subject":"pid 179","sampled_at":"2026-10-09T14:33:02+01:00",
+ "event":"cleared","channel":"lock_tree","root_pid":179,"root_object":null,
  "application_name":"nightly_reconciliation","blocked_at_most":40,"notified_count":2}
 ```
 

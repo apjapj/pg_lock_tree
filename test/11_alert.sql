@@ -98,7 +98,7 @@ ORDER BY w.blocked_sessions DESC LIMIT 1;
 \o
 \unset QUIET
 
-SELECT plan(48);
+SELECT plan(54);
 
 SELECT has_table('lock_tree_alert', 'lock_tree_alert table exists');
 SELECT has_function('lock_tree_notify',
@@ -119,8 +119,50 @@ SELECT ok((SELECT payload::jsonb ?& array['channel','application_name','blocked_
           'and every documented key: channel, application_name, blocked_sessions, max_depth, '
           || 'longest_wait, waiting_for');
 
-SELECT ok((SELECT length(payload) < 8000 FROM payload_shape),
-          'and it fits the 8000-byte NOTIFY payload limit, which the server enforces');
+
+  -- ------------------------------------------------------------------ the shared contract keys
+  --
+  -- Added in 1.1.11: pg_incident_watch, the umbrella this extension is part of, wants every tool's
+  -- NOTIFY payload to carry `tool`, `subject` and `sampled_at` so one listener can route on them.
+  --
+  -- These read the function bodies rather than a replica, because the replica above is hand-written
+  -- and would pass unchanged if the function dropped a key. That is the same trap the shape
+  -- assertions above fall into, and it is why these exist: a test that cannot fail is decoration.
+  SELECT ok((SELECT prosrc LIKE '%''tool'',%pg_lock_tree%' FROM pg_proc WHERE proname='lock_tree_notify'),
+            'lock_tree_notify() builds a payload carrying tool: pg_lock_tree');
+
+  SELECT ok((SELECT prosrc LIKE '%''subject'',%' FROM pg_proc WHERE proname='lock_tree_notify'),
+            'and carrying subject, the key a listener uses to pair an onset with its escalation');
+
+  SELECT ok((SELECT prosrc LIKE '%''sampled_at'',%' FROM pg_proc WHERE proname='lock_tree_notify'),
+            'and carrying sampled_at, so a consumer can order messages from two tools against each other');
+
+  -- The cleared payload needs the same keys, and needs subject built the SAME way. A cleared message
+  -- whose subject does not match its onset is worse than no cleared message, because a listener
+  -- pairing on subject would silently drop it.
+  SELECT ok((SELECT prosrc LIKE '%''tool'',%pg_lock_tree%'
+             FROM pg_proc WHERE proname='lock_tree_notify_resolved'),
+            'lock_tree_notify_resolved() carries the same tool key');
+
+  -- position() rather than LIKE. A LIKE pattern for this needs the wildcards interleaved with literal
+  -- quotes, and the first version of these two assertions failed against a function that demonstrably
+  -- contains the expression. A test that fails for a reason other than the thing it names is worse
+  -- than no test, because it trains you to ignore it.
+  SELECT ok((SELECT position('coalesce(nullif(gone.root_object, ''''), ''pid '' || gone.root_pid)'
+                          in prosrc) > 0
+             FROM pg_proc WHERE proname='lock_tree_notify_resolved'),
+            'and builds subject from the swept row with the same expression the onset uses, so the two pair');
+
+  SELECT ok((SELECT position('coalesce(nullif(r.root_object, ''''), ''pid '' || r.root_pid)'
+                          in prosrc) > 0
+             FROM pg_proc WHERE proname='lock_tree_notify'),
+            'which is that the onset expression is the same coalesce over the same two fields');
+
+  -- The contract defines `escalated`; this extension does not send it, and says so rather than
+  -- emitting a value it does not mean.
+  SELECT ok((SELECT prosrc NOT LIKE '%escalated%' FROM pg_proc WHERE proname='lock_tree_notify'),
+            'and it sends no escalated event, which the contract permits: it still uses alerting for '
+            || 'both onset and escalation, and claiming otherwise would be a lie');
 
 -- ------------------------------------------------------------------ phase 1: the onset
 

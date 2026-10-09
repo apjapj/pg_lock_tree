@@ -1,3 +1,56 @@
+## 1.1.11 (2026-10-09)
+
+Three keys added to the NOTIFY payload: `tool`, `subject` and `sampled_at`. Nothing is removed,
+renamed or re-valued, and no behaviour changes.
+
+### Why, and why it is not more than this
+
+This extension is one of three in the pg_incident_watch family: `pg_lock_tree` for what is stuck
+now, `pg_bloat_cause` for what is slowing down, and `pg_limit_runway` for what will break next. The
+umbrella promises that all three announce themselves in one payload format so a single listener can
+route on it. Until now the only thing identifying which extension sent a message was the **channel
+name**, which is fine until you run more than one of them and then a listener has to hard-code a
+channel-to-tool mapping somewhere outside the payload. `tool` fixes that and costs one line.
+
+`subject` and `sampled_at` complete the required set the shared contract defines. `subject` is the
+one worth arguing for: it is the alert's identity, stable for as long as the incident lasts, and it is
+what lets a consumer pair an escalation with its onset and a clearing with both. For a session root
+it is the pid; for a prepared transaction it is the lock name, because a prepared transaction has no
+session to name and the pid alone cannot tell two of them apart.
+
+### The contract is a document, and it was written before the second tool has code
+
+The contract lives in the umbrella repository rather than here, and it was written before
+`pg_bloat_cause` or `pg_limit_runway` has a line of SQL. That is the whole point of writing it early:
+neither tool has to invent a payload shape locally, and neither can drift from this one without a
+test failing.
+
+**Considered and declined: a shared extension providing the payload builder.** It would have been one
+function taking five arguments and pasting them into `json_build_object`, in exchange for a hard
+dependency on a fourth extension. That breaks the umbrella's own "install any one, or all three"
+promise, adds a version to three tools' compatibility matrices, and buys nothing a listener can use,
+because a listener parses JSON and never calls it. The thing worth sharing between the tools is a set
+of conformance assertions, not a library. The seven added to `test/11_alert.sql` are those assertions
+for this tool, and they read the function bodies rather than a hand-written replica, so a dropped key
+cannot pass.
+
+### What this extension still does not do
+
+It sends **no `escalated` event**. The contract defines one and lets a tool omit it; this one omits
+it, because it sends `alerting` for both an onset and an escalation. The escalation logic exists in
+`lock_tree_alert`, which stores the value at the last notification, but nothing emits the
+distinction. Sending it is a behaviour change and belongs in its own release, where it can be
+tested against the deduplication rules rather than smuggled in beside an additive payload change.
+
+### The upgrade
+
+`lock_tree_notify()` and `lock_tree_notify_resolved()` are plpgsql bodies carrying the new keys, so
+the update drops and recreates both rather than patching them. Each is lifted verbatim from
+`pg_lock_tree--1.1.11.sql` so the two files cannot drift. A guard refuses the upgrade if anything
+outside the extension depends on either function, and names what does. As always here, `DROP
+FUNCTION` would refuse on its own and `ALTER EXTENSION UPDATE` rolls back whole; the guard exists to
+give a better message, not to add safety.
+
 ## 1.1.10 (2026-10-08)
 
 A soak release: one defect fix in an upgrade path, the text corrections that review of 1.1.9 found,

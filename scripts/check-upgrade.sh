@@ -245,18 +245,30 @@ guard_cases() {
   case " ${FROM:-1.1.8} " in *" 1.1.8 "*) ;; *) return 0 ;; esac
   [ "$DEFAULT" != "1.1.9" ] || return 0
 
-  # 1. The path PostgreSQL actually takes from 1.1.8 is the direct one. pg_extension_update_paths()
-  #    reports the shortest path, and the shortest is what ALTER EXTENSION ... UPDATE runs, so this is
-  #    the direct statement of which script a 1.1.8 database executes.
+  # 1. The path PostgreSQL actually takes from 1.1.8 must not go through 1.1.8--1.1.9, because that
+  #    script carries the dependents guard that only saw views in the extension's own schema and
+  #    named the function rather than the view. pg_extension_update_paths() reports the shortest
+  #    path, and the shortest is what ALTER EXTENSION ... UPDATE runs.
+  #
+  #    This asserted a SINGLE HOP until 1.1.11 existed and the shortest path became
+  #    1.1.8--1.1.10--1.1.11, two hops and perfectly safe: 1.1.8--1.1.10 runs the corrected guard for
+  #    lock_tree_archive_find and 1.1.10--1.1.11 runs its own for lock_tree_notify, so both execute.
+  #    What matters is that 1.1.9 is not in the path. The hop count was a proxy for that which stopped
+  #    tracking it faithfully once a third release landed, and asserting the stated invariant rather
+  #    than the mechanism is not the same as weakening it: the failure is still reachable, since
+  #    putting 1.1.8--1.1.9 back into the path fails this again.
   local path
   path=$("${PSQL[@]}" -d postgres -c "SELECT path FROM pg_extension_update_paths('$EXT')
                                        WHERE source = '1.1.8' AND target = '$DEFAULT'")
-  if [ "$path" = "1.1.8--$DEFAULT" ]; then
-    echo "ok    1.1.8 -> $DEFAULT takes the direct script, not 1.1.8--1.1.9: $path"
-  else
-    echo "FAIL  1.1.8 -> $DEFAULT takes $path, so the corrected dependents guard never runs"
-    failed+=("guard-path")
-  fi
+  case "$path" in
+    *1.1.9*)
+      echo "FAIL  1.1.8 -> $DEFAULT takes $path, which runs the guard that misses views in other schemas"
+      failed+=("guard-path")
+      ;;
+    *)
+      echo "ok    1.1.8 -> $DEFAULT does not route through 1.1.8--1.1.9: $path"
+      ;;
+  esac
 
   # 2. A dependent view refuses the update, names the view by its own schema-qualified name, gives the
   #    six-columns recovery, and leaves the database exactly as it was. Two placements: another schema,
