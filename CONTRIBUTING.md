@@ -223,9 +223,27 @@ installation therefore never has to reinstall to get a fix.
 7. **Run the demonstrations**, `make demo` and `make scenarios`, and compare them against what the
    documentation claims. The scenario demos print the popular standard DBA query beside this
    extension's output, and the captured output is the proof that the two agree.
-8. **Commit, push, tag, push the tag.** Push the commit before the tag, never in the same command:
-   `git push --tags` in a command whose commit was rejected by a hook pushes a tag that points at
-   the previous release, and that happened at 1.0.0.
+8. **Commit, push, wait for CI, tag, push the tag.** Push the commit before the tag, never in the
+   same command: `git push --tags` in a command whose commit was rejected by a hook pushes a tag
+   that points at the previous release, and that happened at 1.0.0.
+
+   Read the run before you tag:
+
+   ```bash
+   scripts/check-ci.sh          # refuses unless every workflow on HEAD is green
+   ```
+
+   This step exists because it was skipped and the result shipped. **1.1.11 could not be
+   `make install`ed on any PostgreSQL version**, and CI caught that on the tag push: the
+   `install-path checks` job went red with the same `install: will not overwrite just-created` error
+   that was later found by hand. The run was never read, because nothing in this repository read it.
+   `scripts/check-ci.sh` reads it, and fails closed: an unreachable API, a missing token, a commit
+   not yet on the remote, a run still in progress, or a workflow reporting success while missing
+   the job that does the gating are all refusals, not passes. A green run whose `install-path
+   checks` job has been renamed is the failure mode worth designing against, because from the
+   outside it looks exactly like success.
+
+   **Tag only once this passes.** The check is fast and read-only; the tag is not.
 9. **Never amend a pushed tag.** If a tag is wrong, delete it, push the deletion, and tag again, and
    say so in the changelog with the `git fetch --tags --force` that anyone who already fetched the
    bad tag needs.

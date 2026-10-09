@@ -34,7 +34,7 @@ prove:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples
+.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -100,6 +100,15 @@ bench-history:
 # installed and would pass on an update path that had never been executed.
 check-upgrade:
 	./scripts/check-upgrade.sh
+
+# The release gate. Reads CI for a commit and refuses unless every workflow is green.
+#
+# NOT in `make lint`, and that is deliberate rather than an oversight: it needs the network, a
+# Forgejo token and the commit to be pushed, so folding it in would make the offline lint fail for a
+# reason that has nothing to do with the documentation. It is a gate on publishing, not a check on
+# the tree, and a gate that can only run in one place is a gate that gets skipped.
+check-ci:
+	./scripts/check-ci.sh
 
 # The non-public schema install. It creates and drops a scratch database, so it is a script and not a
 # pgTAP file, and it is not in `make prove`. test/22_schema_install.sql covers the structural half.
