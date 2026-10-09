@@ -34,6 +34,24 @@ This does not change what the extension does. It changes what the documentation 
 is worth a release of its own because a reader sizing a future payload key would otherwise reason from
 a guarantee that was never built.
 
+**Correction, made on main after the v1.1.13 tag.** The entry above is left as it shipped, and the tag
+is not moved. Its measurement was wrong: 8000 bytes is not accepted, and the limit does not include
+the channel. Re-measured with `pg_notify(channel, repeat('x', n))` on PostgreSQL 14, 18.6 and 19beta4:
+
+```
+payload 7999, channel "ab" (2 chars)   -> sent
+payload 8000, channel "ab" (2 chars)   -> ERROR:  payload string too long
+payload 7999, channel of 31 chars      -> sent
+payload 8000, channel of 31 chars      -> ERROR:  payload string too long
+NOTIFY ch, '<8000-byte literal>'       -> ERROR:  payload string too long
+```
+
+The largest payload that is sent is 7999 bytes, and the channel name's length makes no difference.
+That matches PostgreSQL's source, which compares the payload alone with `NOTIFY_PAYLOAD_MAX_LENGTH`
+(8000) and refuses anything that long or longer. The conclusion of the entry stands: an oversized
+payload is refused with an error, never truncated. Corrected in `docs/alerting.md`, and in rule 4 of the
+umbrella's alert contract in pg_incident_watch.
+
 ## 1.1.12 (2026-10-09)
 
 Two fixes. Neither changes any SQL, any behaviour, or any payload key. If you are installing fresh,

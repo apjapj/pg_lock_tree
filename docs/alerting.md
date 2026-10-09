@@ -172,9 +172,11 @@ Every key is always present, `null` excepted where there is genuinely nothing to
 enforces an 8000-byte payload limit, which was true of the server and false of this code: there is no
 `octet_length` or equivalent anywhere in `pg_lock_tree--1.1.12.sql`, so nothing here measures the
 payload before sending it. What is true is that PostgreSQL **refuses** an oversized `NOTIFY` rather
-than truncating it, measured on 18.6: a payload of exactly 8000 bytes is accepted, and the failure
-comes at 8003 bytes with a 2-character channel, because the bound is on the whole message with the
-channel included. Past that the statement raises `payload string too long`, and because the notify is
+than truncating it. Measured on PostgreSQL 14, 18.6 and 19beta4 with `pg_notify(channel, repeat('x',
+n))`: a 7999-byte payload is sent, and 8000 bytes or more is refused. The channel name's length makes
+no difference, because the limit applies to the payload alone. So the real maximum is 7999 bytes, and
+it is a hard ceiling. (1.1.13 said 8000 was accepted and the limit included the channel; both were
+wrong.) Past it the statement raises `payload string too long`, and because the notify is
 a PL/pgSQL sweep over `lock_tree_alert`, that exception aborts the sweep and returns an error to the
 caller rather than dropping one message quietly.
 
