@@ -1,0 +1,11 @@
+-- pg_lock_tree 1.1.12 -> 1.1.13
+--
+-- Nothing to do, and that is the whole design. 1.1.13 is documentation only: it corrects a claim in
+-- docs/alerting.md that said the payload size was enforced, when no size check exists in this
+-- extension. Every object 1.1.13 installs is identical to what 1.1.12 installs.
+--
+-- This file exists so that PostgreSQL has a path to 1.1.13 from 1.1.12. An ALTER EXTENSION UPDATE
+-- from 1.1.12 applies this and changes no catalog state, which is the correct outcome for a release
+-- that changed a sentence rather than a schema.
+--
+-- If you want the sentence rather than the release, docs/alerting.md carries it.

@@ -1,3 +1,39 @@
+## 1.1.13 (2026-10-09)
+
+Documentation only. No SQL changes, and therefore no update script: 1.1.12 and 1.1.13 install the same
+objects, and `check-upgrade` confirms every path still converges on a fresh install.
+
+### A false claim about payload size, corrected
+
+`docs/alerting.md` said "The server enforces an 8000-byte payload limit and this is far below it."
+The first half is true and the sentence as a whole is not: nothing in this extension measures the
+payload. There is no `octet_length` or any equivalent in `pg_lock_tree--1.1.12.sql`, so the margin
+between the shipped payload and the limit is arithmetic rather than a guarantee, and the document
+implied a check that does not exist.
+
+Measured on PostgreSQL 18.6 while correcting it, because the original sentence was written from memory
+and was wrong in a second way as well. PostgreSQL **refuses** an oversized `NOTIFY`, it does not
+truncate:
+
+```
+payload 7995 + channel "ch"  -> NOTIFY
+payload 8000 + channel "ch"  -> NOTIFY
+payload 8003 + channel "ch"  -> ERROR:  payload string too long
+```
+
+The bound is on the whole message including the channel, not on the payload alone, so "8000 bytes or
+more" is off by a couple of bytes in the permissive direction. Over the bound the statement raises,
+and because `lock_tree_notify()` is a PL/pgSQL sweep over `lock_tree_alert`, that exception aborts the
+sweep and returns an error to the caller. It does not drop one message quietly.
+
+The payload as shipped measures 334 bytes, and 4,624 in a worst case built to be absurd, with
+4,000-character names in every text key. Both figures come from building the same `json_build_object`
+the function builds.
+
+This does not change what the extension does. It changes what the documentation claims about it, which
+is worth a release of its own because a reader sizing a future payload key would otherwise reason from
+a guarantee that was never built.
+
 ## 1.1.12 (2026-10-09)
 
 Two fixes. Neither changes any SQL, any behaviour, or any payload key. If you are installing fresh,

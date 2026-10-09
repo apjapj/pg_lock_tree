@@ -166,8 +166,22 @@ rather than a slightly later one.
  "waiting_for":"AccessShareLock on ledger"}
 ```
 
-Every key is always present, `null` excepted where there is genuinely nothing to say. The server
-enforces an 8000-byte payload limit and this is far below it.
+Every key is always present, `null` excepted where there is genuinely nothing to say.
+
+**There is no size check in this extension.** An earlier version of this paragraph said the server
+enforces an 8000-byte payload limit, which was true of the server and false of this code: there is no
+`octet_length` or equivalent anywhere in `pg_lock_tree--1.1.12.sql`, so nothing here measures the
+payload before sending it. What is true is that PostgreSQL **refuses** an oversized `NOTIFY` rather
+than truncating it, measured on 18.6: a payload of exactly 8000 bytes is accepted, and the failure
+comes at 8003 bytes with a 2-character channel, because the bound is on the whole message with the
+channel included. Past that the statement raises `payload string too long`, and because the notify is
+a PL/pgSQL sweep over `lock_tree_alert`, that exception aborts the sweep and returns an error to the
+caller rather than dropping one message quietly.
+
+The payload as shipped is 334 bytes, and 4,624 in a deliberately absurd worst case with 4,000-character
+names, so there is a wide margin. The margin is arithmetic, not a guarantee, and it is the reason a
+future key should be argued for on its own merits rather than added because the payload is small
+enough to absorb it.
 
 `tool`, `subject` and `sampled_at` are **new in 1.1.11**, and they come from a shared contract
 across the [pg_incident_watch](https://github.com/apjapj/pg_incident_watch) family of extensions,
