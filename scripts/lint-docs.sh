@@ -184,6 +184,34 @@ for f in pg_lock_tree--*.sql; do
     fi
 done
 
+  # No file may appear twice in DATA. GNU install refuses to install the same file twice in one
+  # command and stops, so a duplicate is not a warning, it is a broken `make install` for everyone
+  # following INSTALL.md.
+  #
+  # This existed as a defect rather than as a missing check: 1.1.11 listed
+  # pg_lock_tree--1.1.10--1.1.11.sql in DATA twice, because the same edit was applied to the line
+  # twice, and every check above still passed. Each of them asks whether a file is PRESENT and none
+  # asks whether it appears more than once. Found by running `make install` in six containers, which
+  # is the first thing a stranger does and the one thing nothing here was doing.
+  data_line=$(sed -n 's/^DATA[[:space:]]*=[[:space:]]*//p' Makefile | head -1)
+  dup_data=$(printf '%s\n' "$data_line" | tr ' ' '\n' | grep -v '^$' | sort | uniq -d)
+  if [ -z "$dup_data" ]; then
+      ok "no file is listed twice in DATA, which install would refuse"
+  else
+      bad "DATA lists these more than once and install stops: $(printf '%s' "$dup_data" | tr '\n' ' ')"
+  fi
+
+  # The reverse: a name in DATA with no file behind it, which PGXS fails on just as hard.
+  missing_data=$(printf '%s\n' "$data_line" | tr ' ' '\n' | grep -v '^$' | while read -r f; do
+                     [ -f "$f" ] || printf '%s ' "$f"
+                 done)
+  if [ -z "$missing_data" ]; then
+      ok "every name in DATA has a file on disk behind it"
+  else
+      bad "DATA lists files that do not exist: $missing_data"
+  fi
+
+
 # Both counts non-zero, or one of the two classifications above is silently
 # matching nothing and reporting success on every file.
 if [ "$n_release" -gt 0 ] && [ "$n_update" -gt 0 ]; then

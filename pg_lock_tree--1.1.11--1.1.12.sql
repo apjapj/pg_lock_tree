@@ -1,0 +1,13 @@
+-- pg_lock_tree 1.1.11 -> 1.1.12
+--
+-- Nothing to do. 1.1.12 changes no SQL: every object it creates is identical to what 1.1.11
+-- creates, and the only differences between the two releases are in the Makefile and the
+-- documentation. This file exists so that PostgreSQL has a path to 1.1.12 from 1.1.11.
+--
+-- IF YOU ARE UPGRADING FROM 1.1.11 YOU HAVE ALREADY LOST ANY CUSTOM GRANT ON
+-- lock_tree_notify() AND lock_tree_notify_resolved(). 1.1.11 dropped and recreated both, which
+-- returned them to their default privileges, and nothing in this update can restore a grant it does
+-- not know existed. Re-apply them yourself; INSTALL.md says which.
+--
+-- If you are on 1.1.10 or earlier, do NOT come through here. Take pg_lock_tree--1.1.10--1.1.12.sql,
+-- which is shorter and which never executes 1.1.11's DROP.
