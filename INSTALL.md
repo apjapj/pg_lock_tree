@@ -41,7 +41,7 @@ the server.
 The extension is not packaged on PGXN yet. It is a Git repository:
 
 ```bash
-git clone https://forgejo/apjapj/pg_lock_tree.git    # adjust the host to yours
+git clone https://github.com/apjapj/pg_lock_tree.git
 cd pg_lock_tree
 ```
 
@@ -49,8 +49,8 @@ Check out the version you want. Tags are releases; `main` is whatever is newest 
 ahead of the last tag:
 
 ```bash
-git tag                 # v0.1 to v0.15
-git checkout v0.15      # or: git checkout main
+git tag --sort=v:refname    # every release, oldest first; CHANGELOG.md has what each one did
+git checkout v1.1.11        # or: git checkout main for whatever is newest
 ```
 
 ## Install
