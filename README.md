@@ -1,6 +1,6 @@
 # pg_lock_tree
 
-Readable lock-wait trees for PostgreSQL 14 and later.
+Readable lock-wait trees for PostgreSQL 14 and later. 14 stays tested past its November 2026 end of life, until PostgreSQL 19 is stable.
 
 When a database "hangs", it is usually one session at the front of a lock queue with everything
 else waiting politely behind it. This extension shows that queue as a tree, names the root

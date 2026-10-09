@@ -3,13 +3,13 @@
 **For: whoever changes the SQL, the tests or the documentation, and whoever tags a release.** The make
 targets, the test suite, the version matrix, and the release checklist.
 
-`make check` needs no database and is the one to run first: it is the documentation lint, and it is
+`make lint` needs no database and is the one to run first: it is the documentation lint, and it is
 what catches a rename that half the documentation has not caught up with.
 
 ## Make targets
 
 ```bash
-make check              # the checks that need no server: the documentation lint, and a note
+make lint               # the checks that need no server: the documentation lint, and a note
 make lint-docs          # documentation, objects, paths, links and anchors, and the test table
 make prove              # 501 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
@@ -126,7 +126,7 @@ there is one copy. Every substitution has a named replacement, `<PID>`, `<PIDS>`
 shows what was hidden rather than that something was. It deliberately does not mask the coverage
 numbers in the scenarios table, because masking the thing under test is not a check.
 
-`make capture` needs a server with the extension installed, so it is not part of `make check`. Run it
+`make capture` needs a server with the extension installed, so it is not part of `make lint`. Run it
 after changing anything that prints, and commit what it writes.
 
 Only the demo's section list and the scenarios coverage table are compared, and the files holding them
@@ -210,7 +210,7 @@ installation therefore never has to reinstall to get a fix.
    directions so the list cannot rot into a permanent exemption.
 4. **The full suite on every version**, `scripts/matrix.sh`, not one version.
 5. **`make check-examples`.** The SQL examples in the documentation are planned against the release
-   being shipped, which needs a server with the extension installed, so it is not in `make check`
+   being shipped, which needs a server with the extension installed, so it is not in `make lint`
    (that runs `lint-docs` alone). It is on the list because `SELECT * FROM lock_tree_replay(42)` sat in
    `docs/after-the-incident.md` from 0.14 onwards, calling a function that takes a `timestamptz` and
    has never taken anything else. A wrong example is as wrong as a wrong function, and this is the

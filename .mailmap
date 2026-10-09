@@ -1,0 +1,28 @@
+# Four author identities appear in this history, and all four are the same person. A published history
+# should not show them as four contributors, and the forge behind it would otherwise link four
+# accounts on GitHub and Forgejo rather than one.
+#
+#   89  Piotr Adamiak <apjapj@gmail.com>
+#   10  apjapj        <apjapj@forgejo>
+#    2  Piotr         <apjapj@gmail.com>
+#    1  apjapj        <apjapj@gmail.com>
+#
+# Two mistakes here are worth recording, because the first one was mine.
+#
+# A .mailmap line is  Proper Name <proper@email>  Commit Name <commit@email>, and git matches on BOTH
+# the name and the email. An entry naming only the email does not work: `apjapj@forgejo
+# apjapj@gmail.com` was written first, produced no change at all, and said so by git shortlog still
+# showing two lines. An email-only mapping looks like it should work and silently does not.
+#
+# The second is that the *email* was never the problem worth solving. Three of the four identities share
+# apjapj@gmail.com and differ only in the display name, so a reader would have seen "Piotr Adamiak",
+# "Piotr" and "apjapj" as three contributors on the same address. That is the more visible half of the
+# inconsistency and it is fixed below by the same file.
+#
+# Nothing here rewrites history. .mailmap is applied at display time by git log, git shortlog and the
+# forge, so a fresh clone shows one contributor for 102 commits and no commit object is touched. Which
+# display name and address to publish is the owner's decision; this file only makes the history say one
+# thing instead of four.
+Piotr Adamiak <apjapj@gmail.com> apjapj <apjapj@forgejo>
+Piotr Adamiak <apjapj@gmail.com> Piotr <apjapj@gmail.com>
+Piotr Adamiak <apjapj@gmail.com> apjapj <apjapj@gmail.com>

@@ -596,7 +596,7 @@ hold an older baked copy of the extension, but the image contains no `pg_lock_tr
 A job that started its own Postgres with the checkout mounted worked perfectly by hand and failed
 in 9 seconds in CI, because a job container has no `docker` binary. What works is a dedicated job
 image built in `pg-dev-infra` (`apjapj/pg-runner:18-20261007`) carrying PostgreSQL 18, pg_cron,
-pgTAP and the toolchain, with the runner's `babar-pg` label pointing at it and `docker` untouched.
+pgTAP and the toolchain, with a dedicated runner label pointing at it and `docker` untouched.
 The job needs no apt, no docker and no socket: `pg-start`, `make install`, `CREATE EXTENSION`.
 
 All eight pass in CI on PostgreSQL 18, in about 1m50s. See `docs/roadmap.md` for the four bugs

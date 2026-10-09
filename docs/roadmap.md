@@ -240,7 +240,7 @@ inference, not an observation, since `/actions/jobs/{id}/logs` 404s at `read:rep
 **What works.** `pg-dev-infra` builds a dedicated job image, `apjapj/pg-runner:18-20261007`, from
 `node:20-bookworm` with PostgreSQL 18, `pg_cron`, `pg_stat_statements`, pgTAP, the TAP parser,
 `make` and `gcc` baked in, plus a `pg-start` helper that brings up a preconfigured cluster on
-localhost. The runner's `babar-pg` label names it; `docker` is untouched, so `book-platform`,
+localhost. A dedicated runner label names it; `docker` is untouched, so `book-platform`,
 `lint.yml` and `secrets.yml` are unaffected. The job then needs no apt, no docker and no socket:
 
 ```bash
