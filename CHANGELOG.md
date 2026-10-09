@@ -1,3 +1,76 @@
+## 1.1.12 (2026-10-09)
+
+Two fixes. Neither changes any SQL, any behaviour, or any payload key. If you are installing fresh,
+read nothing further and run the normal install. If you are **upgrading**, read the grant note below,
+because two earlier versions quietly removed a privilege you had granted.
+
+### `make install` works again
+
+1.1.11 could not be installed by anyone following `INSTALL.md`, on any PostgreSQL version. Its
+upgrade script was listed in the Makefile's `DATA` line twice, because the same edit was applied to
+that line twice. GNU `install` refuses to install one file twice in one command and stops:
+
+```
+install: will not overwrite just-created '/usr/share/postgresql/18/extension/pg_lock_tree--1.1.10--1.1.11.sql' with './/pg_lock_tree--1.1.10--1.1.11.sql'
+```
+
+Nothing in this repository caught it. Every existing check asks whether a file is **present** and
+none asked whether it appears more than once, and the containers the previous verification ran in
+already had the files because they had been copied in by hand. It was found by running `make install`
+in six fresh clones, which is the first thing a stranger does. Two checks now cover the class: no name
+repeated in `DATA`, and every name in `DATA` has a file behind it. The first was confirmed by putting
+the duplicate back and watching it fail.
+
+### Upgrading no longer removes your grants
+
+If you granted `EXECUTE` on `lock_tree_notify()` or `lock_tree_notify_resolved()` to a role, or
+revoked it from `PUBLIC`, and you upgraded **through 1.1.11**, that privilege is now gone and both
+functions are back to their defaults. Re-apply it:
+
+```sql
+REVOKE EXECUTE ON FUNCTION lock_tree_notify(text,integer,integer,interval) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION lock_tree_notify(text,integer,integer,interval) TO your_role;
+```
+
+**If you are on 1.1.10 or earlier, this does not affect you.** 1.1.12 adds a direct `1.1.10` to
+`1.1.12` script, one hop rather than two, so PostgreSQL chooses it and 1.1.11's `DROP` never runs.
+Check what you have:
+
+```sql
+SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree';
+```
+
+**`lock_tree_archive_find()` is the same case from 1.1.9**, and is not fixable retroactively. That
+release had to drop the function because removing its `samples` output column changes the return type,
+which `CREATE OR REPLACE` refuses to do. If you granted anything on it and upgraded through 1.1.9,
+re-apply it too.
+
+The cause was one wrong assumption. 1.1.11 dropped and recreated both functions because a plpgsql
+function was believed to have to be dropped to change its body. That is false; `CREATE OR REPLACE`
+handles it and keeps existing privileges, since neither the signature nor the return type changed.
+Measured on PostgreSQL 18:
+
+```
+before                  {postgres=X/postgres,alerter=X/postgres}
+after DROP + CREATE     default
+after CREATE OR REPLACE {postgres=X/postgres,alerter=X/postgres}
+```
+
+`scripts/check-upgrade.sh` could not have caught this. It compares an upgraded database against a
+fresh install, and a fresh install never has a custom grant to compare against, so both sides agree.
+That is a limit of comparing against fresh rather than a gap in the check.
+
+`CREATE OR REPLACE` is not universal, and the two exceptions are recorded in the update script's
+header, because they are what made 1.1.9 and 1.1.11 look alike from outside: it refuses when the
+`RETURN` type changes, and it refuses when an input parameter is renamed.
+
+### Also in this release
+
+- Two lint checks: no name listed twice in `DATA`, and every name in `DATA` has a file on disk behind it.
+- `1.1.11` to `1.1.12` is a no-op by design, and says so in its own header, including the instruction
+  to re-apply grants.
+- The `1.1.8` to `1.1.12` path still bypasses 1.1.9's faulty guard, so that check is unchanged.
+
 ## 1.1.11 (2026-10-09)
 
 Three keys added to the NOTIFY payload: `tool`, `subject` and `sampled_at`. Nothing is removed,

@@ -561,6 +561,23 @@ rolls back, but the error was PostgreSQL's generic one. 1.1.10 ships a direct
 UPDATE` takes it, because PostgreSQL chooses the shortest path. An explicit `UPDATE TO '1.1.9'` still
 runs the 1.1.9 script and its old message, since 1.1.9 is a released tag and is not edited.
 
+**Upgrading through 1.1.11 removes your grants on two functions.** If you granted `EXECUTE` on
+`lock_tree_notify()` or `lock_tree_notify_resolved()` to a role, or revoked it from `PUBLIC`, and your
+upgrade **passed through 1.1.11**, that privilege is gone and both functions are back to their
+defaults. Re-apply it by hand; nothing in a later update can restore a grant it does not know existed.
+
+```sql
+REVOKE EXECUTE ON FUNCTION lock_tree_notify(text,integer,integer,interval) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION lock_tree_notify(text,integer,integer,interval) TO your_role;
+```
+
+**If you are on 1.1.10 or earlier, this does not happen to you.** 1.1.12 ships a direct
+`pg_lock_tree--1.1.10--1.1.12.sql`, one hop rather than two, so a plain
+`ALTER EXTENSION pg_lock_tree UPDATE` takes it and never executes 1.1.11's `DROP`. The 1.1.9 case is
+separate and older: `lock_tree_archive_find()` was genuinely dropped in 1.1.9 because removing its
+`samples` output column changes the return type, so anything you granted on it went then, and only
+you can restore it.
+
 **Downgrade is not supported.** There is no `0.15--0.14` script, and `ALTER EXTENSION ... UPDATE TO`
 will not go backwards. To get 0.14 behaviour back, install 0.14 in a scratch database alongside it.
 
