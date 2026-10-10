@@ -82,24 +82,34 @@ jobs:
             http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
 
-      - name: Install pg_prove and the client
+      # pg_prove is a perl script and carries no PostgreSQL version, so one package covers the whole
+      # matrix. psql comes from ci/psql, which runs the server's own container's client, because PGDG
+      # does not package postgresql-client-19 while 19 is a beta and a version-specific apt install
+      # means every new beta needs the workflow edited before its first run.
+      - name: Install pg_prove
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "postgresql-client-${{ matrix.apt_version }}" \
-            libtap-parser-sourcehandler-pgtap-perl
+          sudo apt-get install -y --no-install-recommends libtap-parser-sourcehandler-pgtap-perl
           pg_prove --version
 
       - name: Run pgTAP
-        run: ./ci/job.sh "${{ matrix.pg_version }}"
+        env:
+          CI_CONTAINER: pg-lock-tree-ci
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/ci:$PATH"
+          ./ci/job.sh "${{ matrix.pg_version }}"
 
   install-path-checks:
     name: install-path checks
     runs-on: ubuntu-latest
     env:
-      PGUSER: postgres
-      PGDATABASE: postgres
+      # Job level, not step level. It was on one step, and the step that runs the eight checks could not
+      # see it, so every check failed at fe_sendauth: no password supplied. A credential that only one
+      # step of a two-step job can read is a credential one step of that job will always be missing.
+      CI_CONTAINER: pg-lock-tree-ci
+      PGPASSWORD: test # pragma: allowlist-secret  # throwaway, set on the container by ci/server.sh
     steps:
       - uses: actions/checkout@v4
 
@@ -123,12 +133,6 @@ jobs:
             http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
 
-      - name: Install psql
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client-18
-          psql --version
 
       # Same two assertions the Forgejo job makes, and for the same reason: a bare SELECT reports
       # whatever is installed and is then discarded, so a partial or stale make install would pass
@@ -144,9 +148,6 @@ jobs:
       # The md5 after the copy is the rule CONTRIBUTING.md states, and it is why the copy is verified
       # rather than trusted: a copy that lands under the wrong name looks like a successful install.
       - name: Start Postgres and install extension
-        env:
-          # The throwaway password ci/server.sh sets on the container, not a credential.
-          PGPASSWORD: test # pragma: allowlist-secret
         run: |
           set -euo pipefail
           ./ci/server.sh up 18 5518 make
@@ -178,6 +179,8 @@ jobs:
       - name: Run all 8 checks, the scenarios and demo.sql
         run: |
           set -uo pipefail
+          # ci/psql in front of the real one: the server's container carries the matching client.
+          export PATH="$PWD/ci:$PATH"
           fail=0
           # Every check needs libpq pointed at the container, because the pgTAP-style SQL inside them
           # connects through dblink to a TCP address that does not exist on this host. The credential

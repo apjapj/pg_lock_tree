@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#!/usr/bin/env bash
+# ci/psql: a libpq client binary that runs inside the CI server's container.
+#
+# Dispatch is on this script's own name, and ci/createdb and ci/dropdb are symlinks to it. That matters
+# because the check scripts call createdb and dropdb as well as psql, and those are separate binaries
+# with their own libpq: shimming only psql left check-upgrade and check-schema failing at
+# "createdb: connection to server on socket ... role does not exist", because the call went to the
+# runner's own socket, and the runner has no PostgreSQL at all.
+#
+# Why a shim rather than an apt client: PGDG does not package postgresql-client-19 while PostgreSQL 19
+# is a beta, so a runner cannot be given a client whose major matches the server for the one version
+# this suite most needs to cover. The server's container already carries the exactly-matching client,
+# so using that removes the version coupling entirely and means a future beta needs no workflow edit.
+#
+# Put ci/ first on PATH to use it.
+#
+# Two translations happen on the way through:
+#
+#   -h/--host, -p/--port and their = forms are removed, and PGHOST, PGPORT, PGPASSWORD, PGUSER and
+#   PGDATABASE are unset, because inside the container the right connection is the local unix socket.
+#   --file and -f are rewritten: the file is copied into the container and the argument points at its
+#   new home. Without this every pgTAP file failed with "No plan found in TAP output", which says
+#   nothing about the cause, because pg_prove passes a path that exists only on the runner.
+
+unset PGHOST PGPORT PGPASSWORD PGUSER PGDATABASE PGHOSTADDR PGPASSFILE
+
+container=${CI_CONTAINER:-pg-lock-tree-ci}
+tool=$(basename "$0")
+
+copy_in() {
+    local src=$1 dst=/tmp/ci-psql-input
+    docker cp "$src" "$container:$dst" >/dev/null 2>&1 \
+        || { echo "ci/$tool: cannot copy $src into $container" >&2; exit 1; }
+    echo "$dst"
+}
+
+args=()
+skip=0
+next_is_file=0
+for a in "$@"; do
+    if [ "$next_is_file" = 1 ]; then
+        args+=("$(copy_in "$a")"); next_is_file=0; continue
+    fi
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in
+        -h|--host|-p|--port) skip=1; continue ;;
+        --host=*|--port=*)    continue ;;
+        -f|--file)           next_is_file=1; args+=("--file"); continue ;;
+        --file=*)            args+=("--file=$(copy_in "${a#--file=}")"); continue ;;
+        *)                    args+=("$a") ;;
+    esac
+done
+
+exec docker exec -i -e PGUSER=postgres "$container" "$tool" -U postgres "${args[@]}"
