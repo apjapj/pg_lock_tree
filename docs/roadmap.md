@@ -27,10 +27,10 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    registered, and the registry address the test image is pulled from. Replacing them with a
    generic label and a registry host name is a change to pg-dev-infra's runner configuration, and
    is **[Piotr]**.
-2. **[can do now] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
+2. **[done locally in 0c70e76, not pushed] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
    history scan and detect-secrets run on Forgejo only (`.forgejo/workflows/secrets.yml`). Port them, so
    the public copy proves what Forgejo proves.
-3. **[can do now] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
+3. **[done locally in 0c70e76, not pushed; the same in the three siblings] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
    differs from the SPDX template enough that GitHub reports NOASSERTION. Match the template so it is
    detected as `PostgreSQL`; check after the push that the sidebar says so.
 4. **[can do now, address from Piotr] A security policy** at the repository root: how to report a vulnerability privately, and
@@ -44,7 +44,7 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 7. **[can do now] `scripts/check-ci-github.sh`**: it is in `main` (7a80420) and read run 38068022236
    correctly; decide whether it stays a contributor script or moves to the umbrella, and drop its
    Forgejo host default if item 1 says so.
-8. **[can do now] Release notes for 1.1.13**, drafted from CHANGELOG.md's entry for a GitHub Release,
+8. **[drafted, for Piotr to read] Release notes for 1.1.13**, drafted from CHANGELOG.md's entry for a GitHub Release,
    saying plainly that v1.1.11 cannot be `make install`ed and is kept as a tag for the record.
 
 **The outward steps, in this order, each [Piotr]**
