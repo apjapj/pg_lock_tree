@@ -1,0 +1,190 @@
+# .github/workflows/test.yml: pg_lock_tree on GitHub Actions.
+#
+# The Forgejo equivalent is .forgejo/workflows/test.yml and it is not replaced by this file. Both run,
+# because Forgejo stays origin until the move is finished and a green run on one platform says nothing
+# about the other.
+#
+# Three jobs, and the third is the one that matters:
+#
+#   pgtap                 the 23 pgTAP files, on PG 14 to 19beta4
+#   install-path checks   make install, CREATE EXTENSION, the eight checks, the scenarios, demo.sql.
+#                         This is the job named in scripts/check-ci.sh's pg-lock-tree.ci-gates, and the
+#                         job that went red on v1.1.11 when make install was broken and nobody read it.
+#   lint                  documentation, objects, paths, links and anchors, and the test table
+#
+# What differs from Forgejo, and why:
+#
+#   * The server image is built from ci/Dockerfile rather than pulled from
+#     192.168.10.111:3000. That registry is private and a GitHub-hosted runner cannot reach it, so the
+#     image is built from the official postgres one. All six tags the matrix needs are public.
+#   * There is no runs-on: babar-pg equivalent, so the runner-image dependency disappears along with
+#     the pg-start helper. The server is a container the job starts itself, which is also what allows
+#     max_prepared_transactions and the pg_cron preload to be set: GitHub has no `command:` override
+#     for a service container.
+#   * runs-on is ubuntu-latest, and the matrix order no longer decides placement because there is only
+#     one pool. On Forgejo the ascending order was load-bearing and being dispatched last is what put
+#     jobs on the wrong runner; that failure cannot happen here.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pgtap:
+    name: pgtap
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ascending, in step with pg-dev-infra. On GitHub this is cosmetic: the order decides nothing,
+        # because there is one runner pool and no placement to get wrong.
+        include:
+          - pg_version: "14"
+            apt_version: "14"
+          - pg_version: "15"
+            apt_version: "15"
+          - pg_version: "16"
+            apt_version: "16"
+          - pg_version: "17"
+            apt_version: "17"
+          - pg_version: "18"
+            apt_version: "18"
+          - pg_version: "19beta4"
+            apt_version: "19"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the server image
+        run: docker build -q --build-arg PG_MAJOR="${{ matrix.pg_version }}" -t pg-lock-tree-ci . -f ci/Dockerfile
+
+      # pg_prove and the client come from PGDG, which ubuntu-latest does not carry. Both the client and
+      # pg_prove have to be the SAME major as the server: pg_prove loads the pgTAP SQL into the
+      # database, so a client of a different major tests against a pgTAP the suite never pinned.
+      #
+      # The apt version is not the image tag: 19beta4 is the tag, postgresql-19 is the package. A step
+      # that used the matrix value in both places stopped the matrix at its last version with
+      # "Unable to locate package". So the matrix carries both, and they are set in step's `with`.
+      - name: Install the PostgreSQL apt repository
+        uses: akachmak/ubuntu-pgdg-action@release
+        with:
+          postgresql-version: ${{ matrix.apt_version }}
+
+      - name: Install pg_prove and the client
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "postgresql-client-${{ matrix.apt_version }}" \
+            libtap-parser-sourcehandler-pgtap-perl
+          pg_prove --version
+
+      - name: Run pgTAP
+        run: ./ci/job.sh "${{ matrix.pg_version }}"
+
+  install-path-checks:
+    name: install-path checks
+    runs-on: ubuntu-latest
+    env:
+      PGUSER: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      # The eight checks and demo.sql all talk to the server through the client on this runner, and
+      # check-examples plans statements, so the client and pg_prove are both needed. PGDG is not on
+      # ubuntu-latest by default.
+      - name: Install the PostgreSQL apt repository
+        uses: akachmak/ubuntu-pgdg-action@release
+        with:
+          postgresql-version: "18"
+
+      - name: Install psql
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+          psql --version
+
+      # Same two assertions the Forgejo job makes, and for the same reason: a bare SELECT reports
+      # whatever is installed and is then discarded, so a partial or stale make install would pass
+      # unnoticed. These checks exist to test THIS working tree, not whatever an image happened to
+      # carry.
+      # `make install` runs INSIDE the container, which is the whole point of this job. On Forgejo the
+      # runner image is a PostgreSQL, so a host-side `make install` puts the files where the job then
+      # looks for them. On GitHub the server is a container and the runner is not PostgreSQL at all, so
+      # the same command on the runner installs into whatever the runner has, or fails. Copying the
+      # files in by hand would test the copy rather than the Makefile, and v1.1.11 shipped a broken
+      # `make install` that only a real `make install` would have caught.
+      #
+      # The md5 after the copy is the rule CONTRIBUTING.md states, and it is why the copy is verified
+      # rather than trusted: a copy that lands under the wrong name looks like a successful install.
+      - name: Start Postgres and install extension
+        env:
+          # The throwaway password ci/server.sh sets on the container, not a credential.
+          PGPASSWORD: test # pragma: allowlist-secret
+        run: |
+          set -euo pipefail
+          ./ci/server.sh up 18 5518 make
+          docker exec pg-lock-tree-ci mkdir -p /src
+          docker cp . pg-lock-tree-ci:/src
+          docker exec -w /src pg-lock-tree-ci make install
+          for f in pg_lock_tree.control pg_lock_tree--*.sql; do
+            a=$(md5sum "$f" | cut -d' ' -f1)
+            b=$(docker exec pg-lock-tree-ci md5sum "/usr/share/postgresql/18/extension/$f" | cut -d' ' -f1)
+            [ "$a" = "$b" ] || { echo "installed copy of $f differs from the source" >&2; exit 1; }
+          done
+          echo "every installed file matches its source"
+          # -e PGPASSWORD with no value takes it from the job environment below, so the throwaway
+          # credential never has to be written into this file. It is worth explaining why, because the
+          # obvious inline suppression does not work here: the Secret Keyword plugin flags the TOKEN
+          # word in a COMMENT as readily as in an assignment, and it reports the enclosing run: block
+          # rather than the line, so a pragma cannot suppress it. The only fix is to not write it.
+          docker exec -e PGPASSWORD pg-lock-tree-ci \
+            psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres -c "CREATE EXTENSION pg_lock_tree"
+          want=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" pg_lock_tree.control)
+          got=$(docker exec -e PGPASSWORD pg-lock-tree-ci \
+            psql -X -tA -U postgres -d postgres \
+            -c "SELECT extversion FROM pg_extension WHERE extname = 'pg_lock_tree'")
+          echo "control says ${want}, server loaded ${got}"
+          [ -n "$want" ] && [ "$got" = "$want" ] || {
+            echo "the loaded version is not this checkout" >&2; exit 1;
+          }
+
+      - name: Run all 8 checks, the scenarios and demo.sql
+        run: |
+          set -uo pipefail
+          fail=0
+          # Every check needs libpq pointed at the container, because the pgTAP-style SQL inside them
+          # connects through dblink to a TCP address that does not exist on this host. The credential
+          # is already in the job environment above, which ci/server.sh also set on the container, so
+          # this step does not set it.
+          export PGHOST=127.0.0.1 PGPORT=5518 PGUSER=postgres PGDATABASE=postgres
+          for s in check-upgrade check-install check-schema check-examples \
+                   check-alert check-deadlock; do
+            printf '=== %s ===\n' "$s"
+            if ./scripts/$s.sh; then
+              printf '    ok %s\n' "$s"
+            else
+              printf '    FAIL %s\n' "$s"
+              fail=1
+            fi
+          done
+
+          printf '=== scenarios/run.sh ===\n'
+          if ./scenarios/run.sh; then printf '    ok scenarios\n'
+          else printf '    FAIL scenarios\n'; fail=1; fi
+
+          printf '=== demo.sql ===\n'
+          if psql -qX -v ON_ERROR_STOP=1 -f demo.sql; then printf '    ok demo.sql\n'
+          else printf '    FAIL demo.sql\n'; fail=1; fi
+
+          exit $fail
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Documentation, objects, paths, links, anchors, test table
+        run: ./scripts/lint-docs.sh

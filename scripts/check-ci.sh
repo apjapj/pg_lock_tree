@@ -48,13 +48,29 @@ sha=$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null) \
 
 remote_url=$(git remote get-url origin 2>/dev/null) || die "no origin remote, so there is no CI to ask"
 
-# owner/repo out of either an ssh or an https remote
-path=${remote_url#*:}
+# owner/repo out of either an ssh or an https remote.
+#
+# There are two shapes and they have to be handled differently, because a one-size-fits-all strip gets
+# one of them wrong:
+#
+#   scheme://authority/owner/repo.git   strip the scheme, then the authority
+#   [user@]host:owner/repo.git          strip up to the colon
+#
+# ${x#*:} alone is wrong for the first shape: it stops at the colon in "https:", leaving the host and a
+# doubled slash, so owner comes out empty and the request 404s in a way that reads like a permissions
+# problem. Stripping "everything up to the first /" is wrong for the second: it eats the owner and
+# leaves the repo name. Both mistakes only appear once an https remote exists, which is why this went
+# unnoticed until the GitHub variant of this script met one. The two shapes are now told apart.
+case "$remote_url" in
+    *://*) path=${remote_url#*://}; path=${path#*/} ;;   # https://host/owner/repo.git
+    *:*)   path=${remote_url#*:} ;;                      # [user@]host:owner/repo.git
+    *)     path=$remote_url ;;
+esac
 path=${path%.git}
 path=${path#/}
 case "$path" in
     */*) : ;;
-    *)   die "cannot read owner/repo out of remote '$remote_url'. Refusing." ;;
+    *)   die "cannot read owner/repo out of remote '$remote_url' (got '$path'). Refusing." ;;
 esac
 owner=${path%%/*}
 repo=${path##*/}

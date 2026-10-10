@@ -63,23 +63,68 @@ cfg() { git config "pg-lock-tree.$1" 2>/dev/null || true; }
 sha=$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null) \
   || die "'${1:-HEAD}' is not a commit in this repository"
 
-remote_url=$(git remote get-url origin 2>/dev/null) || die "no origin remote, so there is no CI to ask"
+api=$(cfg ci-api); [ -n "$api" ] || api="https://api.github.com"; api=${api%/}
 
-# owner/repo out of either an ssh or an https remote
-path=${remote_url#*:}
+# WHICH REMOTE, and why this is not simply `origin`.
+#
+# The first run of this script against a real repository caught itself. It read `origin` for the push
+# check while querying api.github.com for the runs. With one remote that is fine, and the local mock
+# has one remote, so the mock could not have found it. With origin=Forgejo and github=GitHub the two
+# halves disagreed, and it reported a Forgejo state against a GitHub API.
+#
+# So the remote is derived from the API base rather than assumed, and it can still be named outright.
+# Two rules, in order:
+#
+#   1. pg-lock-tree.ci-remote, if set. An explicit override always wins.
+#   2. Otherwise the first remote whose URL names the same site as the API. The API host is
+#      api.github.com and the git host is github.com, so the leading "api." is dropped before
+#      matching; GitLab and Gitea serve both from one host, so the bare host is tried as well.
+#      https://github.com/apjapj/pg_lock_tree.git matches and git@192.168.10.111:... does not.
+#
+# Rule 2 is what makes the default correct with several remotes present, which is the normal state
+# now that both platforms are in use. It is also why the first attempt at this failed and refused:
+# matching "api.github.com" against a git URL finds nothing, and refusing is what that should do.
+remote=$(cfg ci-remote)
+if [ -z "$remote" ]; then
+    api_host=$(printf '%s' "$api" | sed -E 's#^https?://##; s#[:/].*$##')
+    site_host=${api_host#api.}
+    for r in $(git remote); do
+        url=$(git remote get-url "$r" 2>/dev/null) || continue
+        if printf '%s' "$url" | grep -q "$site_host" || printf '%s' "$url" | grep -q "$api_host"; then
+            remote=$r
+            break
+        fi
+    done
+fi
+[ -n "$remote" ] || die "no remote points at $api, so there is nowhere to read CI from. Name one with: git config pg-lock-tree.ci-remote <name>. Refusing."
+
+remote_url=$(git remote get-url "$remote" 2>/dev/null) || die "remote '$remote' has no URL."
+
+# owner/repo out of either an ssh or an https remote.
+#
+# Two shapes, handled differently, because a one-size-fits-all strip gets one of them wrong:
+#
+#   scheme://authority/owner/repo.git   strip the scheme, then the authority
+#   [user@]host:owner/repo.git          strip up to the colon
+#
+# ${x#*:} alone is wrong for the first shape: it stops at the colon in "https:", leaving the host and a
+# doubled slash, so owner comes out empty and the request 404s in a way that reads like a permissions
+# problem. Stripping "everything up to the first /" is wrong for the second: it eats the owner and
+# leaves the repo name. Both were found by pointing this at a real https remote, which the local mock
+# with a single ssh remote could never have produced. Same fix as in check-ci.sh, deliberately.
+case "$remote_url" in
+    *://*) path=${remote_url#*://}; path=${path#*/} ;;   # https://host/owner/repo.git
+    *:*)   path=${remote_url#*:} ;;                      # [user@]host:owner/repo.git
+    *)     path=$remote_url ;;
+esac
 path=${path%.git}
 path=${path#/}
 case "$path" in
     */*) : ;;
-    *)   die "cannot read owner/repo out of remote '$remote_url'. Refusing." ;;
+    *)   die "cannot read owner/repo out of remote '$remote_url' (got '$path'). Refusing." ;;
 esac
 owner=${path%%/*}
 repo=${path##*/}
-
-host=$(printf '%s' "$remote_url" | sed -E 's#^(ssh://)?git@##; s#^(https?://)##; s#[:/].*$##')
-
-api=$(cfg ci-api); [ -n "$api" ] || api="https://api.github.com"; api=${api%/}
-: "$host"   # parsed for parity with check-ci.sh; the GitHub API host does not depend on it
 
 token_file=$(cfg ci-token)
 [ -n "$token_file" ] || token_file="${XDG_CONFIG_HOME:-$HOME/.config}/github/token"
@@ -87,14 +132,14 @@ token_file=$(cfg ci-token)
 
 subject=$(git log -1 --format=%s "$sha" | cut -c1-60)
 
-# Is the commit even on the remote? A commit nobody pushed has no runs, and "no runs" must never
-# be mistaken for "no problems".
-# "On the remote" means reachable from a remote ref, not equal to one. Every commit except the tip
-# has already been superseded by a later push, and ls-remote only lists tips, so a plain grep would
-# report the entire history as unpushed.
-tips=$(git ls-remote origin 2>/dev/null | awk '{print $1}') \
-  || die "cannot reach origin to confirm $sha was pushed. Refusing rather than assume it was."
-[ -n "$tips" ] || die "origin has no refs. Refusing rather than assume the push landed."
+# Is the commit on THAT remote, the one whose runs are about to be read? A commit nobody pushed has no
+# runs, and "no runs" must never be mistaken for "no problems".
+# "On the remote" means reachable from a remote ref, not equal to one. Every commit except the tip has
+# already been superseded by a later push, and ls-remote only lists tips, so a plain grep would report
+# the entire history as unpushed.
+tips=$(git ls-remote "$remote" 2>/dev/null | awk '{print $1}') \
+  || die "cannot reach '$remote' to confirm $sha was pushed. Refusing rather than assume it was."
+[ -n "$tips" ] || die "'$remote' has no refs. Refusing rather than assume the push landed."
 
 pushed=0
 for tip in $tips; do
@@ -104,7 +149,7 @@ for tip in $tips; do
     fi
 done
 [ "$pushed" -eq 1 ] \
-  || die "$sha ($subject) is not on origin yet. Push it and let CI run first."
+  || die "$sha ($subject) is not on $remote yet. Push it and let CI run first."
 
 gates=$(cfg ci-gates); [ -n "$gates" ] || gates="test.yml=install-path checks"
 
