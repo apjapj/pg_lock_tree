@@ -50,7 +50,7 @@ ahead of the last tag:
 
 ```bash
 git tag --sort=v:refname    # every release, oldest first; CHANGELOG.md has what each one did
-git checkout v1.1.11        # or: git checkout main for whatever is newest
+git checkout v1.1.13        # or: git checkout main for whatever is newest
 ```
 
 ## Install
