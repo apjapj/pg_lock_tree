@@ -227,6 +227,22 @@ installation therefore never has to reinstall to get a fix.
    same command: `git push --tags` in a command whose commit was rejected by a hook pushes a tag
    that points at the previous release, and that happened at 1.0.0.
 
+   **Name the tag when you push it. Never `git push --tags`.**
+
+   ```bash
+   git push origin  v1.1.14          # the tag, by name, to Forgejo
+   git push github v1.1.14          # and to GitHub
+   ```
+
+   `--tags` pushes **every** tag in the local repository, not the one you just made. This repository
+   holds 33 tags, 16 of them the `v0.*` releases, and those 16 are deliberately kept on Forgejo and
+   never published: Forgejo is a private instance and is where the pre-1.0 history lives, while
+   GitHub is the public face and carries `main` plus the release tags only. One `git push --tags` at
+   the next release would publish all 16 to GitHub, and nothing in the output would look wrong.
+
+   The tag is pushed to both remotes, so the public repository always has the release the gate
+   checked. What it does not get is the 0.x history.
+
    Read the run before you tag:
 
    ```bash
