@@ -1,6 +1,6 @@
 # ci/Dockerfile: the server image pg_lock_tree's GitHub CI runs.
 #
-# The Forgejo workflow pulls 192.168.10.111:3000/apjapj/pg-test, which is a private registry that a
+# The Forgejo workflow pulls apjapj/pg-test from the Forgejo host's registry, which is private and a
 # GitHub-hosted runner cannot reach. So this builds from the official postgres image instead, which
 # is public and carries everything the suite needs except pgTAP.
 #

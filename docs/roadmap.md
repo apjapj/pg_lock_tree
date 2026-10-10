@@ -16,17 +16,16 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 
 **Before anything is visible**
 
-1. **[can do now; Piotr decided: reword at HEAD, keep history] Internal names.** gitleaks over
-   GitHub's `main` finds no secrets. It does find infrastructure: comments in the `.forgejo/`
-   workflows, `.github/workflows/test.yml`, `ci/Dockerfile` and `scripts/check-ci-github.sh` name
-   the self-hosted CI runner's host, its runners and its pool label, and the Forgejo host's private
-   address, and history holds the same names. Not secrets, but a map of a private network. Decided
-   on 2026-10-10: reword every comment and document at HEAD and leave history as it is, with no
-   force push. Two names in `.forgejo/workflows/test.yml` are functional and stay until the runner
-   configuration changes: the `runs-on` pool label, which must match the label the runner
-   registered, and the registry address the test image is pulled from. Replacing them with a
-   generic label and a registry host name is a change to pg-dev-infra's runner configuration, and
-   is **[Piotr]**.
+1. **[done locally, not pushed: Piotr chose to reword at HEAD and keep history] Internal names.**
+   gitleaks over GitHub's `main` finds no secrets. It did find infrastructure: the `.forgejo/`
+   workflows named the runner host, its runner and pool label, and two private addresses' last
+   octets in comments, and the Forgejo host's private address was in `ci/Dockerfile`,
+   `scripts/check-ci-github.sh` and the workflows. Every comment and document is reworded. Two
+   names stay because they are functional in `.forgejo/workflows/test.yml`: the `runs-on` pool label,
+   which must match the label the self-hosted runner registered, and the registry address the
+   test image is pulled from. Removing them needs a generic runner label and a registry host name in
+   pg-dev-infra's runner configuration, an infrastructure change for **[Piotr]**. History still
+   holds the old names.
 2. **[done locally in 0c70e76, not pushed] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
    history scan and detect-secrets run on Forgejo only (`.forgejo/workflows/secrets.yml`). Port them, so
    the public copy proves what Forgejo proves.

@@ -79,7 +79,7 @@ api=$(cfg ci-api); [ -n "$api" ] || api="https://api.github.com"; api=${api%/}
 #   2. Otherwise the first remote whose URL names the same site as the API. The API host is
 #      api.github.com and the git host is github.com, so the leading "api." is dropped before
 #      matching; GitLab and Gitea serve both from one host, so the bare host is tried as well.
-#      https://github.com/apjapj/pg_lock_tree.git matches and git@192.168.10.111:... does not.
+#      https://github.com/apjapj/pg_lock_tree.git matches and git@<forgejo-host>:... does not.
 #
 # Rule 2 is what makes the default correct with several remotes present, which is the normal state
 # now that both platforms are in use. It is also why the first attempt at this failed and refused:

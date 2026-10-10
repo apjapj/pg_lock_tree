@@ -14,11 +14,11 @@
 #
 # What differs from Forgejo, and why:
 #
-#   * The server image is built from ci/Dockerfile rather than pulled from
-#     192.168.10.111:3000. That registry is private and a GitHub-hosted runner cannot reach it, so the
-#     image is built from the official postgres one. All six tags the matrix needs are public.
-#   * There is no runs-on: babar-pg equivalent, so the runner-image dependency disappears along with
-#     the pg-start helper. The server is a container the job starts itself, which is also what allows
+#   * The server image is built from ci/Dockerfile rather than pulled from the Forgejo host's
+#     registry. That registry is private and a GitHub-hosted runner cannot reach it, so the image is
+#     built from the official postgres one. All six tags the matrix needs are public.
+#   * There is no equivalent of the Forgejo PostgreSQL pool label, so the runner-image dependency
+#     disappears along with the pg-start helper. The server is a container the job starts itself, which is also what allows
 #     max_prepared_transactions and the pg_cron preload to be set: GitHub has no `command:` override
 #     for a service container.
 #   * runs-on is ubuntu-latest, and the matrix order no longer decides placement because there is only

@@ -9,18 +9,18 @@ on:
 
 jobs:
   pgtap:
-    # babar-pg, not docker, and deliberately so.
+    # The PostgreSQL pool label, not docker, and deliberately so. The label below is the name the
+    # self-hosted runner registered with Forgejo and must match it exactly; it is functional, not prose.
     #
-    # `docker` is advertised by two runners on this instance: babar-runner on the babar host and
-    # a second one on ufo-1. A job on `docker` is therefore placed on whichever runner polls
+    # `docker` is advertised by two self-hosted runners on this instance. A job on `docker` is therefore placed on whichever runner polls
     # first, and that is not a property this workflow can reason about. It bit hard: for months
     # the matrix reported five or six of six failing in 0 seconds, which looked like a lost
     # concurrency slot and was not one. The runner that won those jobs could not pull this
-    # repository's own test images at all, because ufo-1's Docker daemon has no
+    # repository's own test images at all, because the second host's Docker daemon has no
     # insecure-registries entry for the Forgejo registry and so tries HTTPS against a plain HTTP
-    # port and dies. The surviving job was whichever the babar runner happened to claim.
+    # port and dies. The surviving job was whichever the first runner happened to claim.
     #
-    # babar-pg is advertised by the babar runner alone. Placement is deterministic, and it is
+    # The pool label below is advertised by that first runner alone. Placement is deterministic, and it is
     # the only host configured to pull from that registry. The `docker` label is untouched, so
     # every other repository on the instance is unaffected.
     #
@@ -35,11 +35,12 @@ jobs:
         # 19beta4 first to test whether the job that failed was failing by position in the matrix
         # or by being the beta image. It was neither: Forgejo sorts permutations by value, so
         # 19beta4 was always dispatched last, and being dispatched last is what put it on the
-        # other runner. With runs-on pinned to babar-pg the order no longer decides anything, so
+        # other runner. With runs-on pinned to the pool label the order no longer decides anything, so
         # it goes back to the order pg-dev-infra builds the images in.
         pg_version: ["14", "15", "16", "17", "18", "19beta4"]   # keep in step with pg-dev-infra
     services:
       postgres:
+        # The private registry on the Forgejo host, by address: functional, the runner pulls from it.
         image: 192.168.10.111:3000/apjapj/pg-test:${{ matrix.pg_version }}
         env:
           # the throwaway password for a disposable test container, not a credential.
@@ -70,7 +71,7 @@ jobs:
       PGDATABASE: postgres
     steps:
       - uses: actions/checkout@v4
-        # No apt step, and that is the point of the babar-pg image: it carries
+        # No apt step, and that is the point of the pool's runner image: it carries
         # postgresql-client-18, pg_prove and libtap-parser-sourcehandler-pgtap-perl, so the matrix
         # used to pay an apt-get per job to install what was already present. Verified in
         # apjapj/pg-runner:18: pg_prove takes a test file to PASS with nothing installed first.
@@ -128,7 +129,7 @@ jobs:
   # deliberately does not do that: it loads the release SQL straight into public on a separate
   # service container.
   #
-  # This job runs on babar-pg, which is backed by pg-dev-infra's apjapj/pg-runner:18 image.
+  # This job runs on the PostgreSQL pool label, backed by pg-dev-infra's apjapj/pg-runner:18 image.
   # The runner pre-bakes the PostgreSQL 18 stack (pg_cron, pg_stat_statements, max_prepared_transactions=10),
   # developer headers, and the pg-start startup helper. This allows full in-job CREATE EXTENSION
   # execution without mounting /var/run/docker.sock or running sibling Docker containers.
