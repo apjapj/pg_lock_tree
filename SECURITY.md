@@ -17,8 +17,10 @@ Fixes are made on `main` and released as a new version. Released tags are not ed
 on this repository's Security tab, under Advisories. The report is a private advisory that only you
 and the maintainers can see, and you are credited on it.
 
-Please include the pg_lock_tree version (`SELECT extversion FROM pg_extension WHERE extname =
-'pg_lock_tree'`), the PostgreSQL version, the role the statements ran as and its grants, and the
+If you cannot use GitHub, e-mail **linux.postgres+pg_lock_tree@gmail.com** instead.
+
+Either way, please include the pg_lock_tree version (`SELECT extversion FROM pg_extension WHERE extname =
+'pg_lock_tree'`), the PostgreSQL major version, the roles the statements ran as and its grants, and the
 smallest set of statements that shows the problem.
 
 You will get an acknowledgement within 7 days. This is a small project maintained in spare time, so

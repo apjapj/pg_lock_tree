@@ -192,4 +192,5 @@ answers "who is ahead of me" and this answers "who do I terminate".
 - **[docs/design-notes.md](docs/design-notes.md)**: an index of every design argument and where it is made, plus the three that had no page to live on
 - **[CONTRIBUTING.md](CONTRIBUTING.md)**: make targets, the tests, the matrix, the release checklist
 - **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
+- **[SECURITY.md](SECURITY.md)**: supported versions, and how to report a vulnerability privately
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
