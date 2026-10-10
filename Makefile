@@ -1,13 +1,13 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--0.1.sql pg_lock_tree--0.10.sql pg_lock_tree--0.11.sql pg_lock_tree--0.12.sql pg_lock_tree--0.13.sql pg_lock_tree--0.14.sql pg_lock_tree--0.15.sql pg_lock_tree--0.16.sql pg_lock_tree--0.2.sql pg_lock_tree--0.3.sql pg_lock_tree--0.4.sql pg_lock_tree--0.5.sql pg_lock_tree--0.6.sql pg_lock_tree--0.7.sql pg_lock_tree--0.8.sql pg_lock_tree--0.9.sql pg_lock_tree--1.0.0.sql pg_lock_tree--1.0.1.sql pg_lock_tree--1.0.2.sql pg_lock_tree--1.1.0.sql pg_lock_tree--1.1.1.sql pg_lock_tree--1.1.2.sql pg_lock_tree--1.1.3.sql pg_lock_tree--1.1.4.sql pg_lock_tree--1.1.5.sql pg_lock_tree--1.1.6.sql pg_lock_tree--1.1.7.sql pg_lock_tree--1.1.8.sql pg_lock_tree--1.1.9.sql pg_lock_tree--1.1.10.sql pg_lock_tree--1.1.11.sql pg_lock_tree--1.1.12.sql pg_lock_tree--1.1.13.sql
+DATA      = pg_lock_tree--1.0.0.sql pg_lock_tree--1.0.1.sql pg_lock_tree--1.0.2.sql pg_lock_tree--1.1.0.sql pg_lock_tree--1.1.1.sql pg_lock_tree--1.1.2.sql pg_lock_tree--1.1.3.sql pg_lock_tree--1.1.4.sql pg_lock_tree--1.1.5.sql pg_lock_tree--1.1.6.sql pg_lock_tree--1.1.7.sql pg_lock_tree--1.1.8.sql pg_lock_tree--1.1.9.sql pg_lock_tree--1.1.10.sql pg_lock_tree--1.1.11.sql pg_lock_tree--1.1.12.sql pg_lock_tree--1.1.13.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
-# Update scripts (pg_lock_tree--0.1--0.2.sql) must be installed as well, but they must NOT go
+# Update scripts (pg_lock_tree--1.0.0--1.0.1.sql) must be installed as well, but they must NOT go
 # in DATA: PGXS copies DATA entries by name, and an update script needs its own name on disk
 # so PostgreSQL can find it for ALTER EXTENSION ... UPDATE. Listing it in DATA works for the
 # full version files precisely because those names are what PostgreSQL looks for; an update

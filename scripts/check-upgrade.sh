@@ -123,7 +123,14 @@ fingerprint() {  # $1 = database
 # This list is CHECKED rather than trusted, in both directions. A path that drifts on any column not
 # named here fails the run, and so does a run where no path drifts on these, because that means the
 # source order changed and this list is now describing a difference that no longer exists.
-KNOWN_POSITION_DRIFT="lock_tree_alert.application_name lock_tree_alert.first_seen lock_tree_alert.last_notified lock_tree_alert.max_blocked_at lock_tree_alert.max_depth_at lock_tree_alert.notify_count lock_tree_alert.root_object lock_tree_history.query_id lock_tree_history.root_object"
+#
+# EMPTY since the 0.x scripts were removed, after 1.1.13. Every path that drifted started before 0.8,
+# so with the oldest path now starting at 1.0.0 nothing drifts, and the list it used to hold would fail
+# the staleness check below on every run. The nine columns it named were:
+#   lock_tree_alert.application_name first_seen last_notified max_blocked_at max_depth_at notify_count
+#   root_object, and lock_tree_history.query_id and root_object.
+# The check itself stays: a path that drifts on any column now fails, since none is expected to.
+KNOWN_POSITION_DRIFT=""
 
 DEFAULT=$("${PSQL[@]}" -d postgres -c "SELECT default_version FROM pg_available_extensions WHERE name = '$EXT'")
 [ -n "$DEFAULT" ] || { echo "extension $EXT is not installed on this server (make install first)"; exit 2; }
@@ -209,7 +216,8 @@ if [ -n "${FROM:-}" ]; then
   echo "note  the KNOWN_POSITION_DRIFT staleness check is skipped for a FROM= run, since the paths"
   echo "        you chose may include none that predate the drift. Run with FROM unset to check it."
 else
-  if [ -z "$seen_drift" ]; then
+  # An empty list and no drift is the clean case, and has been since the 0.x paths were removed.
+  if [ -z "$seen_drift" ] && [ -n "$KNOWN_POSITION_DRIFT" ]; then
     echo "FAIL  no upgrade path drifted on column position, but KNOWN_POSITION_DRIFT names:"
     echo "        $KNOWN_POSITION_DRIFT"
     echo "      Either the CREATE TABLE order was changed to match, in which case delete the entry and"

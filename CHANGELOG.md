@@ -52,6 +52,15 @@ That matches PostgreSQL's source, which compares the payload alone with `NOTIFY_
 payload is refused with an error, never truncated. Corrected in `docs/alerting.md`, and in rule 4 of the
 umbrella's alert contract in pg_incident_watch.
 
+**Removed on main after the v1.1.13 tag: the 0.x scripts.** The 32 release and update scripts from
+0.1 to 0.16, including `0.16--1.0.0`, are gone from the tree, so `make install` installs 1.0.0 and later
+only and the oldest version an update starts from is 1.0.0. Nothing is lost: every one of them is in
+git history, at the `v0.*` tags while those stand, and in the backup archive taken before this. No 0.x
+installation is known to exist; one that did would update with a checkout from before the removal.
+The 0.x entries below stay as written, including the file names they mention, because they describe
+what those releases shipped. `scripts/check-upgrade.sh` lost its list of columns whose position drifts,
+since every path that drifted started before 0.8.
+
 ## 1.1.12 (2026-10-09)
 
 Two fixes. Neither changes any SQL, any behaviour, or any payload key. If you are installing fresh,

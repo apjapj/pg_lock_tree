@@ -407,6 +407,13 @@ so a renderer will not find it"
           else
               if [ -e "$t" ] || [ -e "$dir/$t" ]; then
                   ok "$f names $t"
+              # The one exemption, and it is narrow: a 0.x release or update script named in
+              # CHANGELOG.md. All 32 were removed from the tree after 1.1.13 and live in git history,
+              # and the changelog entries that name them describe what those releases shipped, so
+              # they stay as written. Only CHANGELOG.md, and only that file-name shape: a 0.x script
+              # named anywhere else, or any other missing file named in the changelog, still fails.
+              elif [ "$f" = CHANGELOG.md ] && [[ "$t" =~ ^pg_lock_tree--0\.[0-9.]+(--[0-9.]+)?\.sql$ ]]; then
+                  ok "$f names $t, a 0.x script removed after 1.1.13 and kept in git history"
               else
                   bad "$f names $t, which exists neither at the repo root nor in $dir"
               fi

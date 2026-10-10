@@ -85,37 +85,18 @@ Check what it landed on before continuing:
 
 ```bash
 ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
-# pg_lock_tree--0.1--0.2.sql   the update path from 0.1
-# pg_lock_tree--0.2--0.3.sql   the update path from 0.2
-# pg_lock_tree--0.3--0.4.sql   the update path from 0.3
-# pg_lock_tree--0.4--0.5.sql   the update path from 0.4
-# pg_lock_tree--0.5--0.6.sql   the update path from 0.5
-# pg_lock_tree--0.6--0.7.sql   the update path from 0.6
-# pg_lock_tree--0.7--0.8.sql   the update path from 0.7
-# pg_lock_tree--0.8--0.9.sql   the update path from 0.8
-# pg_lock_tree--0.9--0.10.sql  the update path from 0.9
-# pg_lock_tree--0.10--0.11.sql the update path from 0.10
-# pg_lock_tree--0.11--0.12.sql the update path from 0.11
-# pg_lock_tree--0.12--0.13.sql the update path from 0.12
-# pg_lock_tree--0.13--0.14.sql the update path from 0.13
-# pg_lock_tree--0.14--0.15.sql the update path from 0.14
-# pg_lock_tree--0.1.sql         release
-# pg_lock_tree--0.2.sql         release
-# pg_lock_tree--0.3.sql         release
-# pg_lock_tree--0.4.sql         release
-# pg_lock_tree--0.5.sql         release
-# pg_lock_tree--0.6.sql         release
-# pg_lock_tree--0.7.sql         release
-# pg_lock_tree--0.8.sql         release
-# pg_lock_tree--0.9.sql         release
-# pg_lock_tree--0.10.sql        release
-# pg_lock_tree--0.11.sql        release
-# pg_lock_tree--0.12.sql        release
-# pg_lock_tree--0.13.sql        release
-# pg_lock_tree--0.14.sql        release
-# pg_lock_tree--0.15.sql        current release
+# pg_lock_tree--1.0.0.sql ... pg_lock_tree--1.1.13.sql     one full script per release from 1.0.0
+# pg_lock_tree--1.0.0--1.0.1.sql ... --1.1.12--1.1.13.sql  the update path from each release to the next
+# pg_lock_tree--1.1.8--1.1.10.sql                          a direct path past 1.1.9's faulty check
+# pg_lock_tree--1.1.10--1.1.12.sql                         a direct path past 1.1.11's lost grants
 # pg_lock_tree.control
 ```
+
+Nothing older than 1.0.0 is installed. The 0.x release and update scripts were removed from the tree
+after 1.1.13; they remain in git history. No 0.x installation is known to exist, and one that did would
+first update with a checkout from before the removal. `make install` adds files and never removes them,
+so a server that once had the 0.x scripts keeps them in its extension directory; they are harmless, and
+`rm "$(pg_config --sharedir)"/extension/pg_lock_tree--0.*.sql` clears them.
 
 If `pg-test:14` is missing while the others are present, `make` did not pick up the update
 script. That is a Makefile bug, not something you did wrong. Report it.
@@ -419,17 +400,17 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '0.15';    -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '1.1.13';  -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "0.x" to version "0.15"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--0.x--0.15.sql` in the
+**If you get `no update path from version "1.1.12" to version "1.1.13"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--1.1.12--1.1.13.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--0.14--0.15.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--1.1.12--1.1.13.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
@@ -578,13 +559,14 @@ separate and older: `lock_tree_archive_find()` was genuinely dropped in 1.1.9 be
 `samples` output column changes the return type, so anything you granted on it went then, and only
 you can restore it.
 
-**Downgrade is not supported.** There is no `0.15--0.14` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get 0.14 behaviour back, install 0.14 in a scratch database alongside it.
+**Downgrade is not supported.** There is no `1.1.13--1.1.12` script, and `ALTER EXTENSION ... UPDATE TO`
+will not go backwards. To get 1.1.12 behaviour back, install 1.1.12 in a scratch database alongside it.
 
-**Upgrading from an earlier version chains automatically.** There is no `0.2--0.4` script, and
+**Upgrading from an earlier version chains automatically.** There is no `1.0.0--1.0.2` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the
-chain itself. The one exception is `1.1.8--1.1.10`, a deliberate shortcut past 1.1.9's faulty check,
-described above. Verified:
+chain itself. The two exceptions are deliberate shortcuts, `1.1.8--1.1.10` past 1.1.9's faulty check
+and `1.1.10--1.1.12` past 1.1.11's dropped grants, both described above. The oldest version an update
+starts from is 1.0.0. Verified:
 
 ```sql
 SELECT source, target, path FROM pg_extension_update_paths('pg_lock_tree') ORDER BY source;
@@ -617,7 +599,7 @@ The extension lives **inside each database**, so:
 - `pg_upgrade` carries the installed extension and its version forward automatically.
 - A dump/restore (`pg_dumpall` / `pg_restore`) carries the `CREATE EXTENSION` statement, so
   target the server with `make install` first, or the restore fails with
-  `could not access file "pg_lock_tree--0.11.sql"`.
+  `could not access file "pg_lock_tree--1.1.13.sql"`.
 - To install into a fresh major version, repeat [Install](#install) against the new
   `pg_config`:
   ```bash
