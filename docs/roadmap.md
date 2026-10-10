@@ -32,7 +32,7 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 3. **[done locally in 0c70e76, not pushed; the same in the three siblings] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
    differs from the SPDX template enough that GitHub reports NOASSERTION. Match the template so it is
    detected as `PostgreSQL`; check after the push that the sidebar says so.
-4. **[drafted locally in SECURITY.md; the e-mail address is Piotr's to fill in] A security policy** at the repository root: how to report a vulnerability privately, and
+4. **[drafted locally in SECURITY.md; reports through GitHub's private vulnerability reporting, which Piotr enables when the repository is public] A security policy** at the repository root: how to report a vulnerability privately, and
    which versions are supported (1.1.13; 1.1.11 is not installable). The contact is Piotr's choice.
 5. **[can do now] README trim and badges.** The trim Piotr mentioned; a CI badge for the GitHub
    workflow (it renders only once the repository is public); the `make install` needs a superuser

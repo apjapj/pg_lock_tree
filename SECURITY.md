@@ -13,11 +13,9 @@ Fixes are made on `main` and released as a new version. Released tags are not ed
 
 ## Reporting a vulnerability
 
-**Do not open a public issue.** Report it privately, by either:
-
-- GitHub's **Report a vulnerability** button on this repository's Security tab (a private advisory
-  visible only to the maintainers), or
-- e-mail to **SECURITY-CONTACT-TO-BE-SET**.
+**Do not open a public issue.** Report it privately with GitHub's **Report a vulnerability** button,
+on this repository's Security tab, under Advisories. The report is a private advisory that only you
+and the maintainers can see, and you are credited on it.
 
 Please include the pg_lock_tree version (`SELECT extversion FROM pg_extension WHERE extname =
 'pg_lock_tree'`), the PostgreSQL version, the role the statements ran as and its grants, and the
