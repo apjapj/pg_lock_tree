@@ -65,10 +65,22 @@ jobs:
       # The apt version is not the image tag: 19beta4 is the tag, postgresql-19 is the package. A step
       # that used the matrix value in both places stopped the matrix at its last version with
       # "Unable to locate package". So the matrix carries both, and they are set in step's `with`.
-      - name: Install the PostgreSQL apt repository
-        uses: akachmak/ubuntu-pgdg-action@release
-        with:
-          postgresql-version: ${{ matrix.apt_version }}
+      # PGDG's own apt instructions rather than a third-party action. The first attempt used
+      # akachmak/ubuntu-pgdg-action and every job failed at "Unable to resolve action
+      # akachmak/ubuntu-pgdg-action, repository not found", which cost six matrix jobs and one
+      # install-path job before it was read. A marketplace action is also a dependency on somebody
+      # else's repository staying up and not changing under you, for a repository whose entire job is
+      # to add two lines of apt configuration.
+      - name: Add the PostgreSQL apt repository
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          codename=$(. /etc/os-release; echo "$VERSION_CODENAME")
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
 
       - name: Install pg_prove and the client
         run: |
@@ -94,10 +106,22 @@ jobs:
       # The eight checks and demo.sql all talk to the server through the client on this runner, and
       # check-examples plans statements, so the client and pg_prove are both needed. PGDG is not on
       # ubuntu-latest by default.
-      - name: Install the PostgreSQL apt repository
-        uses: akachmak/ubuntu-pgdg-action@release
-        with:
-          postgresql-version: "18"
+      # PGDG's own apt instructions rather than a third-party action. The first attempt used
+      # akachmak/ubuntu-pgdg-action and every job failed at "Unable to resolve action
+      # akachmak/ubuntu-pgdg-action, repository not found", which cost six matrix jobs and one
+      # install-path job before it was read. A marketplace action is also a dependency on somebody
+      # else's repository staying up and not changing under you, for a repository whose entire job is
+      # to add two lines of apt configuration.
+      - name: Add the PostgreSQL apt repository
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          codename=$(. /etc/os-release; echo "$VERSION_CODENAME")
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            http://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
 
       - name: Install psql
         run: |
