@@ -1,0 +1,17 @@
+-- pg_lock_tree 1.1.13 -> 1.1.14
+--
+-- Nothing to do, and that is the whole design. 1.1.14 is documentation and repository scaffolding
+-- only: the README gains a CI badge, a documentation index grouped by when you need it, and the two
+-- install requirements and one untested-platform caveat that previously lived only in INSTALL.md.
+-- SECURITY.md stops describing the repository as private. Issue and pull request templates are added.
+-- Every object 1.1.14 installs is identical to what 1.1.13 installs.
+--
+-- This file exists so that PostgreSQL has a path to 1.1.14 from 1.1.13. An ALTER EXTENSION UPDATE
+-- from 1.1.13 applies this and changes no catalog state, which is the correct outcome for a release
+-- that changed a README rather than a schema.
+--
+-- It is deliberately a comment and no statement. The precedent is 1.1.12 -> 1.1.13, which did the same
+-- thing for a documentation correction.
+--
+-- If you want the documents rather than the release, README.md carries the index and CHANGELOG.md
+-- carries the entry.

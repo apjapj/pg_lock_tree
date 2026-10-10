@@ -1,5 +1,8 @@
 # pg_lock_tree
 
+[![CI](https://github.com/apjapj/pg_lock_tree/actions/workflows/test.yml/badge.svg)](https://github.com/apjapj/pg_lock_tree/actions/workflows/test.yml)
+[![Licence: PostgreSQL](https://img.shields.io/badge/licence-PostgreSQL-blue.svg)](LICENSE)
+
 Readable lock-wait trees for PostgreSQL 14 and later. 14 stays tested past its November 2026 end of life, until PostgreSQL 19 is stable.
 
 When a database "hangs", it is usually one session at the front of a lock queue with everything
@@ -10,9 +13,22 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v1.1.13** (green on PG 14 to 19beta4) |
+| Current release | **v1.1.14** (green on PG 14 to 19beta4) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
+
+The CI badge renders once this repository is public. Until then it shows as a broken image, which is
+the lesser of the two awkward options: the alternative is a commit after publication purely to add it.
+
+Two requirements that are easy to miss, both stated here because the install is the first thing anyone
+tries. `make install` needs a **superuser shell** and the **server development headers**
+(`postgresql-server-dev-NN`); it writes into the server's own directories, which is why it is not a
+`CREATE EXTENSION` and cannot be done from SQL alone.
+
+On **RDS, Aurora or another managed instance the install path is untested.** You cannot run
+`make install` there at all. The extension is pure SQL, which is what makes it plausible: AWS's
+`pg_tle` loads SQL extensions without filesystem access. Plausible is not tested, and
+[INSTALL.md section C](INSTALL.md#c-on-rds-aurora-or-another-managed-instance) says so in full.
 
 ## Where to go
 
@@ -183,14 +199,25 @@ answers "who is ahead of me" and this answers "who do I terminate".
 
 ## Documentation
 
+Grouped by when you need it, because the full list is long and a new reader has no reason to open
+most of it. "Where to go" above is the router; this is the map behind it.
+
+**Read this first**
+
 - **[INSTALL.md](INSTALL.md)**: requirements, install, grants, verify, update, uninstall, backups, troubleshooting
 - **[docs/incident.md](docs/incident.md)**: a queue too wide to read, which query and which application are costing the most, a root with no backend, behaviour worth knowing
+- **[SECURITY.md](SECURITY.md)**: supported versions, and how to report a vulnerability privately
+
+**Read this when the situation arrives**
+
 - **[docs/alerting.md](docs/alerting.md)**: thresholds, what escalates, scheduling, payloads, cleared events, what to do when one arrives, checking it works
 - **[docs/history.md](docs/history.md)**: the sample, the scheduling hazard, redaction, sizing, pruning, and where backups stand
 - **[docs/after-the-incident.md](docs/after-the-incident.md)**: why the tree is empty afterwards, replay, incidents, the deadlock report
+
+**Reference**
+
 - **[docs/reference.md](docs/reference.md)**: every object, the stability statement, settings, NOTIFY payload keys
 - **[docs/design-notes.md](docs/design-notes.md)**: an index of every design argument and where it is made, plus the three that had no page to live on
-- **[CONTRIBUTING.md](CONTRIBUTING.md)**: make targets, the tests, the matrix, the release checklist
-- **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
-- **[SECURITY.md](SECURITY.md)**: supported versions, and how to report a vulnerability privately
 - **[scenarios/](scenarios/)**: eight incidents, compared against the usual hand-written query
+- **[CHANGELOG.md](CHANGELOG.md)**: what changed in each release
+- **[CONTRIBUTING.md](CONTRIBUTING.md)**: make targets, the tests, the matrix, the release checklist

@@ -1,3 +1,46 @@
+## 1.1.14 (2026-10-11)
+
+Documentation and repository scaffolding only. No SQL changes, and therefore no object difference
+from 1.1.13: `pg_lock_tree--1.1.14.sql` is byte-for-byte what 1.1.13 creates below its header, and
+`pg_lock_tree--1.1.13--1.1.14.sql` is a comment, like 1.1.12 to 1.1.13 was.
+
+### The README meets a new reader
+
+The README already routed by audience, in "Where to go", and then listed all eleven documents flat
+underneath it. So a reader was routed and then immediately shown everything anyway, including
+`CHANGELOG.md`, `CONTRIBUTING.md` and `scenarios/`, which a first-time user has no reason to open.
+The list is now grouped: read this first, read this when the situation arrives, reference. Nothing was
+deleted; the grouping is the whole change.
+
+### Two requirements and one caveat, moved out of INSTALL.md
+
+`make install` needs a superuser shell and the server development headers. That was in INSTALL.md ten
+times and in the README twice, which is the wrong way round for the two facts a reader meets first.
+
+RDS, Aurora and other managed instances were the sharper case. `INSTALL.md` section C says the path is
+untested and adds "Stated plainly, because the README has claimed it before without evidence." The
+README now carries the caveat itself, in the same terms: plausible via `pg_tle`, not tested.
+
+### SECURITY.md no longer dates itself
+
+It said the e-mail "works today, while the repository is private", which stops being true the moment
+the repository is public, and told readers the GitHub advisory route "is not available until the
+repository is public", which stops being useful at exactly the same moment. Both now describe the
+e-mail as the channel that works either way and the GitHub button as one that appears when the
+repository is public.
+
+### CI badge
+
+Added, and it renders as a broken image until this repository is public. That was the deliberate
+trade: the alternative is a second commit after publication purely to add a badge.
+
+### Issue and pull request templates
+
+Short forms asking for the version, the PostgreSQL version, and the output of
+`SELECT * FROM lock_tree_text()`, which usually answers the question by itself. The pull request
+template links `CONTRIBUTING.md`'s md5 copy rule and asks for the "saw it fail, then saw it pass"
+evidence, because a check that was never seen to fail is not evidence that it can.
+
 ## 1.1.13 (2026-10-09)
 
 Documentation only. No SQL changes, and therefore no update script: 1.1.12 and 1.1.13 install the same

@@ -34,12 +34,21 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    detected as `PostgreSQL`; check after the push that the sidebar says so.
 4. **[drafted locally in SECURITY.md; reports through GitHub's private vulnerability reporting, which Piotr enables when the repository is public] A security policy** at the repository root: how to report a vulnerability privately, and
    which versions are supported (1.1.13; 1.1.11 is not installable). The contact is Piotr's choice.
-5. **[can do now] README trim and badges.** The trim Piotr mentioned; a CI badge for the GitHub
+5. **[done in 1.1.14] README trim and badges.** The trim Piotr mentioned; a CI badge for the GitHub
    workflow (it renders only once the repository is public); the `make install` needs a superuser
    shell and server headers, and the "managed instances (RDS, Aurora) are untested" caveat
    (INSTALL.md section C), both stated in the README rather than only in INSTALL.md.
-6. **[can do now] Issue and pull request templates**, short: version, PostgreSQL version, output of
+
+   What the trim turned out to be: the README already routed by audience in "Where to go", and then
+   listed all eleven documents flat underneath it, so a reader was routed and immediately shown
+   everything anyway. The list is now grouped into read this first, read this when the situation
+   arrives, and reference. Nothing was deleted. The badge was added now and shows as a broken image
+   until the repository is public, which was the accepted trade against a second commit later.
+6. **[done in 1.1.14] Issue and pull request templates**, short: version, PostgreSQL version, output of
    `SELECT * FROM lock_tree_text()`; and CONTRIBUTING.md's md5 copy rule linked from the PR template.
+
+   Written for pg_lock_tree, pg_bloat_cause and pg_limit_runway, each asking for its own text
+   function. pg_incident_watch has none: it ships no extension, so there is no version to report.
 7. **[can do now] `scripts/check-ci-github.sh`**: it is in `main` (7a80420) and read run 38068022236
    correctly; decide whether it stays a contributor script or moves to the umbrella, and drop its
    Forgejo host default if item 1 says so.
@@ -48,12 +57,31 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 
 **The outward steps, in this order, each [Piotr]**
 
-9. **Tags to GitHub.** Proposed: `v1.0.0` to `v1.1.13` (17 tags), and never the `v0.*` ones, whose
-   deletion stays on hold until Piotr has checked them. v1.1.11 included, with its release marked as
-   not installable. Pushing a tag publishes it to anyone who can see the repository.
-10. **The GitHub Release for v1.1.13**, from item 8's notes.
+9. **Tags to GitHub. Superseded 2026-10-11: two tags, not seventeen.** The earlier proposal here was
+   `v1.0.0` to `v1.1.13`. It is withdrawn.
+
+   Every one of the 33 local tags points at a commit already reachable from `github/main`, checked
+   rather than assumed. Pushing them uploads no history that is not already on GitHub, so a tag adds
+   a name and nothing else: `git log`, `git blame` and `git bisect` are unaffected either way. What
+   the seventeen would have cost is real, though. `on: push` has no branch filter, so every tag push
+   triggers CI on both platforms, the Forgejo pool runs at capacity 1 so those runs serialise, and
+   each one uses the workflows as they were at that old tag, which is why several would go red.
+
+   Now: **`v1.1.13` and `v1.1.14`**, named one at a time and never with `--tags`. `v1.1.14` is the
+   release; `v1.1.13` is the one before it, so its release notes have a diff to point at. Forgejo
+   keeps all 33, including the 16 `v0.*` that never go to GitHub: Forgejo is the archive, GitHub is
+   the public release line. Someone wanting `v1.0.0` from a GitHub clone uses the hash or fetches
+   from Forgejo.
+10. **The GitHub Release for v1.1.14**, from item 8's notes.
 11. **Description and topics**, for example "Lock trees, blocking history and alerts for
     PostgreSQL, in pure SQL" and `postgresql`, `postgresql-extension`, `locking`, `monitoring`.
+
+    **Blocked 2026-10-11 on a token scope, not on a decision.** All four repositories answer `403
+    Resource not accessible by personal access token` to a metadata `PATCH`, and the same for the
+    branch protection API. Reads answer 200 and git push works, so the token has contents:write and
+    not Administration:write. Granting that one permission unblocks this item, item 13, and enabling
+    private vulnerability reporting after the repository is public. Drafts are ready: descriptions
+    and topics for all four are written and waiting.
 12. **Visibility.** Flipping to public is Piotr's, in the GitHub settings. It is the step that cannot
     be taken back in practice: a public repository is cloned, forked and cached within hours.
 13. **Branch protection and required checks** on `main`, the lint, pgtap matrix and install-path jobs.
