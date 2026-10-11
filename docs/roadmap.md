@@ -16,7 +16,7 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 
 **Before anything is visible**
 
-1. **[done locally, not pushed: Piotr chose to reword at HEAD and keep history] Internal names.**
+1. **[done, on main: Piotr chose to reword at HEAD and keep history] Internal names.**
    gitleaks over GitHub's `main` finds no secrets. It did find infrastructure: the `.forgejo/`
    workflows named the runner host, its runner and pool label, and two private addresses' last
    octets in comments, and the Forgejo host's private address was in `ci/Dockerfile`,
@@ -26,13 +26,13 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    test image is pulled from. Removing them needs a generic runner label and a registry host name in
    pg-dev-infra's runner configuration, an infrastructure change for **[Piotr]**. History still
    holds the old names.
-2. **[done locally in 0c70e76, not pushed] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
+2. **[done, on main since 0c70e76, and green on GitHub] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
    history scan and detect-secrets run on Forgejo only (`.forgejo/workflows/secrets.yml`). Port them, so
    the public copy proves what Forgejo proves.
-3. **[done locally in 0c70e76, not pushed; the same in the three siblings] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
+3. **[done, on main in all four repositories; GitHub now reports `PostgreSQL`] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
    differs from the SPDX template enough that GitHub reports NOASSERTION. Match the template so it is
    detected as `PostgreSQL`; check after the push that the sidebar says so.
-4. **[drafted locally in SECURITY.md; reports through GitHub's private vulnerability reporting, which Piotr enables when the repository is public] A security policy** at the repository root: how to report a vulnerability privately, and
+4. **[done: SECURITY.md, an e-mail alias per repository plus GitHub's private vulnerability reporting, which Piotr enables when the repository is public] A security policy** at the repository root: how to report a vulnerability privately, and
    which versions are supported (1.1.13; 1.1.11 is not installable). The contact is Piotr's choice.
 5. **[done in 1.1.14] README trim and badges.** The trim Piotr mentioned; a CI badge for the GitHub
    workflow (it renders only once the repository is public); the `make install` needs a superuser
@@ -49,10 +49,10 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 
    Written for pg_lock_tree, pg_bloat_cause and pg_limit_runway, each asking for its own text
    function. pg_incident_watch has none: it ships no extension, so there is no version to report.
-7. **[can do now] `scripts/check-ci-github.sh`**: it is in `main` (7a80420) and read run 38068022236
-   correctly; decide whether it stays a contributor script or moves to the umbrella, and drop its
-   Forgejo host default if item 1 says so.
-8. **[drafted, for Piotr to read] Release notes for 1.1.13**, drafted from CHANGELOG.md's entry for a GitHub Release,
+7. **[open, a small decision] `scripts/check-ci-github.sh`**: it is in `main` (7a80420), read run
+   38068022236 correctly, and defaults to api.github.com with no host of its own; decide whether it
+   stays a contributor script or moves to the umbrella.
+8. **[to redraft for 1.1.15] Release notes**, first drafted for 1.1.13, drafted from CHANGELOG.md's entry for a GitHub Release,
    saying plainly that v1.1.11 cannot be `make install`ed and is kept as a tag for the record.
 
 **The outward steps, in this order, each [Piotr]**
@@ -76,7 +76,7 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    which put the wrong application name in alert payloads. Which tags go to GitHub (`v1.1.14` as
    well, or `v1.1.13` and `v1.1.15`) is **[Piotr]**'s; nothing is tagged yet.
 10. **The GitHub Release for the newest tag**, from item 8's notes.
-11. **Description and topics**, for example "Lock trees, blocking history and alerts for
+11. **[done 2026-10-11, by Piotr, in all four repositories] Description and topics**, for example "Lock trees, blocking history and alerts for
     PostgreSQL, in pure SQL" and `postgresql`, `postgresql-extension`, `locking`, `monitoring`.
 
     **Blocked 2026-10-11 on a token scope, not on a decision.** All four repositories answer `403
