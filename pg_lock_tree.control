@@ -1,6 +1,9 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '1.1.15'
+default_version = '1.1.16'
+# 1.1.16 adds lock_tree_policy_key() and changes four function bodies with CREATE OR REPLACE and
+# three helpers with ALTER FUNCTION, so grants survive the update; notably lock_tree_notify_resolved()
+# now decides and forgets in one statement. See pg_lock_tree--1.1.15--1.1.16.sql.
 # 1.1.15 changes three function bodies, each with CREATE OR REPLACE so grants survive the update:
 # lock_tree_wide()'s application_name, lock_tree_notify()'s per-root flag, and
 # lock_tree_history_statements()'s root-to-waiter join. See pg_lock_tree--1.1.14--1.1.15.sql.
