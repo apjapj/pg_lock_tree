@@ -418,6 +418,113 @@ if [ "$mode" = "--explain" ] && [ -n "$payload1" ]; then
     explain_payload "$payload1"
 fi
 
+# ---------------------------------------------------------------- two roots, one escalating
+#
+# The first stream has one root, and a defect that needs two roots cannot show in it. root_fired in
+# lock_tree_notify() is meant to be per root; until 1.1.15 it was reset only for roots below every
+# threshold, so once one root fired, every later root that was notable but UNCHANGED was notified
+# again with the payload it had already had, while the function's return value said it had not. Only
+# the listener can see that, which is why it is asserted here and not in test/11.
+#
+# The waiters carry an application_name that sorts after the roots' names, deliberately: until 1.1.15
+# lock_tree_wide() took max(application_name) over the whole tree, waiters included, so a waiter
+# whose name sorted last was reported as the root's application, in the payload a pager keys on.
+hdr 'Two roots: one escalates, the other must stay quiet'
+(
+  psql -X -q -A -t > "$tmp/listener2.out" 2>&1 <<'SQL'
+\set ON_ERROR_STOP on
+LISTEN lock_tree_two;
+SELECT 'SELECT pg_sleep(1)' FROM generate_series(1, 25) \gexec
+SQL
+) &
+listener2=$!
+sleep 0.6
+
+out2=$(psql -X -q -A -t 2>&1 <<'SQL'
+\set ON_ERROR_STOP on
+CREATE EXTENSION IF NOT EXISTS dblink;
+DROP TABLE IF EXISTS alert_two_a, alert_two_b;
+CREATE TABLE alert_two_a (id int);
+CREATE TABLE alert_two_b (id int);
+DELETE FROM lock_tree_alert WHERE channel = 'lock_tree_two';
+SELECT dblink_connect('r1', format('dbname=%s user=%s', current_database(), current_user));
+SELECT dblink_connect('r2', format('dbname=%s user=%s', current_database(), current_user));
+SELECT dblink_exec('r1', 'SET application_name = ''alert_check_one''');
+SELECT dblink_exec('r2', 'SET application_name = ''alert_check_two''');
+SELECT dblink_exec('r1', 'BEGIN');
+SELECT dblink_exec('r1', 'LOCK TABLE alert_two_a IN ACCESS EXCLUSIVE MODE');
+SELECT dblink_exec('r2', 'BEGIN');
+SELECT dblink_exec('r2', 'LOCK TABLE alert_two_b IN ACCESS EXCLUSIVE MODE');
+-- r1: one waiter now and five more later. r2: three waiters throughout.
+SELECT dblink_connect('w' || i, format('dbname=%s user=%s', current_database(), current_user))
+  FROM generate_series(1, 9) i;
+SELECT dblink_exec('w' || i, 'SET application_name = ''zz_waiter''') FROM generate_series(1, 9) i;
+SELECT dblink_send_query('w1', 'SELECT count(*) FROM alert_two_a');
+SELECT dblink_send_query('w' || i, 'SELECT count(*) FROM alert_two_b') FROM generate_series(2, 4) i;
+DO $w$ BEGIN
+  FOR i IN 1..100 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks WHERE NOT granted
+                AND relation IN ('alert_two_a'::regclass, 'alert_two_b'::regclass)) = 4;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $w$;
+SELECT 'ONSET=' || lock_tree_notify('lock_tree_two', min_blocked => 1, min_depth => NULL, min_wait => NULL);
+SELECT pg_sleep(0.5);
+SELECT dblink_send_query('w' || i, 'SELECT count(*) FROM alert_two_a') FROM generate_series(5, 9) i;
+DO $w$ BEGIN
+  FOR i IN 1..100 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks WHERE NOT granted
+                AND relation = 'alert_two_a'::regclass) = 6;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $w$;
+SELECT 'ESCALATE=' || lock_tree_notify('lock_tree_two', min_blocked => 1, min_depth => NULL, min_wait => NULL);
+SELECT pg_sleep(0.5);
+SELECT 'ROOTAPPS=' || string_agg(application_name, ',' ORDER BY application_name)
+  FROM lock_tree_wide() WHERE root_pid IN (SELECT pid FROM pg_stat_activity
+                                            WHERE application_name LIKE 'alert_check_%');
+DO $x$ BEGIN
+  FOR i IN 1..9 LOOP
+    BEGIN PERFORM dblink_disconnect('w' || i); EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+  BEGIN PERFORM dblink_disconnect('r1'); EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN PERFORM dblink_disconnect('r2'); EXCEPTION WHEN OTHERS THEN NULL; END;
+END $x$;
+DELETE FROM lock_tree_alert WHERE channel = 'lock_tree_two';
+DROP TABLE IF EXISTS alert_two_a, alert_two_b;
+SQL
+)
+wait "$listener2" 2>/dev/null
+tag2() { printf '%s\n' "$out2" | sed -n "s/^$1=\(.*\)$/\1/p" | head -1; }
+onset=$(tag2 ONSET); escalate=$(tag2 ESCALATE); rootapps=$(tag2 ROOTAPPS)
+got2=$(cat "$tmp/listener2.out" 2>/dev/null)
+payloads2=$(printf '%s' "$got2" | sed -n 's/.*payload "\(.*\)" received.*/\1/p')
+n2=$(printf '%s\n' "$payloads2" | grep -c .)
+apps2=$(printf '%s\n' "$payloads2" | python3 -c '
+import json, sys
+print(",".join(sorted({json.loads(l)["application_name"] for l in sys.stdin if l.strip()})))' 2>/dev/null)
+
+if [ "$onset" = "2" ] && [ "$escalate" = "1" ]; then
+    say_ok 'lock_tree_notify() reported 2 at onset and 1 when only one root escalated'
+else
+    say_bad "lock_tree_notify() reported ${onset:-?} at onset and ${escalate:-?} at escalation, expected 2 and 1; psql said: ${out2:-nothing}"
+fi
+if [ "${n2:-0}" = "3" ] 2>/dev/null; then
+    say_ok 'and the listener received exactly 3: two onsets and one escalation, nothing for the quiet root'
+else
+    say_bad "the listener received ${n2:-0} payload(s), expected 3, so the unchanged root was notified again"
+fi
+if [ "$rootapps" = "alert_check_one,alert_check_two" ]; then
+    say_ok "lock_tree_wide() names each root by the root's own application, not a waiter's"
+else
+    say_bad "lock_tree_wide() named the roots '${rootapps:-?}', expected alert_check_one,alert_check_two"
+fi
+if [ "$apps2" = "alert_check_one,alert_check_two" ]; then
+    say_ok 'and so does every payload, which is the key a listener is told to route on'
+else
+    say_bad "the payloads named '${apps2:-?}' as the application, expected alert_check_one,alert_check_two"
+fi
+
 # Clean up. Terminate rather than cancel: a cancelled session stays connected holding an aborted
 # transaction and would still appear in the next run's tree.
 psql -X -q >/dev/null 2>&1 <<'SQL'

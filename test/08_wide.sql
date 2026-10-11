@@ -69,13 +69,13 @@ DECLARE i int;
 BEGIN
   FOR i IN 1..40 LOOP
     PERFORM dblink_send_query('w' || i, format(
-      'SET application_name = ''api_worker_%s''; SELECT count(*) FROM lock_tree_wd',
+      'SET application_name = ''zz_api_worker_%s''; SELECT count(*) FROM lock_tree_wd',
       lpad(i::text, 2, '0')));
   END LOOP;
   PERFORM pg_sleep(0.5);
   FOR i IN 1..15 LOOP
     PERFORM dblink_send_query('x' || i, format(
-      'SET application_name = ''report_read_%s''; SELECT count(*) FROM lock_tree_wd2',
+      'SET application_name = ''zz_report_read_%s''; SELECT count(*) FROM lock_tree_wd2',
       lpad(i::text, 2, '0')));
   END LOOP;
 END
@@ -119,9 +119,12 @@ SELECT is((SELECT count(*) FROM wide)::int, 2, 'lock_tree_wide() returns one row
 SELECT is((SELECT blocked_sessions FROM wide ORDER BY blocked_sessions DESC LIMIT 1)::bigint, 40::bigint,
           'the worse of the two roots is reported as blocking 40 sessions');
 
+-- The waiters' names sort AFTER the roots', deliberately. Until 1.1.15 lock_tree_wide() took
+-- max(application_name) over the whole tree, and this assertion passed only because the waiters
+-- were named api_worker_N, which sorts before nightly_reconciliation.
 SELECT is((SELECT application_name FROM wide ORDER BY blocked_sessions DESC LIMIT 1),
           'nightly_reconciliation',
-          'and the root is named by application_name rather than by pid alone');
+          'and the root is named by ITS application_name, not by a waiter''s that sorts later');
 
 SELECT is((SELECT state FROM wide ORDER BY blocked_sessions DESC LIMIT 1), 'idle in transaction',
           'the state is the ROOT''s state, not a waiter''s: this is the bug that would show '
