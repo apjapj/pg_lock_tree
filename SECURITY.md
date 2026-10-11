@@ -4,11 +4,10 @@
 
 | Version | Supported | Why |
 |---|---|---|
-| 1.1.14 | **yes** | the current release |
-| 1.1.13 | yes, by updating | installs the same objects as 1.1.14; `ALTER EXTENSION pg_lock_tree UPDATE` |
-| 1.1.12 | yes, by updating | installs the same objects as 1.1.14; `ALTER EXTENSION pg_lock_tree UPDATE` |
+| 1.1.15 | **yes** | the current release |
+| 1.1.12 to 1.1.14 | yes, by updating | `ALTER EXTENSION pg_lock_tree UPDATE`; 1.1.15 fixes three defects in them, one of which put the wrong application name in alert payloads |
 | 1.1.11 | **no** | cannot be installed with `make install`; updating *through* it removes `EXECUTE` grants on two functions (INSTALL.md says how to restore them) |
-| 1.1.10 and earlier | no | update to 1.1.14 |
+| 1.1.10 and earlier | no | update to 1.1.15 |
 
 Fixes are made on `main` and released as a new version. Released tags are not edited.
 

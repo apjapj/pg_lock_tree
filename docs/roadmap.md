@@ -72,7 +72,10 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    keeps all 33, including the 16 `v0.*` that never go to GitHub: Forgejo is the archive, GitHub is
    the public release line. Someone wanting `v1.0.0` from a GitHub clone uses the hash or fetches
    from Forgejo.
-10. **The GitHub Release for v1.1.14**, from item 8's notes.
+   **2026-10-11: 1.1.15 now exists**, fixing three defects found by a review of 1.1.14, one of
+   which put the wrong application name in alert payloads. Which tags go to GitHub (`v1.1.14` as
+   well, or `v1.1.13` and `v1.1.15`) is **[Piotr]**'s; nothing is tagged yet.
+10. **The GitHub Release for the newest tag**, from item 8's notes.
 11. **Description and topics**, for example "Lock trees, blocking history and alerts for
     PostgreSQL, in pure SQL" and `postgresql`, `postgresql-extension`, `locking`, `monitoring`.
 

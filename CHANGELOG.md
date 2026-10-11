@@ -1,3 +1,58 @@
+## 1.1.15 (2026-10-11)
+
+Three defects, found by a review of 1.1.14 and each measured on PostgreSQL 14 and 16 before anything
+was changed. Three function bodies change, each with `CREATE OR REPLACE`, and nothing else: no
+signature, no returned column, no table, no grant. `pg_lock_tree--1.1.14--1.1.15.sql` replaces the
+three functions and keeps existing grants, which was checked by granting `EXECUTE` on each to a role,
+revoking it from `PUBLIC`, updating, and comparing `proacl` before and after.
+
+### Alert payloads carried the wrong application name
+
+**Alert payloads could name the wrong application in every release that sends them, up to and
+including 1.1.14.** The aggregate dates from 0.5, which introduced `lock_tree_wide()`. It took
+`max(application_name)` over the whole tree, waiters included, so the root was reported under
+whichever name in its tree sorted last: a root running as
+`nightly_batch` with one waiter running as `web` was reported as `web`. That value is the
+`application_name` in the alert payload and in `lock_tree_alert`, the key docs/alerting.md tells a
+listener to route on. A page routed by application went to the team owning the waiting application,
+not the blocking one, whenever the waiter's name sorted after the blocker's.
+
+It is now the root row's own name, as the `state` column beside it already was. `test/08_wide.sql`
+passed throughout because its waiters were named `api_worker_N`, which sorts before the root's
+`nightly_reconciliation`; they now sort after it, and the assertion fails against 1.1.14.
+
+### A quiet root was notified again when another root escalated
+
+`lock_tree_notify()` keeps a per-root flag so that a root which is notable but unchanged stays quiet.
+The flag was reset only for roots below every threshold, so once one root fired in a call, every
+later notable-but-unchanged root inherited it and was sent the payload it had already received. The
+return value did not count those. Measured with two roots, one escalating from 1 waiter to 6 and one
+steady at 3: the call returned 1 and a listener received 2. The flag is now reset for every root.
+
+`test/11_alert.sql` asserts return values, and pgTAP cannot see notifications, so it could not catch
+this. `scripts/check-alert.sh` gains a two-root section that counts what a separate listener actually
+receives, and checks the application name in every payload. Against 1.1.14 it fails three checks.
+
+### lock_tree_history_statements() described the roots, not the sessions they held up
+
+It aggregated over rows carrying a `query_id`, which are exactly the root rows, so
+`blocked_sessions` equalled `samples`, `deepest_chain` was 0, and `longest_wait` was the root's own
+`wait_age`, NULL in a real sample. On test/12's fixture, 5 waiters at each of 3 samples reported 3
+blocked sessions instead of 15. It now joins each root to its waiters at the same sample, on
+`root_pid` and `root_object`, the join `lock_tree_duration()` has had since 0.13, with the explicit
+`sampled_at` bound 1.1.5 added there. `applications` is the blockers' applications, as before, with
+NULLs left out as `lock_tree_duration()` leaves them out.
+
+`test/12_history_statements.sql` asserted the old values as correct ("3 samples, not the 15 rows of
+the chain"), and its fixture wrote root and waiter rows with `now()` in separate autocommitted
+statements, so they never shared a `sampled_at` and no join could have matched them. The fixture now
+runs in one transaction and the expectations are counted from it by hand.
+
+### A spliced sentence in the install script header
+
+Since 1.1.11 the header read "1.1.10 was * 1.1.10 is a soak release". Fixed in
+`pg_lock_tree--1.1.15.sql`; the released scripts are not edited.
+
 ## 1.1.14 (2026-10-11)
 
 Documentation and repository scaffolding only. No SQL changes, and therefore no object difference

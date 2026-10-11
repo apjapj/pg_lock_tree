@@ -230,8 +230,8 @@ installation therefore never has to reinstall to get a fix.
    **Name the tag when you push it. Never `git push --tags`.**
 
    ```bash
-   git push origin  v1.1.14          # the tag, by name, to Forgejo
-   git push github v1.1.14          # and to GitHub
+   git push origin  v1.1.15          # the tag, by name, to Forgejo
+   git push github v1.1.15          # and to GitHub
    ```
 
    `--tags` pushes **every** tag in the local repository, not the one you just made. This repository
