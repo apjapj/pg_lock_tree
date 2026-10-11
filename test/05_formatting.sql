@@ -24,7 +24,7 @@ $ext$;
 \o
 \unset QUIET
 
-SELECT plan(21);
+SELECT plan(22);
 
 -- ------------------------------------------------------------------ lock_tree_age(interval)
 
@@ -59,5 +59,11 @@ SELECT is(lock_tree_state_short('idle in transaction'), 'idle-in-tx',
 SELECT is(lock_tree_state_short('idle in transaction (aborted)'), 'idle-in-tx (abort)',
           'the aborted variant is abbreviated but still distinguishable');
 SELECT is(lock_tree_state_short('active'), 'active', 'other states are left alone');
+
+-- 1.1.16. Pure functions of their argument, so nothing stops a parallel plan from calling them.
+SELECT is((SELECT string_agg(proname::text || '=' || proparallel::text, ',' ORDER BY proname) FROM pg_proc
+            WHERE proname IN ('lock_tree_age', 'lock_tree_mode_short', 'lock_tree_state_short')),
+          'lock_tree_age=s,lock_tree_mode_short=s,lock_tree_state_short=s',
+          'the three formatting helpers are PARALLEL SAFE');
 
 SELECT * FROM finish();

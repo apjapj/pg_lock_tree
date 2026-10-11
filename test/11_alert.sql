@@ -98,7 +98,7 @@ ORDER BY w.blocked_sessions DESC LIMIT 1;
 \o
 \unset QUIET
 
-SELECT plan(55);
+SELECT plan(57);
 
 SELECT has_table('lock_tree_alert', 'lock_tree_alert table exists');
 SELECT has_function('lock_tree_notify',
@@ -552,6 +552,13 @@ $sab$;
 DROP TABLE lock_tree_al_steady;
 \o
 \set QUIET 0
+
+-- 1.1.16: the policy key has one definition, shared by lock_tree_notify() and
+-- lock_tree_notify_resolved(), which until then each built it by hand.
+SELECT is(lock_tree_policy_key(1, NULL, NULL), 'blocked>=1 depth>=off wait>=off',
+          'lock_tree_policy_key() renders the thresholds, with off for one switched off');
+SELECT is(lock_tree_policy_key(0, -1, interval '-1 second'), 'blocked>=off depth>=off wait>=off',
+          'and a threshold below its minimum is off as well, as both alert functions treat it');
 
 SELECT * FROM finish();
 

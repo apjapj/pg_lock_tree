@@ -525,6 +525,89 @@ else
     say_bad "the payloads named '${apps2:-?}' as the application, expected alert_check_one,alert_check_two"
 fi
 
+# ---------------------------------------------------------------- a root that comes back mid-resolve
+#
+# Until 1.1.16 lock_tree_notify_resolved() read the live tree twice: a SELECT chose which roots to
+# report cleared, and a separate DELETE chose which state to forget. A root that started blocking
+# again between the two was reported cleared and KEPT, so the next lock_tree_notify() saw its row,
+# treated it as already alerted, and sent nothing for an incident that was still going on.
+#
+# The gap is opened deterministically. The resolver runs with a search_path that puts a pg_notify
+# which sleeps for three seconds ahead of pg_catalog's, and while it sleeps, a session connected
+# before the call starts waiting on the same root. The session has to be connected first: a backend
+# that starts later is not in the resolver's pg_stat_activity snapshot and cannot be seen at all.
+# Fixed, the decision and the deletion are one statement, so whatever is reported cleared is gone,
+# and the root's return is a fresh incident that alerts again.
+hdr 'A root that comes back while it is being resolved'
+out3=$(psql -X -q -A -t 2>&1 <<'SQL'
+\set ON_ERROR_STOP on
+CREATE EXTENSION IF NOT EXISTS dblink;
+DROP TABLE IF EXISTS alert_race;
+CREATE TABLE alert_race (id int);
+DELETE FROM lock_tree_alert WHERE channel = 'lock_tree_race';
+DROP SCHEMA IF EXISTS alert_race_slow CASCADE;
+CREATE SCHEMA alert_race_slow;
+CREATE FUNCTION alert_race_slow.pg_notify(text, text) RETURNS void LANGUAGE plpgsql
+  AS $f$ BEGIN PERFORM pg_sleep(3); PERFORM pg_catalog.pg_notify($1, $2); END $f$;
+SELECT dblink_connect(c, format('dbname=%s user=%s', current_database(), current_user))
+  FROM unnest(ARRAY['race_root', 'race_w1', 'race_w2', 'race_res']) AS c;
+SELECT dblink_exec('race_root', 'BEGIN');
+SELECT dblink_exec('race_root', 'LOCK TABLE alert_race IN ACCESS EXCLUSIVE MODE');
+SELECT dblink_send_query('race_w1', 'SELECT count(*) FROM alert_race');
+DO $w$ BEGIN
+  FOR i IN 1..100 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'alert_race'::regclass) = 1;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $w$;
+SELECT 'ONSET=' || lock_tree_notify('lock_tree_race', min_blocked => 1, min_depth => NULL, min_wait => NULL);
+-- The waiter gives up, so the root is no longer a root.
+SELECT dblink_cancel_query('race_w1');
+DO $w$ BEGIN
+  FOR i IN 1..100 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks WHERE NOT granted AND relation = 'alert_race'::regclass) = 0;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $w$;
+SELECT dblink_exec('race_res', 'SET search_path = alert_race_slow, ' || current_schema() || ', pg_catalog');
+SELECT dblink_send_query('race_res',
+  'SELECT lock_tree_notify_resolved(''lock_tree_race'', min_blocked => 1, min_depth => NULL, min_wait => NULL)');
+SELECT pg_sleep(1);
+-- While the resolver sleeps inside its loop, the same root starts blocking again.
+SELECT dblink_send_query('race_w2', 'SELECT count(*) FROM alert_race');
+SELECT 'CLEARED=' || n FROM dblink_get_result('race_res') AS t(n bigint);
+SELECT 'BLOCKING=' || count(*) FROM pg_locks WHERE NOT granted AND relation = 'alert_race'::regclass;
+SELECT 'KEPT=' || count(*) FROM lock_tree_alert WHERE channel = 'lock_tree_race';
+SELECT 'NEXT=' || lock_tree_notify('lock_tree_race', min_blocked => 1, min_depth => NULL, min_wait => NULL);
+DO $x$ BEGIN
+  BEGIN PERFORM dblink_disconnect('race_w1'); EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN PERFORM dblink_disconnect('race_w2'); EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN PERFORM dblink_disconnect('race_res'); EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN PERFORM dblink_disconnect('race_root'); EXCEPTION WHEN OTHERS THEN NULL; END;
+END $x$;
+DELETE FROM lock_tree_alert WHERE channel = 'lock_tree_race';
+DROP SCHEMA alert_race_slow CASCADE;
+DROP TABLE IF EXISTS alert_race;
+SQL
+)
+tag3() { printf '%s\n' "$out3" | sed -n "s/^$1=\(.*\)$/\1/p" | head -1; }
+r_onset=$(tag3 ONSET); r_cleared=$(tag3 CLEARED); r_blocking=$(tag3 BLOCKING); r_kept=$(tag3 KEPT); r_next=$(tag3 NEXT)
+if [ "$r_onset" = "1" ] && [ "$r_blocking" = "1" ]; then
+    say_ok 'the root alerted, cleared, and was blocking again by the time the resolver finished'
+else
+    say_bad "the fixture did not form: onset ${r_onset:-?}, blocking at the end ${r_blocking:-?}; psql said: ${out3:-nothing}"
+fi
+if [ "$r_cleared" = "1" ] && [ "$r_kept" = "0" ]; then
+    say_ok 'what was reported cleared was also forgotten: one decision, not two reads of the tree'
+else
+    say_bad "the resolver reported ${r_cleared:-?} cleared but kept ${r_kept:-?} alert row(s)"
+fi
+if [ "$r_next" = "1" ]; then
+    say_ok 'so the root coming back is a new incident, and alerts again'
+else
+    say_bad "the next lock_tree_notify() sent ${r_next:-?}: an incident still under way is now silent"
+fi
+
 # Clean up. Terminate rather than cancel: a cancelled session stays connected holding an aborted
 # transaction and would still appear in the next run's tree.
 psql -X -q >/dev/null 2>&1 <<'SQL'

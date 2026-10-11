@@ -86,7 +86,7 @@ SELECT count(*) AS n FROM lock_tree_actions();
 
 \o
 \unset QUIET
-SELECT plan(27);
+SELECT plan(28);
 
 SELECT has_view('lock_tree', 'lock_tree view exists');
 SELECT has_function('lock_tree_roots', 'lock_tree_roots() exists');
@@ -191,6 +191,13 @@ $drain$;
 
 SELECT is((SELECT count(*) FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_pids))::int, 0,
           'tree is empty once the root rolls back');
+
+-- 1.1.16: a quiet database gets no lines, as lock_tree_command() gives none. Until then it got a
+-- lone header announcing 0 root blockers. Conditional on the whole tree being empty, so a blocked
+-- session elsewhere on a shared server cannot fail this; the CI servers are otherwise idle.
+SELECT is((SELECT count(*) FROM lock_tree_actions() WHERE NOT EXISTS (SELECT 1 FROM lock_tree)),
+          0::bigint,
+          'with nothing blocked, lock_tree_actions() returns no lines at all, not a header');
 
 SELECT * FROM finish();
 
