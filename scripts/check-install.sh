@@ -155,7 +155,8 @@ extra=$(psql -X -tAc "
                               'lock_tree_deadlock_participants','lock_tree_history_size',
                               'lock_tree_notify_resolved','lock_tree_redact',
                               'lock_tree_prune_batched','lock_tree_archive',
-                              'lock_tree_archive_find','lock_tree_archive_since_guard')
+                              'lock_tree_archive_find','lock_tree_archive_since_guard',
+                              'lock_tree_policy_key')
     ) s" 2>/dev/null)
 if [ "${extra:-}" = "(none)" ] || [ -z "$extra" ]; then
     ok "no object of the extension goes unchecked: every relation and routine is named above"
