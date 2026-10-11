@@ -1,3 +1,53 @@
+## 1.1.16 (2026-10-11)
+
+The smaller half of the review behind 1.1.15, and one defect that review led to. One helper function
+is added; four function bodies change with `CREATE OR REPLACE` and three helpers with `ALTER
+FUNCTION`, so existing grants survive the update, checked by comparing `proacl` before and after. No
+signature, returned column or table changes.
+
+### A root that came back while being resolved was reported cleared and then never alerted again
+
+`lock_tree_notify_resolved()` read the live tree twice: a `SELECT` chose which roots to report
+`cleared`, and a separate `DELETE` chose which stored state to forget. A root that started blocking
+again between the two was reported cleared and kept. The next `lock_tree_notify()` found its row,
+treated it as already alerted, and sent nothing: a listener had been told the incident was over while
+it was still going on, and was told nothing more.
+
+Measured on PostgreSQL 14 and 16 by opening the gap deterministically: the resolver ran with a
+`search_path` putting a `pg_notify` that sleeps three seconds ahead of `pg_catalog`'s, and a session
+connected beforehand started waiting on the same root while it slept. It reported 1 cleared, kept 1
+alert row, and the next `lock_tree_notify()` sent 0. The window in normal running is the time between
+two statements, and only a session already connected can fall into it, because a newer backend is not
+in the resolver's `pg_stat_activity` snapshot; a first attempt with a fresh session could not
+reproduce it for exactly that reason.
+
+The decision and the deletion are now one statement: `DELETE ... RETURNING` forgets a root and its
+`RETURNING` is what is reported, so a root is reported cleared exactly when its state is gone, and its
+return is a new incident that alerts again. `scripts/check-alert.sh` gains this case and fails three
+checks against 1.1.15.
+
+### One definition of the alert policy key
+
+`lock_tree_policy_key(min_blocked, min_depth, min_wait)` renders the thresholds as the string half of
+`lock_tree_alert`'s key. `lock_tree_notify()` wrote rows under it and `lock_tree_notify_resolved()`
+read them back, and each built it by hand, three times in all, under a comment warning that if they
+ever disagreed resolutions would be reported for alerts never sent. Both now call the helper. It is
+`STABLE`, not `IMMUTABLE`, because an interval's text form follows `IntervalStyle`, and it is listed in
+docs/reference.md as not stable.
+
+### first_waiting_for is what the longest waiter wants
+
+`lock_tree_wide().first_waiting_for` was `min(waiting_for)`, the alphabetically least lock
+description, which agreed with "first" only when every waiter in the tree wanted the same lock. It is
+now the lock the longest-waiting session wants. `test/25_first_waiting_for.sql` builds one root whose
+older waiter queues on the table that sorts last; it fails against 1.1.15.
+
+### Smaller
+
+- `lock_tree_actions()` returns no lines on a quiet database, as `lock_tree_command()` returns none.
+  It returned a lone header, "-- 0 root blocker(s)".
+- `lock_tree_age()`, `lock_tree_mode_short()` and `lock_tree_state_short()` are `PARALLEL SAFE`.
+
 ## 1.1.15 (2026-10-11)
 
 Three defects, found by a review of 1.1.14 and each measured on PostgreSQL 14 and 16 before anything

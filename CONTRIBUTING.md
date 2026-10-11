@@ -58,6 +58,7 @@ terminate backends rather than mocking anything:
 | `test/22_schema_install.sql` | installed in a private schema: nothing lands in `public`, the two `search_path`-pinned functions resolve from a caller that cannot see the extension, and `pg_dump` registers none of the three tables |
 | `test/23_archive.sql` | the cold tier: that the move loses nothing, which is the assertion that fires if the batch is taken twice rather than captured once; that `lock_tree_redact()` runs on the way across; that the procedure refuses inside a transaction block **before** moving a row; that nothing shipped reads the archive; and the four privileges it needs. The fixture puts twenty rows on each `sampled_at` and archives in batches of seven, so every batch boundary lands inside a tie, which is what makes the loss bug fire rather than pass by luck. The grant checks assert by row count rather than `throws_ok`, because a procedure that COMMITs is refused inside the subtransaction those wrap in, so the call under test never runs. It also carries the 1.1.7 assertions that `lock_tree_history_size()` reports the archive, that the eight columns it already returned are unchanged, and that `archive_bytes` follows the archive rather than the hot table |
 | `test/24_archive_find.sql` | searching the archive: that a NULL window is **refused**, that the guard `PERFORM` comes before the query rather than merely being in the body, that the result is one row per sample rather than per session, that each filter narrows the answer, and the three 1.1.9 corrections: `samples` is absent from the OUT columns, `%` and `_` in `waiting_like` are literals so a name that does not exist returns nothing, and a `since` wider than the archive is accepted rather than refused |
+| `test/25_first_waiting_for.sql` | that `lock_tree_wide().first_waiting_for` is what the longest waiter wants: one root, two waiters on two tables, the older one on the table that sorts last, so `min()` and "first" disagree and the test can tell which it got |
 There is no `test/20`. Nothing was ever written at that number, and renumbering to close the gap
 would change three filenames in the history for no benefit.
 
@@ -230,8 +231,8 @@ installation therefore never has to reinstall to get a fix.
    **Name the tag when you push it. Never `git push --tags`.**
 
    ```bash
-   git push origin  v1.1.15          # the tag, by name, to Forgejo
-   git push github v1.1.15          # and to GitHub
+   git push origin  v1.1.16          # the tag, by name, to Forgejo
+   git push github v1.1.16          # and to GitHub
    ```
 
    `--tags` pushes **every** tag in the local repository, not the one you just made. This repository

@@ -37,6 +37,7 @@ creates, the stability statement, and the NOTIFY payload keys.
 | `lock_tree_statements()` | Per root, what `pg_stat_statements` already knows about the query holding the lock: normalised text, calls, mean and total time. Groups incidents by query rather than by pid. Optional; see below. |
 | `lock_tree_notify(channel, min_blocked, min_depth, min_wait)` | Raise a `NOTIFY` when a chain is bad enough, and remember it so the same incident notifies once rather than on every sample. Escalates on more sessions, more depth, or a longest wait that has **doubled**. Returns how many it raised, so zero is the normal result. |
 | `lock_tree_notify_resolved(channel, min_blocked, min_depth, min_wait)` | Raise one `NOTIFY` with `event: "cleared"` per root that **had alerted** and has now left the tree, then forget the stored state so the next incident alerts from the start. Same thresholds as `lock_tree_notify()`, and it reads and writes the same rows. Optional; see below. |
+| `lock_tree_policy_key(min_blocked, min_depth, min_wait)` | The alert policy key: the thresholds as one string, `off` for one switched off. `lock_tree_notify()` writes `lock_tree_alert` rows under it and `lock_tree_notify_resolved()` reads them back, so both call this rather than each building it. A helper, not part of the stable surface. New in 1.1.16 |
 | `lock_tree_deadlocks(since interval DEFAULT '7 days')` | When `pg_stat_database.deadlocks` moved: the cumulative counter, how far it moved, whether it was reset, and the window total. Names no participants; the timestamp is how you find the log entry, and the history may hold them (see [What it cannot tell you](after-the-incident.md#what-it-cannot-tell-you)). |
 | `lock_tree_deadlock_participants(since interval DEFAULT '7 days')` | Both participants of a deadlock, one row per participant per sample, with `partner_pids` naming the other side. **Empty is normal** and does not mean no deadlock happened: it has rows only for samples taken while the cycle still existed, which is the `deadlock_timeout` window. Roughly one deadlock in ten at the defaults. Use `lock_tree_deadlocks()` to find the rest. New in 1.1.4 |
 | `lock_tree_alert` (table) | What `lock_tree_notify()` has already alerted on, per channel, per threshold set, per root. Holds three high-water marks, recorded at the last notification rather than at the last sample. Maintained by the function; you should never need to look at it. |
@@ -91,6 +92,8 @@ does not recognise, and this is the one place where that is a requirement rather
   `lock_tree_state_short()`. They exist so the renderers can be compared against each other and are
   exposed for that; their output is an implementation detail of the renderers, and changing it is not
   a break.
+- **`lock_tree_policy_key()`**, new in 1.1.16. It is the shared definition the two alert functions
+  call so that they agree; its text is the state key in `lock_tree_alert`, which is internal state.
 - **Table column order, and therefore `SELECT *` on the tables.** Not a choice, and the evidence is in
   `scripts/check-upgrade.sh`: `ALTER TABLE ADD COLUMN` appends, so a database older than 0.8 keeps
   `root_object` at the end of the row and displaces what followed it. Every upgrade path converges on
