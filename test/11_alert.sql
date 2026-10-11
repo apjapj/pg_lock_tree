@@ -98,7 +98,7 @@ ORDER BY w.blocked_sessions DESC LIMIT 1;
 \o
 \unset QUIET
 
-SELECT plan(54);
+SELECT plan(55);
 
 SELECT has_table('lock_tree_alert', 'lock_tree_alert table exists');
 SELECT has_function('lock_tree_notify',
@@ -335,15 +335,37 @@ FROM generate_series(1,4) i;
 DO $again$
 BEGIN
   FOR i IN 1..300 LOOP
+    -- Wait for the waiters to be BLOCKED, not merely present. A dblink session appears in
+    -- pg_stat_activity the moment it connects, which is before its SELECT has reached the lock, so
+    -- counting sessions can exit this loop with none of them waiting yet. lock_tree_notify() then
+    -- sees one notable root instead of two and returns 1 where this test wants 2. That is a race,
+    -- not a defect in the sweep, and it is the only loop in this suite that waited on presence:
+    -- every other one joins pg_stat_activity on wait_event_type = 'Lock', including the escalation
+    -- loop above, which is why that one never flaked.
+    --
+    -- Both groups are counted separately rather than as one OR, so 12 blocked sessions is not
+    -- satisfied by 12 waiters behind a single root.
     EXIT WHEN (SELECT count(*) FROM pg_stat_activity
-               WHERE application_name LIKE 'api\_%' OR application_name LIKE 'report\_%') >= 12;
+               WHERE wait_event_type = 'Lock' AND application_name LIKE 'api\_%') >= 8
+         AND (SELECT count(*) FROM pg_stat_activity
+               WHERE wait_event_type = 'Lock' AND application_name LIKE 'report\_%') >= 4;
     PERFORM pg_sleep(0.1);
   END LOOP;
 END
 $again$;
+-- Captured for the precondition assertion below, so a wait that times out says so instead of
+-- showing up as a confusing "have: 1 want: 2" from the sweep.
+SELECT (SELECT count(*) FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND application_name LIKE 'api\_%') AS relapse_api,
+       (SELECT count(*) FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND application_name LIKE 'report\_%') AS relapse_report
+\gset
 SELECT lock_tree_notify() AS relapse \gset
 \o
 \unset QUIET
+
+SELECT is(:relapse_api::int >= 8 AND :relapse_report::int >= 4, true,
+          'precondition: all twelve relapse waiters are blocked on a lock before the sweep runs');
 
 -- The sweep that makes this true cannot live inside the per-root loop: a root whose waiters have
 -- all gone has no edges, so it has no row in lock_tree_wide() and the loop never sees it. That is
