@@ -179,7 +179,7 @@ else
     stale=""
     for f in $CLAIM_DOCS; do
         [ -f "$f" ] || continue
-        grep -qiE 'not yet tagged|there is no released version yet' "$f" 2>/dev/null \
+        grep -qiE 'not yet tagged|not yet released|there is no released version yet' "$f" 2>/dev/null \
             && stale="$stale $f"
     done
     if [ -z "$stale" ]; then
