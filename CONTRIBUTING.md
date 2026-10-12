@@ -241,8 +241,11 @@ installation therefore never has to reinstall to get a fix.
 6. **`make lint-docs`**, which is the documentation, the objects it names, the paths it links to, the
    links and anchors, the test table and the version the README claims against the control file. The
    secrets are two separate CI jobs rather than a make target: gitleaks over the history and
-   detect-secrets over the tree at HEAD, and gitleaks also runs as a fail-closed pre-commit hook. So a
-   secret stops the commit and a broken anchor stops the pipeline, and neither depends on the other.
+   detect-secrets over the tree at HEAD. A gitleaks pre-commit hook also runs in the maintainer's
+   checkout, which is where a secret is stopped before it is committed rather than before it is
+   pushed; that hook is local and is not shipped in this repository, so a clone of it has the two CI
+   jobs and not the hook. So a secret stops the commit locally and a broken anchor stops the
+   pipeline, and neither depends on the other.
 7. **Run the demonstrations**, `make demo` and `make scenarios`, and compare them against what the
    documentation claims. The scenario demos print the popular standard DBA query beside this
    extension's output, and the captured output is the proof that the two agree.

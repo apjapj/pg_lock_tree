@@ -2,10 +2,15 @@
 # should not show them as four contributors, and the forge behind it would otherwise link four
 # accounts on GitHub and Forgejo rather than one.
 #
-#   89  Piotr Adamiak <apjapj@gmail.com>
-#   10  apjapj        <apjapj@forgejo>
-#    2  Piotr         <apjapj@gmail.com>
-#    1  apjapj        <apjapj@gmail.com>
+# Counted 2026-10-12, before this file's own commit:
+#
+#   132  Piotr Adamiak <apjapj@gmail.com>
+#    10  apjapj        <apjapj@forgejo>
+#     2  Piotr         <apjapj@gmail.com>
+#     1  apjapj        <apjapj@gmail.com>
+#
+# The first figure moves with every commit added here, which is why it carries a date. The other three
+# do not: no further commit is authored under the short name or the Forgejo address.
 #
 # Two mistakes here are worth recording, because the first one was mine.
 #
@@ -20,7 +25,7 @@
 # inconsistency and it is fixed below by the same file.
 #
 # Nothing here rewrites history. .mailmap is applied at display time by git log, git shortlog and the
-# forge, so a fresh clone shows one contributor for 102 commits and no commit object is touched. Which
+# forge, so a fresh clone shows one contributor for every commit and no commit object is touched. Which
 # display name and address to publish is the owner's decision; this file only makes the history say one
 # thing instead of four.
 Piotr Adamiak <apjapj@gmail.com> apjapj <apjapj@forgejo>

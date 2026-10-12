@@ -30,9 +30,12 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    test image is pulled from. Removing them needs a generic runner label and a registry host name in
    pg-dev-infra's runner configuration, an infrastructure change for **[Piotr]**. History still
    holds the old names.
-2. **[done, on main since 0c70e76, and green on GitHub] Secret scanning on GitHub.** `.github/workflows/` has only `test.yml`; the gitleaks
-   history scan and detect-secrets run on Forgejo only (`.forgejo/workflows/secrets.yml`). Port them, so
-   the public copy proves what Forgejo proves.
+2. **[done, on main since 0c70e76, and green on GitHub] Secret scanning on GitHub.** It was written
+   when `.github/workflows/` held only `test.yml` and the gitleaks history scan and detect-secrets ran
+   on Forgejo only (`.forgejo/workflows/secrets.yml`); porting them was the work, so the public copy
+   proves what Forgejo proves. That is done: `.github/workflows/` now carries `secrets.yml` as well,
+   and the Forgejo twin was later added to the other three repositories so all four scan on both
+   systems.
 3. **[done, on main in all four repositories; GitHub now reports `PostgreSQL`] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
    differs from the SPDX template enough that GitHub reports NOASSERTION. Match the template so it is
    detected as `PostgreSQL`; check after the push that the sidebar says so.

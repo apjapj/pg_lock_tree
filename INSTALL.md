@@ -564,8 +564,9 @@ separate and older: `lock_tree_archive_find()` was genuinely dropped in 1.1.9 be
 `samples` output column changes the return type, so anything you granted on it went then, and only
 you can restore it.
 
-**Downgrade is not supported.** There is no `1.1.13--1.1.12` script, and `ALTER EXTENSION ... UPDATE TO`
-will not go backwards. To get 1.1.12 behaviour back, install 1.1.12 in a scratch database alongside it.
+**Downgrade is not supported.** Every update script in this extension goes forwards: there is no
+`1.1.16--1.1.15` script, and `ALTER EXTENSION ... UPDATE TO` will not go backwards. To get an earlier
+version's behaviour back, install that version in a scratch database alongside it.
 
 **Upgrading from an earlier version chains automatically.** There is no `1.0.0--1.0.2` script, and
 that is correct: `ALTER EXTENSION pg_lock_tree UPDATE` applies one step at a time and walks the

@@ -1,0 +1,50 @@
+# .github/dependabot.yml: keep the pinned actions current.
+#
+# Every `uses:` in this repository is pinned to a commit SHA, because
+# sha_pinning_required is on and a floating tag on a security-relevant workflow is
+# a supply-chain hole. A pinned action then stops receiving updates, which is the
+# other half of the trade: the pin holds, and nothing reminds you it is 18 months
+# old. This file is that reminder, in the form of a pull request rather than an
+# alert nobody sees.
+#
+# Dependabot updates the SHA and the trailing `# v4.4.0` comment together, so the
+# comment stays the thing a reader checks against the release notes. It does not
+# remove the pin, so sha_pinning_required is satisfied by the pull request it
+# opens.
+#
+# Only the GitHub Actions ecosystem is listed. There are no other dependencies:
+# the repository ships SQL, shell and YAML, and the test images are built by
+# pg-dev-infra rather than pulled from here.
+#
+# Reviewed in the usual way, and a version bump is a release like any other: the
+# gates in CONTRIBUTING.md apply, because an action that pulls a container or runs
+# a script is exactly the kind of change the tests exist to catch.
+
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      # Off the hour on purpose: a repository-wide weekly job that lands on the
+      # hour competes with every other scheduled job for the runner queue, and
+      # this one is never urgent.
+      time: "04:17"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+    reviewers:
+      - "apjapj"
+    groups:
+      # One pull request for the actions, not one per action. A checkout bump on
+      # its own is not worth a review cycle, and three of them arriving together
+      # is the case where a reviewer should look at all three.
+      actions:
+        patterns:
+          - "*"
