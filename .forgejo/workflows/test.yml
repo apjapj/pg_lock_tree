@@ -48,8 +48,18 @@ jobs:
         pg_version: ["14", "15", "16", "17", "18", "19beta4"]   # keep in step with pg-dev-infra
     services:
       postgres:
-        # The private registry on the Forgejo host, by address: functional, the runner pulls from it.
-        image: 192.168.10.111:3000/apjapj/pg-test:${{ matrix.pg_version }}
+        # The private registry, from a repository variable rather than written here.
+        # 
+        # This is where the address of the Forgejo host belongs: it is a property of
+        # the instance the runner is registered with, not of this repository, and a
+        # file about to be public is the wrong place for it. Set PG_TEST_REGISTRY under
+        # Settings -> Actions -> Variables. The same shape as BOOK_IMAGE_PREFIX in the
+        # book, which exists for the same reason: which registry you pull from is
+        # environment, not content.
+        # 
+        # The runner pool label is deliberately NOT parameterised: it must match the
+        # name the runner registered exactly, so it is functional, not configuration.
+        image: ${{ vars.PG_TEST_REGISTRY }}/pg-test:${{ matrix.pg_version }}
         env:
           # the throwaway password for a disposable test container, not a credential.
           # detect-secrets' Secret Keyword plugin flags any PASSWORD assignment; the pragma
