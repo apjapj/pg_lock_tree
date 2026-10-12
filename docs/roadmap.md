@@ -11,6 +11,10 @@ are **private**, with no description, no topics, and the licence shown as "NOASS
 local clone carry 33 tags, 16 of them `v0.*`, whose deletion is on hold. Every v1.x tag is reachable from
 GitHub's `main`, so pushing one uploads no history that is not already there.
 
+**The paragraph above is the state of 2026-10-10 and is left as written.** It is a snapshot, and several
+parts of it have since stopped being true. Each item below says what actually happened to it; where the
+snapshot and an item disagree, the item wins.
+
 Marked **[Piotr]** where the step is outward-facing or cannot be taken back, and so needs his explicit
 go; **[can do now]** where it is local, reversible, and can be reviewed before anything is pushed.
 

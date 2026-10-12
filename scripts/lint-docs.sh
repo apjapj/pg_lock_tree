@@ -165,6 +165,30 @@ if [ -f README.md ]; then
     fi
 fi
 
+step "the release state the documents claim"
+
+# A document can state the release state wrongly while every version number in it is
+# right. "Status: 0.1, not yet tagged" carries a correct version, so the checks above
+# pass, and the sentence around it is false. That is not a hypothetical: three security
+# policies and one README said exactly that after a tag had been cut and released.
+CLAIM_DOCS="README.md INSTALL.md SECURITY.md CONTRIBUTING.md CHANGELOG.md docs/*.md scenarios/README.md"
+tagcount=$(git tag 2>/dev/null | grep -c '^v' || true)
+if [ "${tagcount:-0}" -eq 0 ]; then
+    ok "no release tags here, so no document can claim otherwise"
+else
+    stale=""
+    for f in $CLAIM_DOCS; do
+        [ -f "$f" ] || continue
+        grep -qiE 'not yet tagged|there is no released version yet' "$f" 2>/dev/null \
+            && stale="$stale $f"
+    done
+    if [ -z "$stale" ]; then
+        ok "no document claims an untagged or unreleased extension, and $tagcount tag(s) exist"
+    else
+        bad "these say the release is untagged or does not exist, but $tagcount tag(s) do:$stale"
+    fi
+fi
+
 # Every release script must be installed. DATA covers the release scripts; the
 # update paths install via the UPGRADES wildcard, so they are checked against
 # that rather than DATA (which legitimately does not list them).

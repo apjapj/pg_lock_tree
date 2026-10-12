@@ -90,8 +90,8 @@ Check what it landed on before continuing:
 
 ```bash
 ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
-# pg_lock_tree--1.0.0.sql ... pg_lock_tree--1.1.13.sql     one full script per release from 1.0.0
-# pg_lock_tree--1.0.0--1.0.1.sql ... --1.1.12--1.1.13.sql  the update path from each release to the next
+# pg_lock_tree--1.0.0.sql ... pg_lock_tree--1.1.16.sql     one full script per release from 1.0.0
+# pg_lock_tree--1.0.0--1.0.1.sql ... --1.1.15--1.1.16.sql  the update path from each release to the next
 # pg_lock_tree--1.1.8--1.1.10.sql                          a direct path past 1.1.9's faulty check
 # pg_lock_tree--1.1.10--1.1.12.sql                         a direct path past 1.1.11's lost grants
 # pg_lock_tree.control
@@ -405,17 +405,17 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '1.1.13';  -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '1.1.16';  -- or name it explicitly
 ```
 
 Repeat per database.
 
-**If you get `no update path from version "1.1.12" to version "1.1.13"`**, the update script is not
-installed. PostgreSQL looks for a file named exactly `pg_lock_tree--1.1.12--1.1.13.sql` in the
+**If you get `no update path from version "1.1.15" to version "1.1.16"`**, the update script is not
+installed. PostgreSQL looks for a file named exactly `pg_lock_tree--1.1.15--1.1.16.sql` in the
 extension directory; check it is there:
 
 ```bash
-ls "$(pg_config --sharedir)"/extension/pg_lock_tree--1.1.12--1.1.13.sql
+ls "$(pg_config --sharedir)"/extension/pg_lock_tree--1.1.15--1.1.16.sql
 ```
 
 Also make sure `make` picked up the *same* PostgreSQL version you are connected to. See
