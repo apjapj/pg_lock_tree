@@ -30,6 +30,14 @@ on:
   push:
   pull_request:
 
+# Least privilege, stated rather than inherited. These jobs check the repository out and
+# read a database; none of them writes to the repository, creates a release, or needs a
+# token wider than read access to the contents. Declaring it here means a later change
+# cannot quietly widen it, and it matches what the secret scan workflows in this family
+# already declare.
+permissions:
+  contents: read
+
 jobs:
   pgtap:
     name: pgtap
@@ -53,7 +61,7 @@ jobs:
           - pg_version: "19beta4"
             apt_version: "19"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build the server image
         run: docker build -q --build-arg PG_MAJOR="${{ matrix.pg_version }}" -t pg-lock-tree-ci . -f ci/Dockerfile
@@ -111,7 +119,7 @@ jobs:
       CI_CONTAINER: pg-lock-tree-ci
       PGPASSWORD: test # pragma: allowlist-secret  # throwaway, set on the container by ci/server.sh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The eight checks and demo.sql all talk to the server through the client on this runner, and
       # check-examples plans statements, so the client and pg_prove are both needed. PGDG is not on
@@ -212,6 +220,6 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Documentation, objects, paths, links, anchors, test table
         run: ./scripts/lint-docs.sh

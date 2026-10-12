@@ -7,6 +7,14 @@ on:
   push:
   pull_request:
 
+# Least privilege, stated rather than inherited. These jobs check the repository out and
+# read a database; none of them writes to the repository, creates a release, or needs a
+# token wider than read access to the contents. Declaring it here means a later change
+# cannot quietly widen it, and it matches what the secret scan workflows in this family
+# already declare.
+permissions:
+  contents: read
+
 jobs:
   pgtap:
     # The PostgreSQL pool label, not docker, and deliberately so. The label below is the name the
@@ -70,7 +78,7 @@ jobs:
       PGPASSWORD: test # pragma: allowlist-secret  # throwaway, same as POSTGRES_PASSWORD above
       PGDATABASE: postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         # No apt step, and that is the point of the pool's runner image: it carries
         # postgresql-client-18, pg_prove and libtap-parser-sourcehandler-pgtap-perl, so the matrix
         # used to pay an apt-get per job to install what was already present. Verified in
@@ -140,7 +148,7 @@ jobs:
       PGUSER: postgres
       PGDATABASE: postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Start Postgres and install extension
         run: |

@@ -193,6 +193,28 @@ hand-named destination, no glob, no shell quoting to get wrong. When copying by 
 - **A check at an ignored severity.** A `TODO` or `SKIP` records intent and verifies nothing, and is
   worse than no check because it reads as coverage.
 
+## Workflow policy
+
+Three rules every workflow in this repository follows, so a change to one file does not
+quietly break the posture the others keep:
+
+- **Actions are pinned to a commit SHA**, with the release in a trailing comment:
+  `actions/checkout@<40-hex> # v4.4.0`. A tag such as `@v4` is a moving reference: whoever
+  controls the upstream tag controls what runs in this repository, and the change lands
+  without a review here. To move it, resolve the tag yourself
+  (`git ls-remote https://github.com/actions/checkout refs/tags/v4`), replace the SHA, and
+  put the new version in the comment in the same commit, so the diff shows both.
+- **`permissions: contents: read` at the top of every workflow.** No job here writes to
+  the repository, creates a release, or needs a wider token. Stating it means a later
+  change cannot quietly widen it, and it stops a workflow inheriting whatever the
+  repository default happens to be.
+- **The Forgejo and GitHub copies are kept deliberately parallel.** They differ only in
+  `runs-on`, the job image note and the log-retention sentence. They are not kept in step
+  by a generator, because the point of the second copy is that the public repository
+  proves what the private one proves, and a generator is one more thing that can be
+  right while both copies are wrong. When you change one, change the other, and say in the
+  commit that you did.
+
 ## Releasing
 
 Every release is additive: a new full-version script plus an update path from the version
