@@ -1186,6 +1186,37 @@ if [ -f "$REFDOC" ]; then
     fi
 fi
 
+# A count written in prose is a claim like any other. pg_bloat_cause shipped "13 scenarios" in
+# three documents at once, all of them wrong, because `ls scenarios/s*.sh | wc -l` counts the
+# standby helpers alongside the scenarios. No document here states a scenario count today, so
+# this passes on the empty case and fails the first time one is written down wrong. The number
+# below is counted the way the scenarios are named, not the way a glob happens to match.
+step "every scenario count in prose is the count the scenarios directory holds"
+if [ -d scenarios ]; then
+  scen_count=$(ls scenarios/s[0-9]*_*.sql 2>/dev/null | wc -l | tr -d ' ')
+  # Reported per file and per line, because a bare list of wrong numbers is not enough to act on.
+  # grep -n prefixes the LINE NUMBER, not the claimed number, so the number is taken from the
+  # matched text itself: the first integer on the line that is followed by "scenarios".
+  scen_bad=""
+  for f in $DOCS_ALL; do
+    [ -f "$f" ] || continue
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      ln=${hit%%:*}
+      claim_n=$(printf '%s\n' "$hit" | grep -oE '[0-9]+ scenarios' | grep -oE '^[0-9]+' | head -1)
+      [ -n "$claim_n" ] || continue
+      [ "$claim_n" = "$scen_count" ] || scen_bad="$scen_bad $f:$ln($claim_n)"
+    done < <(grep -nE '\b[0-9]+ scenarios\b' "$f" 2>/dev/null)
+  done
+  if [ -z "$scen_bad" ]; then
+    ok "no document states a scenario count, or every one of them is $scen_count"
+  else
+    bad "scenarios/ holds $scen_count scenarios, but the docs claim a different number at:$scen_bad"
+  fi
+else
+  ok "no scenarios/ directory, so there is no scenario count to check"
+fi
+
 step "house style"
 # Neither character can appear literally in this file, or the check below would always
 # flag itself. They are built from their UTF-8 bytes, not with printf '\u2014': printf only

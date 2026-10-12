@@ -258,8 +258,8 @@ installation therefore never has to reinstall to get a fix.
    ```
 
    `--tags` pushes **every** tag in the local repository, not the one you just made. This repository
-   holds 33 tags, 16 of them the `v0.*` releases, and those 16 are deliberately kept on Forgejo and
-   never published: Forgejo is a private instance and is where the pre-1.0 history lives, while
+   holds every tag it has ever made, and 16 of them are the `v0.*` releases, deliberately kept on
+   Forgejo and never published: Forgejo is a private instance and is where the pre-1.0 history lives, while
    GitHub is the public face and carries `main` plus the release tags only. One `git push --tags` at
    the next release would publish all 16 to GitHub, and nothing in the output would look wrong.
 
