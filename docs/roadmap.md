@@ -52,39 +52,33 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 7. **[open, a small decision] `scripts/check-ci-github.sh`**: it is in `main` (7a80420), read run
    38068022236 correctly, and defaults to api.github.com with no host of its own; decide whether it
    stays a contributor script or moves to the umbrella.
-8. **[to redraft for 1.1.15] Release notes**, first drafted for 1.1.13, drafted from CHANGELOG.md's entry for a GitHub Release,
-   saying plainly that v1.1.11 cannot be `make install`ed and is kept as a tag for the record.
+8. **[done 2026-10-12, by Piotr] Release notes**, drafted from CHANGELOG.md's entry and published as
+   GitHub Releases for v1.1.15 and v1.1.16. The v1.1.15 notes say plainly that v1.1.11 cannot be
+   `make install`ed and is kept as a tag for the record.
 
 **The outward steps, in this order, each [Piotr]**
 
-9. **Tags to GitHub. Superseded 2026-10-11: two tags, not seventeen.** The earlier proposal here was
-   `v1.0.0` to `v1.1.13`. It is withdrawn.
+9. **[done 2026-10-12, by Piotr] Tags to GitHub: `v1.1.15` and `v1.1.16`, and nothing else.** The
+   earlier proposal here was `v1.0.0` to `v1.1.13`; it is withdrawn. Every local tag points at a
+   commit already reachable from `github/main`, checked rather than assumed. Pushing them uploads no
+   history that is not already on GitHub, so a tag adds a name and nothing else. What the seventeen
+   would have cost is real: `on: push` has no branch filter, so every tag push triggers CI on both
+   platforms, the Forgejo pool runs at capacity 1 so those runs serialise, and each one uses the
+   workflows as they were at that old tag, which is why several would go red.
 
-   Every one of the 33 local tags points at a commit already reachable from `github/main`, checked
-   rather than assumed. Pushing them uploads no history that is not already on GitHub, so a tag adds
-   a name and nothing else: `git log`, `git blame` and `git bisect` are unaffected either way. What
-   the seventeen would have cost is real, though. `on: push` has no branch filter, so every tag push
-   triggers CI on both platforms, the Forgejo pool runs at capacity 1 so those runs serialise, and
-   each one uses the workflows as they were at that old tag, which is why several would go red.
-
-   Now: **`v1.1.13` and `v1.1.14`**, named one at a time and never with `--tags`. `v1.1.14` is the
-   release; `v1.1.13` is the one before it, so its release notes have a diff to point at. Forgejo
-   keeps all 33, including the 16 `v0.*` that never go to GitHub: Forgejo is the archive, GitHub is
-   the public release line. Someone wanting `v1.0.0` from a GitHub clone uses the hash or fetches
-   from Forgejo.
-   **2026-10-11: 1.1.15 now exists**, fixing three defects found by a review of 1.1.14, one of
-   which put the wrong application name in alert payloads. Which tags go to GitHub (`v1.1.14` as
-   well, or `v1.1.13` and `v1.1.15`) is **[Piotr]**'s; nothing is tagged yet.
-10. **The GitHub Release for the newest tag**, from item 8's notes.
+   **What is actually on GitHub: `v1.1.15` and `v1.1.16`**, named one at a time and never with
+   `--tags`, each read green on both platforms before the next. The intermediate `v1.1.13` and
+   `v1.1.14` never went to GitHub: they were superseded before the flip. Forgejo keeps every tag,
+   including the `v0.*` ones: Forgejo is the archive, GitHub is the public release line. Someone
+   wanting an old version from a GitHub clone uses the hash or fetches from Forgejo.
+10. **[done 2026-10-12, by Piotr] The GitHub Release for each public tag**, from item 8's notes:
+    v1.1.15 and v1.1.16 are both published and marked latest.
 11. **[done 2026-10-11, by Piotr, in all four repositories] Description and topics**, for example "Lock trees, blocking history and alerts for
     PostgreSQL, in pure SQL" and `postgresql`, `postgresql-extension`, `locking`, `monitoring`.
 
-    **Blocked 2026-10-11 on a token scope, not on a decision.** All four repositories answer `403
-    Resource not accessible by personal access token` to a metadata `PATCH`, and the same for the
-    branch protection API. Reads answer 200 and git push works, so the token has contents:write and
-    not Administration:write. Granting that one permission unblocks this item, item 13, and enabling
-    private vulnerability reporting after the repository is public. Drafts are ready: descriptions
-    and topics for all four are written and waiting.
+    **Unblocked 2026-10-12:** the token gained the permissions it was missing, descriptions and
+    topics are set on all four and read back, and repository-settings `PATCH` now answers 200.
+    This also unblocks item 13 and, once the repository is public, private vulnerability reporting.
 12. **Visibility.** Flipping to public is Piotr's, in the GitHub settings. It is the step that cannot
     be taken back in practice: a public repository is cloned, forked and cached within hours.
 13. **Branch protection and required checks** on `main`, the lint, pgtap matrix and install-path jobs.

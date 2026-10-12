@@ -50,8 +50,13 @@ ahead of the last tag:
 
 ```bash
 git tag --sort=v:refname    # every release, oldest first; CHANGELOG.md has what each one did
-git checkout v1.1.13        # or: git checkout main for whatever is newest
+git checkout v1.1.16        # or: git checkout main for whatever is newest
 ```
+
+The tag to check out is the current release, v1.1.16. Every release tag from v1.1.15 onward
+exists on GitHub, which is where a public clone comes from; the v0.* and early v1.1.x tags
+exist only on the author's Forgejo, so `git checkout` for one of those will not resolve on a
+public clone. `main` always works and is at or ahead of the newest tag.
 
 ## Install
 

@@ -19,7 +19,7 @@ seen to fail is not evidence that it can.
 - [ ] `make lint` passes
 - [ ] the tests pass on 14 and 18
 - [ ] if a file was hand-copied into a container, the `md5sum` of the destination was compared with the
-      source, per [CONTRIBUTING.md](CONTRIBUTING.md#proving-a-check-fails)
+      source, per [CONTRIBUTING.md](https://github.com/apjapj/pg_lock_tree/blob/main/CONTRIBUTING.md#proving-a-check-fails)
 - [ ] if this changes user-visible text, `CHANGELOG.md` has an entry and the version was incremented
 
 <!--
