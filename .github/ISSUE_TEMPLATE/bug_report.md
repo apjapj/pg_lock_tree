@@ -1,3 +1,14 @@
+---
+name: Bug report
+about: Something here does not do what the documentation says it does
+title: ''
+labels: ''
+# `labels` is empty because the labels this repository uses are created in GitHub's
+# settings rather than in the repository, and this file must not name a label that
+# does not exist. Checked 2026-10-12: without this front matter GitHub did not
+# register the file as a template at all, so the chooser offered nothing but a blank
+# issue.
+---
 # Bug report
 
 <!--

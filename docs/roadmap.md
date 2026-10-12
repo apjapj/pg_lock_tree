@@ -53,6 +53,17 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 
    Written for pg_lock_tree, pg_bloat_cause and pg_limit_runway, each asking for its own text
    function. pg_incident_watch has none: it ships no extension, so there is no version to report.
+
+   **Corrected 2026-10-12, because this item overclaimed.** When it was written only
+   pg_lock_tree had a PR template, and only pg_lock_tree had a CONTRIBUTING.md, so "and
+   CONTRIBUTING.md's md5 copy rule linked from the PR template" was true of one repository
+   and implied true of three. pg_bloat_cause and pg_limit_runway now have both, each
+   written against its own make targets and its own test counts rather than copied, and
+   pg_incident_watch has a CONTRIBUTING and a bug report template of its own, the latter
+   asking what is wrong rather than for a version. The templates also gained the YAML
+   front matter GitHub needs before it registers a file as a template at all: without it
+   the chooser offered nothing but a blank issue, on every repository, and nothing in CI
+   could see it.
 7. **[open, a small decision] `scripts/check-ci-github.sh`**: it is in `main` (7a80420), read run
    38068022236 correctly, and defaults to api.github.com with no host of its own; decide whether it
    stays a contributor script or moves to the umbrella.
