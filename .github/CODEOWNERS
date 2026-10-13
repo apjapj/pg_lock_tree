@@ -1,0 +1,23 @@
+# CODEOWNERS: pg_lock_tree reviews itself, on every pull request.
+#
+# This is here for one reason. All four repositories in this family are protected by a ruleset
+# that requires one approving review, and they have a single author, so the author can never be
+# the reviewer. Without this file, that approval has to be requested by hand on every pull
+# request, which is a thing that gets forgotten until the merge is blocked.
+#
+# Naming a code owner here makes GitHub request that review automatically when a pull request
+# touches anything, so the request is not a step anyone has to remember.
+#
+# It names one person, not a team, because there is one reviewer. That is a fact about the
+# project today and not a design choice. When a second reviewer exists, this file is the place
+# to record it, and the ruleset's required_approving_review_count is the place to make the
+# request match.
+#
+# what is holding a lock, and what releases it, so a review here should read with that in mind: the question is whether the change
+# tells the truth about the thing it reports, not whether the SQL is tidy.
+#
+# Ownership is deliberately * everywhere, including the release scripts. The release scripts
+# are what a user runs against a live cluster, so they are the highest-risk files in the
+# repository and they deserve the review rather than being excluded from it.
+
+* @mcadamiak
