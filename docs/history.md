@@ -631,7 +631,7 @@ that is a decision, not a routine step. The figures are in
 
 ## Backups
 
-None of the three tables is registered for `pg_dump`, and that is a decision rather than an
+None of the four tables is registered for `pg_dump`, and that is a decision rather than an
 oversight, with the reasoning and the opt-in in
 [INSTALL.md](../INSTALL.md#backups-and-restores). The short version: a **physical** backup, a base
 backup, a snapshot and a replica all copy the history whatever is registered, so redaction above is

@@ -614,15 +614,21 @@ The extension lives **inside each database**, so:
 
 ## Backups and restores
 
-**None of the three tables is registered with `pg_dump`, and that is a decision rather than an
+**None of the four tables is registered with `pg_dump`, and that is a decision rather than an
 oversight.** It is pinned by a test, so nobody has to take this paragraph's word for it, and
 `scripts/check-upgrade.sh` re-checks it on every upgrade path.
 
 | Table | In a `pg_dump`? | Why not |
 |---|---|---|
 | `lock_tree_history` | No | It grows without bound and holds query text. A restore usually lands on a different server, where its pids and timestamps describe nothing that ever happened there. |
+| `lock_tree_history_archive` | No | The same rows as `lock_tree_history`, after they were moved out of it by `lock_tree_archive()`, so the same reasons apply: it holds query text where a physical backup already carries it whatever this setting says, and its pids and timestamps describe a server the restore does not land on. It is the only one of the four where a case could be made for carrying it, since historical rows are what an archive is for, and the answer is still no: the supported way to move history off a cluster is `COPY` to a file, below, which does not depend on where the table lives. |
 | `lock_tree_alert` | No | Hysteresis state, keyed to roots that existed on the source server. Restored onto a new one it would suppress the first real alert there. |
 | `lock_tree_deadlock` | No | A counter baseline from the source. On the target `pg_stat_database.deadlocks` starts again from zero, so the first sample would record a `counter_reset` and the history would read as a gap. |
+
+The four are listed rather than the three that were listed before 1.1.6 added the archive. The test
+that pins this reads `pg_extension.extconfig` and resolves what it finds against `pg_class`, matching
+every relation named `lock_tree%`, so it has covered the archive since the release that added it. The
+list is for the reader, who would otherwise look for the archive and not find it stated either way.
 
 **What this does not protect you from, and the thing worth being clear about.** A physical backup, a
 base backup, a filesystem snapshot and a streaming replica all copy `lock_tree_history` whatever this
