@@ -109,7 +109,7 @@ does not recognise, and this is the one place where that is a requirement rather
 
 ### Also not a promise
 
-- **The three tables are not registered for `pg_dump`.** That is a decision with reasons in
+- **The four tables are not registered for `pg_dump`.** That is a decision with reasons in
   [Backups and restores](../INSTALL.md#backups-and-restores), pinned by a test, and a future release may
   register them behind a documented option. `lock_tree_history_archive` is a fourth, kept out on the
   same reasoning: it describes pids and timestamps that mean nothing on the server a restore lands on.

@@ -50,7 +50,7 @@ SELECT plan(10);
 --
 -- The decision, pinned so it cannot change silently and so nobody has to take INSTALL.md's word for
 -- it. Extension tables are not dumped unless registered with pg_extension_config_dump, and none of
--- the three are.
+-- the four are.
 --
 -- The reason this belongs in the permissions file: it is a statement about what leaves the database,
 -- which is the same question as what a role can read out of it. check-upgrade.sh also carries the
@@ -75,7 +75,7 @@ SELECT coalesce(bool_or(extconfig IS NULL), true)::int AS none_registered
   FROM pg_extension WHERE extname = 'pg_lock_tree' \gset
 -- The registration lives in one place only: the extconfig oid[] column of pg_extension. Unnesting
 -- it and resolving each oid is the honest version of the check, and it catches a registration of any
--- of the three tables rather than only the one named.
+-- of the four tables rather than only the one named.
 --
 -- Two things got this wrong first, and both are the kind of error a plausible name invites.
 -- pg_extension_config_dump is a FUNCTION that registers a table, not a relation to read, so
