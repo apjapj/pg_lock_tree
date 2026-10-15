@@ -34,7 +34,7 @@ prove:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
+.PHONY: install install-upgrades prove demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -60,6 +60,13 @@ scenarios:
 lint-docs:
 	./scripts/lint-docs.sh
 
+# A document that states the PostgreSQL range the matrix covers must state the range
+# .github/workflows/test.yml declares. Ported from pg_bloat_cause, where the README claimed a
+# range that CI did not run and no gate read the prose. Pure text, no server. CHANGELOG.md is
+# deliberately out of scope; see the script's header for why.
+lint-matrix:
+	./scripts/check-pg-matrix-claims.sh
+
 # Write the documentation examples that are captured rather than written, and apply the mask that
 # makes two runs comparable. Needs a server with the extension installed, so it is not part of
 # 'make lint': run it after changing anything that prints, and commit what it writes.
@@ -68,7 +75,7 @@ capture:
 
 # The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
 # since they need a live PostgreSQL with the extension installed.
-lint: lint-docs
+lint: lint-docs lint-matrix
 	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
 
 # Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read, and explain what
