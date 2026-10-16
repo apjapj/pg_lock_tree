@@ -82,8 +82,11 @@ capture:
 
 # The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
 # since they need a live PostgreSQL with the extension installed.
-lint: lint-docs lint-matrix
-	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
+lint:
+	# Every database-free check, in one script. Not `lint: lint-docs lint-matrix`: the Makefile needs
+	# pgxs.mk to parse, and the two CI jobs ran lint-docs alone, so check-pg-matrix-claims.sh never ran
+	# in CI. scripts/lint.sh needs no PostgreSQL toolchain.
+	./scripts/lint.sh
 
 # Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read, and explain what
 # one means. A script rather than a pgTAP file because psql prints notifications to stdout and a
