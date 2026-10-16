@@ -1,0 +1,13 @@
+id=duration-waiter-bound
+class=plan
+found=the review behind 1.1.5, 2026-10-07
+fixed=1.1.5
+test=test/19_index_usage.sql
+detail=lock_tree_duration() and lock_tree_duration_by_application() bounded only the root side of
+       their root-to-waiter join. PostgreSQL does not carry the root's sampled_at bound across the
+       equality w.sampled_at = r.sampled_at, so the waiter side stayed inside the window only when
+       the planner happened to pick a nested loop: on PG18 with a 90-day fixture by_application()
+       read 14,774,419 waiter rows to answer a 7-day question. 1.1.5 stated the bound on the waiter
+       side, which cannot change which rows match. The result is identical either way, so the
+       catcher is test/19, which reads each function's source out of the catalog and requires the
+       bound in both.

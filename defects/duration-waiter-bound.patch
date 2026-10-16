@@ -1,0 +1,48 @@
+--- a/pg_lock_tree--1.1.16.sql
++++ b/pg_lock_tree--1.1.16.sql
+@@ -3186,22 +3186,6 @@
+      -- not an expectation. test/19's fixture is built from depth values directly and is what caught
+      -- it.
+      AND w.depth > 0
+-    -- 1.1.5: the waiter side is bounded explicitly. PostgreSQL does not carry a >= bound on
+-    -- r.sampled_at across the equality w.sampled_at = r.sampled_at, so before this the waiter
+-    -- side stayed inside the window only if the planner happened to pick a nested loop and probe
+-    -- it. That is a property of the chosen join, not of the SQL, and it varied with version and
+-    -- fixture: on PG18 with a 90-day fixture this function read 14,774,419 waiter rows for a
+-    -- 7-day question, and on PG14 with a 30-day one it read 4,924,819, both with only a Filter and
+-    -- no index bound. lock_tree_duration() has the same join and got a nested loop on both, so it
+-    -- read 19 rows per probe, which is why the two disagreed despite identical SQL.
+-    --
+-    -- It cannot change which rows match: w.sampled_at = r.sampled_at and r.sampled_at is already
+-    -- bounded, so an unbounded w can only change how much has to be read. Stating the bound makes
+-    -- the bounded plan the only one available, rather than leaving the cost to the planner.
+-    -- Applied to lock_tree_duration() as well, whose plan is fast today and need not stay that way: on PG14 with
+-    -- broken statistics it degraded to a sequential scan over every waiter row, 7,917 ms against
+-    -- 2,806 ms with the bound.
+-    AND w.sampled_at >= statement_timestamp() - since
+     WHERE r.depth = 0
+       AND r.query_id IS NOT NULL
+ 
+@@ -3370,22 +3354,6 @@
+      -- not an expectation. test/19's fixture is built from depth values directly and is what caught
+      -- it.
+      AND w.depth > 0
+-    -- 1.1.5: the waiter side is bounded explicitly. PostgreSQL does not carry a >= bound on
+-    -- r.sampled_at across the equality w.sampled_at = r.sampled_at, so before this the waiter
+-    -- side stayed inside the window only if the planner happened to pick a nested loop and probe
+-    -- it. That is a property of the chosen join, not of the SQL, and it varied with version and
+-    -- fixture: on PG18 with a 90-day fixture this function read 14,774,419 waiter rows for a
+-    -- 7-day question, and on PG14 with a 30-day one it read 4,924,819, both with only a Filter and
+-    -- no index bound. lock_tree_duration() has the same join and got a nested loop on both, so it
+-    -- read 19 rows per probe, which is why the two disagreed despite identical SQL.
+-    --
+-    -- It cannot change which rows match: w.sampled_at = r.sampled_at and r.sampled_at is already
+-    -- bounded, so an unbounded w can only change how much has to be read. Stating the bound makes
+-    -- the bounded plan the only one available, rather than leaving the cost to the planner.
+-    -- Applied to lock_tree_duration_by_application() as well, whose plan is fast today and need not stay that way: on PG14 with
+-    -- broken statistics it degraded to a sequential scan over every waiter row, 7,917 ms against
+-    -- 2,806 ms with the bound.
+-    AND w.sampled_at >= statement_timestamp() - since
+     WHERE r.depth = 0
+       AND r.application_name IS NOT NULL
+ 
