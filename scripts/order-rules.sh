@@ -1,5 +1,6 @@
 # vendored from pg-dev-infra harness/order-rules.sh; do not edit here.
 # Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
+# vendored-from: pg-dev-infra@5310af5
 # vendored-sha256: 96b9630e8e96fc4e2fa4e7b4cdd419f73136f2ce553a170aa6dfd8058916cba1
 # order-rules.sh: the two order rules, so their logic exists once. This file is the source; each
 # repository vendors a copy into its scripts/ (see pg-dev-infra scripts/vendor-harness.sh) and

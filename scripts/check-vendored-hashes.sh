@@ -1,5 +1,6 @@
 # vendored from pg-dev-infra harness/check-vendored-hashes.sh; do not edit here.
 # Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
+# vendored-from: pg-dev-infra@5310af5
 # vendored-sha256: 93ba35d6183fd32db9074c06cc3e243842d911f92b0e0d7714bdb4c488b98abb
 # check-vendored-hashes.sh: every vendored harness file in this repository must match the sha256 in
 # its own header. The canonical lives in the private pg-dev-infra, which this repository's public CI
