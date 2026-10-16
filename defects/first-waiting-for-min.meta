@@ -1,0 +1,10 @@
+id=first-waiting-for-min
+class=derivation
+found=the review behind 1.1.16, 2026-10-11
+fixed=1.1.16
+test=test/25_first_waiting_for.sql
+detail=lock_tree_wide().first_waiting_for was min(waiting_for), the alphabetically least lock
+       description, which is "first" only when every waiter in the tree wants the same lock. It is
+       now the lock the longest-waiting session wants. test/25 builds one root whose older waiter
+       queues on the table that sorts last, so the reverted min() picks the wrong lock and the file
+       fails.
