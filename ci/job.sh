@@ -21,6 +21,20 @@ set -uo pipefail
 
 v=${1:?usage: ci/job.sh <postgres major version>}
 cd "$(dirname "$0")/.."
+
+# Preflight. This job needs the docker CLI and a daemon that answers before it can start a server;
+# a daemon that is not there fails later inside ci/server.sh as "failed to connect to the docker
+# API", which names neither cause nor fix.
+if ! command -v docker >/dev/null 2>&1; then
+    echo "ci/job.sh: the docker CLI is not on PATH" >&2
+    exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "ci/job.sh: the docker daemon is not answering${DOCKER_HOST:+ (DOCKER_HOST=$DOCKER_HOST)}" >&2
+    echo "           start it, or point DOCKER_HOST at a reachable daemon; this job needs it" >&2
+    exit 1
+fi
+
 # Numerically, not by concatenation: 55$19beta4 is 5519beta4, which docker rejects as a host port with
 # an error that reads like a malformed number rather than a beta suffix. Stripping the non-digits gives
 # 5519 for the tag 19beta4, which is what the port means.

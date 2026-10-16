@@ -26,15 +26,22 @@ install-upgrades:
 # Run the pgTAP suite against an already-installed extension.
 # Override connection with standard libpq env vars (PGHOST, PGPORT, PGUSER, PGPASSWORD).
 TESTDB ?= postgres
+PG ?= 18
 prove:
 	pg_prove --dbname $(TESTDB) test/*.sql
+
+# Re-inject the recorded defects (defects/): the control must pass on the clean release script and
+# the test must fail on the patched one. Needs Docker and a server, so it is its own target, not
+# part of `make lint`.
+defects:
+	./scripts/check-defects.sh $(PG)
 
 
 # Every target here is procedural: none of them produces a file of its own name, so all of them are
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
+.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -75,8 +82,11 @@ capture:
 
 # The checks that need no server. Safe as a pre-commit gate; `prove` and `demo` are not,
 # since they need a live PostgreSQL with the extension installed.
-lint: lint-docs lint-matrix
-	@echo "run 'make prove' and 'make scenarios' against a server for the rest"
+lint:
+	# Every database-free check, in one script. Not `lint: lint-docs lint-matrix`: the Makefile needs
+	# pgxs.mk to parse, and the two CI jobs ran lint-docs alone, so check-pg-matrix-claims.sh never ran
+	# in CI. scripts/lint.sh needs no PostgreSQL toolchain.
+	./scripts/lint.sh
 
 # Prove that lock_tree_notify() actually delivers a NOTIFY a listener can read, and explain what
 # one means. A script rather than a pgTAP file because psql prints notifications to stdout and a

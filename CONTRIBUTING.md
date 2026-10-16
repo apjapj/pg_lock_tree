@@ -21,6 +21,7 @@ make check-deadlock DEADLOCK_TIMEOUT=15s   # same, with s6's timeout: proves the
 make bench-history      # time the read side against a synthetic 1.2M row history (truncates it and the archive)
 make check-upgrade      # every upgrade path ends in the same objects as a fresh install, plus the 1.1.8 dependents refusal
 make check-schema       # install into a private schema, then use it from a caller that cannot see it
+make defects            # re-inject every recorded defect (defects/); the test must fail on each
 make explain-alert PAYLOAD='…'   # explain a payload you already have, no database needed
 
 scripts/matrix.sh       # install + CREATE EXTENSION + tests on PG 14 to 19 in the docker matrix
@@ -165,6 +166,11 @@ The trap this replaces: an earlier attempt planted the defect, skipped the reins
 pass, and recorded that the check's non-vacuity was unproved. It was not unproved; the catalog had
 never changed. Every negative check in this repository needs all four steps, and "the test passed" is
 only evidence once step 2 has actually happened.
+
+A recorded defect is that plant kept permanently. `defects/` holds each one as the reverse of its fix,
+and `make defects` loads the clean release script and the patched one into two fresh servers and
+requires the test to pass on the first and fail on the second, then reports a regression rate, so a
+fix a later change stops catching is red rather than forgotten. See `defects/README.md`.
 
 **Copying a file into a test container by hand: check the copy landed.** A copy that silently does
 nothing means the next check reports a result about code that is not installed, and that is how two
