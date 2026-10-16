@@ -28,4 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Documentation and style checks
-        run: ./scripts/lint.sh
+        run: |
+          # node:20-bookworm carries python3 but not PyYAML, and scripts/lint.sh now runs
+          # check-ci-parity.sh, which parses the workflow files with it. The GitHub copy's runner has
+          # it. This is the one apt step here; the pool's image carries everything else.
+          apt-get update -q
+          apt-get install -y -q --no-install-recommends python3-yaml
+          ./scripts/lint.sh

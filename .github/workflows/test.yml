@@ -223,3 +223,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Documentation, objects, paths, links, anchors, test table
         run: ./scripts/lint.sh
+
+  # One command, the same in the Forgejo copy: check-defects.sh picks container mode here (Docker is
+  # on this runner) and local mode on the Forgejo copy (its job has no Docker socket, so it uses the
+  # postgres service). scripts/check-ci-parity.sh holds the two to it.
+  defects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: make defects PG=18

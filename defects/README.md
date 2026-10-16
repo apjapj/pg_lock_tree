@@ -32,9 +32,17 @@ make defects PG=18        # or ./scripts/check-defects.sh 18
 ```
 
 There is no extension to install: `ci/job.sh` loads the release script straight into a server, so a
-cell is two fresh servers. The first loads the pristine script and the test must **pass** (the
-control); the second loads the patched script and the test must **fail**. Two servers, not two
-loads, because the release script uses plain `CREATE` and cannot be loaded twice.
+cell is the pristine script and the patched one, each in a **fresh state**, because the release script
+uses plain `CREATE` and cannot be loaded twice. The pristine load must **pass** the test (the control);
+the patched load must **fail**.
+
+Two modes, one command: `make defects PG=18` picks by whether the docker CLI and daemon are there.
+**container** starts a throwaway server per load (`ci/server.sh`); the GitHub job uses it. **local**
+uses the server already here, and takes a fresh state as a scratch DATABASE per load, created and
+dropped around the load; the Forgejo job uses it, its container having no Docker socket and talking to
+the `postgres` service. The scratch database has a unique name, a trap drops it, and the drop uses
+`WITH (FORCE)`; the catching test creates no cluster-wide object, which is what makes the drop
+complete.
 
 The summary is `caught/(caught + missed)`; a `could-not-run` cell (the control failed, the patch did
 not apply, or the test did not report a failing assertion) is reported and is never counted as

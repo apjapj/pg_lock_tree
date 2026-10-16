@@ -25,6 +25,15 @@ step "the documentation's claims"
 # A document that states the PostgreSQL range the matrix covers must state the range CI declares.
 step "the stated PostgreSQL range"
 ./scripts/check-pg-matrix-claims.sh
+# The two CI copies define the same jobs and run the same command for the ones they share. Vendored
+# from pg-dev-infra; run with bash, it has no shebang. Which files hold the jobs is in
+# scripts/ci-parity-paths, this repository splitting them across test.yml and lint.yml.
+step "the two CI copies agree"
+bash ./scripts/check-ci-parity.sh
+# Every vendored harness copy still matches the sha256 in its own header. The canonical is private,
+# so this is the in-repo half of the sync. Vendored from pg-dev-infra; run with bash.
+step "the vendored harness matches its headers"
+bash ./scripts/check-vendored-hashes.sh
 
 echo
 echo "run 'make prove' and 'make scenarios' against a server for the rest"

@@ -202,3 +202,30 @@ jobs:
           else printf '    FAIL demo.sql\n'; fail=1; fi
 
           exit $fail
+
+  # The same command as the GitHub copy runs. This job container has no Docker socket, so
+  # check-defects.sh runs --local against the postgres service: a scratch DATABASE per run, the release
+  # script loaded into it, dropped with FORCE. The pg-test image carries the max_prepared_transactions
+  # and pg_cron settings a scratch database inherits. See defects/README.md.
+  defects:
+    runs-on: babar-pg
+    services:
+      postgres:
+        image: ${{ vars.PG_TEST_REGISTRY }}/pg-test:18
+        env:
+          POSTGRES_PASSWORD: test # pragma: allowlist-secret
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: test # pragma: allowlist-secret
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Wait for Postgres
+        run: until pg_isready -q; do sleep 1; done
+      - run: make defects PG=18
