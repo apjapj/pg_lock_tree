@@ -1,0 +1,12 @@
+id=resolve-reblock
+class=state
+found=the review behind 1.1.16, 2026-10-11
+fixed=1.1.16
+test=test/26_resolve_reblock.sql
+detail=lock_tree_notify_resolved() read the live tree twice: a SELECT chose what to report cleared
+       and a separate DELETE chose what to forget. A root that started blocking again between the
+       two was reported cleared and its alert row was kept, so the next lock_tree_notify() treated
+       it as already alerted and sent nothing for an incident still under way. test/26
+       re-establishes the incident from a shadowed pg_notify while the resolver is between the two
+       statements; the one-statement DELETE ... RETURNING forgets the row exactly when it reports
+       it, and the two-statement version keeps it.
