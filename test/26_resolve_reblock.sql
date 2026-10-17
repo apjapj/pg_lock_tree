@@ -13,14 +13,20 @@
 -- With the fix there is no second read - one DELETE ... RETURNING decides and forgets at once - so
 -- the trick changes nothing and the next lock_tree_notify() alerts again.
 --
--- The wait for the waiter to be blocked is a pg_locks poll, not a sleep: pg_stat_activity is read
--- once per statement and the resolver has already read it, while pg_locks is read live, so the test
--- exits as soon as the lock request is pending and a slower runner cannot outlast it. Verified 20
--- runs on each of PostgreSQL 14 to 18, and 20 more under full CPU load, with no flake.
+-- The wait for a waiter to be blocked is a pg_locks poll, not a sleep: pg_locks is read live, so the
+-- test exits as soon as the lock request is pending and a slower runner cannot outlast it. Verified
+-- 20 runs on each of PostgreSQL 14 to 18, and 20 more under full CPU load, with no flake.
 --
--- Every poll is bounded at 20s and **fails** when it expires, naming the waiter it never saw. A
--- poll that fell through on expiry would let a runner too slow to block the waiter carry on and
--- pass or fail for the wrong reason; there are three of them, and each raises rather than returns.
+-- Every poll is bounded at 20s and **fails** when it expires, naming the waiter it never saw. A poll
+-- that fell through on expiry would let a runner too slow to block the waiter carry on and pass or
+-- fail for the wrong reason; there are three of them, and each raises rather than returns.
+--
+-- The first poll used to read pg_stat_activity by application_name, and rarely saw one waiter while
+-- pg_locks showed both waiting: 4 failures in 500 runs (1 in 250 on PostgreSQL 14, 3 in 250 on 17),
+-- about 0.8%, which the silent fall-through above hid. pg_stat_activity is cached for the length of a
+-- transaction and a DO block is one transaction, so the poll could read the snapshot taken before the
+-- second waiter's application_name was set. That is a hypothesis; pg_locks is live either way. Counting
+-- pg_locks NOT granted, the same source the shadow poll uses, it is 0 failures in 500 runs after.
 --
 -- Needs superuser (dblink) and the dblink contrib module.
 \set ON_ERROR_STOP 1
@@ -57,16 +63,20 @@ DO $wait$
 DECLARE
   blocked int;
 BEGIN
+  -- pg_locks, not pg_stat_activity. A DO block runs as one transaction, and pg_stat_activity is
+  -- cached for the length of a transaction by default, so a poll inside it can keep reading the
+  -- snapshot taken when the block began: one waiter blocked and only one visible by
+  -- application_name, while pg_locks shows both. That is the hypothesis for the flake recorded in
+  -- the header; pg_locks is live either way, which is why it is the source.
   FOR i IN 1..200 LOOP
-    SELECT count(*) INTO blocked FROM pg_stat_activity
-     WHERE application_name IN ('rr_w1', 'rr_w2')
-       AND wait_event_type = 'Lock';
-    EXIT WHEN blocked = 2;
+    SELECT count(*) INTO blocked FROM pg_locks
+     WHERE relation = 'lock_tree_rr_x'::regclass AND NOT granted;
+    EXIT WHEN blocked >= 2;
     PERFORM pg_sleep(0.1);
   END LOOP;
-  IF blocked <> 2 THEN
-    RAISE EXCEPTION 'the waiters never blocked: rr_w1 and rr_w2 were not both waiting on '
-                    'lock_tree_rr_x after 20s (saw %). pg_locks: % | activity: %',
+  IF blocked < 2 THEN
+    RAISE EXCEPTION 'the waiters never blocked: fewer than two were waiting on lock_tree_rr_x after '
+                    '20s (saw %). pg_locks: % | activity: %',
       blocked,
       (SELECT coalesce(string_agg(format('%s/%s granted=%s pid=%s', locktype, mode, granted, pid),
                                   ' | ' ORDER BY pid), '(none)')
