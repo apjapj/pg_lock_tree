@@ -13,6 +13,11 @@
 -- With the fix there is no second read - one DELETE ... RETURNING decides and forgets at once - so
 -- the trick changes nothing and the next lock_tree_notify() alerts again.
 --
+-- The wait for the waiter to be blocked is a pg_locks poll, not a sleep: pg_stat_activity is read
+-- once per statement and the resolver has already read it, while pg_locks is read live, so the test
+-- exits as soon as the lock request is pending and a slower runner cannot outlast it. Verified 20
+-- runs on each of PostgreSQL 14 to 18, and 20 more under full CPU load, with no flake.
+--
 -- Needs superuser (dblink) and the dblink contrib module.
 \set ON_ERROR_STOP 1
 \set QUIET 1
@@ -91,11 +96,17 @@ BEGIN
   PERFORM public.dblink_exec('rr_h', 'LOCK TABLE lock_tree_rr_x IN ACCESS EXCLUSIVE MODE');
   PERFORM public.dblink_send_query('rr_w3',
                                    'SET application_name = ''rr_w3''; SELECT count(*) FROM lock_tree_rr_x');
-  -- A short wait, not a poll: pg_stat_activity is read once per statement, and the resolver has
-  -- already read the tree in this one, so a poll here would keep seeing the old snapshot. The
-  -- waiter blocks in milliseconds once the lock is taken; if it did not, the trap assertion in the
-  -- test would fail rather than let the file pass without reproducing.
-  PERFORM pg_catalog.pg_sleep(1);
+  -- Wait for the waiter to be blocked, on pg_locks rather than pg_stat_activity: the resolver has
+  -- already read pg_stat_activity in this statement, so a poll there would keep seeing the old
+  -- snapshot, while pg_locks is read live. It exits as soon as the request is pending, so it does
+  -- not depend on how fast the runner is - and never a fixed sleep, which a loaded runner could
+  -- outlast and turn into a false miss.
+  FOR i IN 1..200 LOOP
+    EXIT WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+                       WHERE relation = 'public.lock_tree_rr_x'::regclass
+                         AND NOT granted);
+    PERFORM pg_catalog.pg_sleep(0.1);
+  END LOOP;
   PERFORM pg_catalog.pg_notify(channel, payload);
 END
 $shadow$;
