@@ -18,6 +18,10 @@
 -- exits as soon as the lock request is pending and a slower runner cannot outlast it. Verified 20
 -- runs on each of PostgreSQL 14 to 18, and 20 more under full CPU load, with no flake.
 --
+-- Every poll is bounded at 20s and **fails** when it expires, naming the waiter it never saw. A
+-- poll that fell through on expiry would let a runner too slow to block the waiter carry on and
+-- pass or fail for the wrong reason; there are three of them, and each raises rather than returns.
+--
 -- Needs superuser (dblink) and the dblink contrib module.
 \set ON_ERROR_STOP 1
 \set QUIET 1
@@ -50,13 +54,20 @@ SELECT dblink_exec('rr_h', 'LOCK TABLE lock_tree_rr_x IN ACCESS EXCLUSIVE MODE')
 SELECT dblink_send_query('rr_w1', 'SET application_name = ''rr_w1''; SELECT count(*) FROM lock_tree_rr_x');
 SELECT dblink_send_query('rr_w2', 'SET application_name = ''rr_w2''; SELECT count(*) FROM lock_tree_rr_x');
 DO $wait$
+DECLARE
+  blocked int;
 BEGIN
   FOR i IN 1..200 LOOP
-    EXIT WHEN (SELECT count(*) FROM pg_stat_activity
-                 WHERE application_name IN ('rr_w1', 'rr_w2')
-                   AND wait_event_type = 'Lock') = 2;
+    SELECT count(*) INTO blocked FROM pg_stat_activity
+     WHERE application_name IN ('rr_w1', 'rr_w2')
+       AND wait_event_type = 'Lock';
+    EXIT WHEN blocked = 2;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF blocked <> 2 THEN
+    RAISE EXCEPTION 'the waiters never blocked: rr_w1 and rr_w2 were not both waiting on '
+                    'lock_tree_rr_x after 20s (saw %)', blocked;
+  END IF;
 END
 $wait$;
 
@@ -74,11 +85,18 @@ SELECT is(:onset::int, 1, 'the incident alerts once');
 \o /dev/null
 SELECT dblink_exec('rr_h', 'ROLLBACK');
 DO $drain$
+DECLARE
+  gone boolean := false;
 BEGIN
   FOR i IN 1..200 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree WHERE root_pid = (SELECT root_pid FROM rr_root));
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree WHERE root_pid = (SELECT root_pid FROM rr_root)) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE EXCEPTION 'the root never cleared: it was still in lock_tree after 20s, so the resolver '
+                    'had nothing to clear and the rest of this file proves nothing';
+  END IF;
 END
 $drain$;
 
@@ -91,6 +109,8 @@ CREATE FUNCTION lock_tree_rr_shadow.pg_notify(channel text, payload text)
 RETURNS void
 LANGUAGE plpgsql
 AS $shadow$
+DECLARE
+  blocked boolean := false;
 BEGIN
   PERFORM public.dblink_exec('rr_h', 'BEGIN');
   PERFORM public.dblink_exec('rr_h', 'LOCK TABLE lock_tree_rr_x IN ACCESS EXCLUSIVE MODE');
@@ -100,13 +120,18 @@ BEGIN
   -- already read pg_stat_activity in this statement, so a poll there would keep seeing the old
   -- snapshot, while pg_locks is read live. It exits as soon as the request is pending, so it does
   -- not depend on how fast the runner is - and never a fixed sleep, which a loaded runner could
-  -- outlast and turn into a false miss.
+  -- outlast and turn into a false miss. If it expires the request was never seen pending, and that
+  -- is a failed run, not a quiet one: the trap below cannot be sprung without it.
   FOR i IN 1..200 LOOP
-    EXIT WHEN EXISTS (SELECT 1 FROM pg_catalog.pg_locks
-                       WHERE relation = 'public.lock_tree_rr_x'::regclass
-                         AND NOT granted);
+    SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+                    WHERE relation = 'public.lock_tree_rr_x'::regclass
+                      AND NOT granted) INTO blocked;
+    EXIT WHEN blocked;
     PERFORM pg_catalog.pg_sleep(0.1);
   END LOOP;
+  IF NOT blocked THEN
+    RAISE EXCEPTION 'the waiter never blocked: rr_w3 was not waiting on lock_tree_rr_x after 20s';
+  END IF;
   PERFORM pg_catalog.pg_notify(channel, payload);
 END
 $shadow$;
