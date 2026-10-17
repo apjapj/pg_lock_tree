@@ -1,0 +1,13 @@
+id=hist-statements-sessions
+class=derivation
+found=the review behind 1.1.15, 2026-10-11
+fixed=1.1.15
+test=test/12_history_statements.sql
+detail=lock_tree_history_statements() aggregated over the rows carrying a query_id, which are
+       exactly the root rows, so blocked_sessions equalled the number of samples, deepest_chain was
+       0, and longest_wait was the root's own wait_age, NULL in a real sample since a root is not
+       waiting. On test/12's fixture a root with 5 waiters at each of 3 samples reported 3 blocked
+       sessions instead of 15. It now joins each root to its waiters at the same sample on root_pid
+       and root_object, with the sampled_at bound 1.1.5 added to the same join in
+       lock_tree_duration(). test/12 had asserted the old values as correct and now counts them
+       from its own fixture.

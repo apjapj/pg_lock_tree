@@ -1,0 +1,12 @@
+id=wide-appname
+class=identity
+found=the review behind 1.1.15, 2026-10-11
+fixed=1.1.15
+test=test/08_wide.sql
+detail=lock_tree_wide() reported max(application_name) over the whole tree, waiters included, so a
+       root running as nightly_batch with a waiter running as web was reported as web. That value
+       is the application_name in the alert payload and in lock_tree_alert, the key docs/alerting.md
+       tells a listener to route on, so a page went to the waiting application's team rather than
+       the blocking one whenever the waiter's name sorted after the root's. It is now the depth-0
+       row's own name, as the state column beside it already was, and test/08's waiters sort after
+       the root so the reverted max() picks the wrong name.
