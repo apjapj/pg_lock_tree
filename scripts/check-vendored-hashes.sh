@@ -1,7 +1,7 @@
 # vendored from pg-dev-infra harness/check-vendored-hashes.sh; do not edit here.
 # Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
-# vendored-from: pg-dev-infra@5310af5
-# vendored-sha256: 93ba35d6183fd32db9074c06cc3e243842d911f92b0e0d7714bdb4c488b98abb
+# vendored-from: pg-dev-infra@be60e58
+# vendored-sha256: 4173f3d412ceb8b9f6ad20137beee9066e07d7626ab808763cd38f33fc980fe7
 # check-vendored-hashes.sh: every vendored harness file in this repository must match the sha256 in
 # its own header. The canonical lives in the private pg-dev-infra, which this repository's public CI
 # cannot reach, so this is the in-repo half of the sync: a hand edit to a vendored file turns this red
@@ -11,7 +11,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 bad=""
-for f in scripts/order-rules.sh scripts/check-ci-parity.sh scripts/check-vendored-hashes.sh; do
+for f in scripts/order-rules.sh scripts/check-ci-parity.sh scripts/check-vendored-hashes.sh scripts/docker-guard.sh; do
     [ -e "$f" ] || continue
     declared=$(sed -n 's/^# vendored-sha256: //p' "$f" | head -1)
     if [ -z "$declared" ]; then bad="$bad $f(no hash in header)"; continue; fi

@@ -80,6 +80,14 @@ export PGHOST=127.0.0.1 PGPORT="$port" PGUSER=postgres PGPASSWORD=test PGDATABAS
 step "pgTAP"
 pg_prove --dbname postgres test/*.sql || fail=1
 
+
+step "docker footprint"
+# The smoke alarm for the anonymous-volume leak the removal paths fix at source: a host that
+# accumulates dangling volumes fails here rather than filling its disk. Deletes nothing.
+scripts/docker-guard.sh check || fail=1
+
 printf '\n== pg_lock_tree %s on PostgreSQL %s: %s\n' \
   "$(git rev-parse --short HEAD)" "$v" "$([ $fail -eq 0 ] && echo PASS || echo FAIL)"
+
+
 exit $fail
