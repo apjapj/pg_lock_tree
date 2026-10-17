@@ -66,7 +66,15 @@ BEGIN
   END LOOP;
   IF blocked <> 2 THEN
     RAISE EXCEPTION 'the waiters never blocked: rr_w1 and rr_w2 were not both waiting on '
-                    'lock_tree_rr_x after 20s (saw %)', blocked;
+                    'lock_tree_rr_x after 20s (saw %). pg_locks: % | activity: %',
+      blocked,
+      (SELECT coalesce(string_agg(format('%s/%s granted=%s pid=%s', locktype, mode, granted, pid),
+                                  ' | ' ORDER BY pid), '(none)')
+         FROM pg_locks WHERE relation = 'lock_tree_rr_x'::regclass),
+      (SELECT coalesce(string_agg(format('%s state=%s wait=%s/%s', application_name, state,
+                                        wait_event_type, wait_event), ' | ' ORDER BY application_name),
+                       '(none)')
+         FROM pg_stat_activity WHERE application_name IN ('rr_holder', 'rr_w1', 'rr_w2'));
   END IF;
 END
 $wait$;
@@ -95,7 +103,8 @@ BEGIN
   END LOOP;
   IF NOT gone THEN
     RAISE EXCEPTION 'the root never cleared: it was still in lock_tree after 20s, so the resolver '
-                    'had nothing to clear and the rest of this file proves nothing';
+                    'had nothing to clear and the rest of this file proves nothing. rows for the '
+                    'root: %', (SELECT count(*) FROM lock_tree WHERE root_pid = (SELECT root_pid FROM rr_root));
   END IF;
 END
 $drain$;
@@ -130,7 +139,11 @@ BEGIN
     PERFORM pg_catalog.pg_sleep(0.1);
   END LOOP;
   IF NOT blocked THEN
-    RAISE EXCEPTION 'the waiter never blocked: rr_w3 was not waiting on lock_tree_rr_x after 20s';
+    RAISE EXCEPTION 'the waiter never blocked: rr_w3 was not waiting on lock_tree_rr_x after 20s. '
+                    'pg_locks: %',
+      (SELECT coalesce(string_agg(format('%s/%s granted=%s pid=%s', locktype, mode, granted, pid),
+                                  ' | ' ORDER BY pid), '(none)')
+         FROM pg_catalog.pg_locks WHERE relation = 'public.lock_tree_rr_x'::regclass);
   END IF;
   PERFORM pg_catalog.pg_notify(channel, payload);
 END
