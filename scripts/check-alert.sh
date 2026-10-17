@@ -227,9 +227,15 @@ if [ "$mode" = "--explain" ]; then
     # No payload supplied: build an incident below and explain what arrives.
 fi
 
-if ! psql -X -tAc "SELECT 1 FROM pg_extension WHERE extname='pg_lock_tree'" 2>/dev/null | grep -q 1; then
-    echo "  pg_lock_tree is not installed in this database" >&2
-    exit 1
+# 3, not 1: a script that cannot reach a server or find the extension has not run, and a caller
+# recording this as a defect check must be able to tell that from a real failure. The defect
+# harness records a cell with this script as its command, and reads 3 as could-not-run. Either the
+# extension is installed, or the release script was loaded straight into the schema, which is how
+# the harness and the pgTAP matrix use it, so a loaded script counts as present.
+if ! psql -X -tAc "SELECT 1 WHERE to_regclass('lock_tree') IS NOT NULL
+                      OR EXISTS (SELECT 1 FROM pg_extension WHERE extname='pg_lock_tree')" 2>/dev/null | grep -q 1; then
+    echo "  pg_lock_tree is not available in this database, or the server cannot be reached" >&2
+    exit 3
 fi
 
 # ---------------------------------------------------------------- the notification stream

@@ -1,0 +1,15 @@
+--- a/pg_lock_tree--1.1.16.sql
++++ b/pg_lock_tree--1.1.16.sql
+@@ -1546,12 +1546,6 @@
+            OR (want_wait    IS NOT NULL AND w.longest_wait    >= want_wait) AS notable
+     FROM @extschema@.lock_tree_wide() w
+   LOOP
+-    -- Reset for EVERY root, at the top. Until 1.1.15 it was reset only in the branch below, so a
+-    -- root that was notable but unchanged inherited true from an earlier root that fired, and was
+-    -- notified again with the payload it already had while the return value said it had not been.
+-    -- Measured with two roots, one escalating: returned 1, delivered 2. scripts/check-alert.sh
+-    -- asserts the delivered count, which is the only place the difference is visible.
+-    root_fired := false;
+     IF NOT r.notable THEN
+       -- Below every threshold. It stays below until it stops being in the tree at all, which
+       -- the sweep after the loop takes care of, so nothing to do here.

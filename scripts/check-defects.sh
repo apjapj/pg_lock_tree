@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # check-defects.sh [--local|--container] [<postgres major version>]: re-inject each recorded defect
-# into the release script and require the test that first caught it to fail again.
+# into the release script and require the check that first caught it to fail again.
 #
 # A bug fixed today can be reintroduced tomorrow, and nothing notices unless something puts it back.
-# Each defects/<id>.patch reverts one fix; its .meta names the test that must fail while the patch is
-# applied. This reports the regression rate: of the defects the suite once caught, how many does it
-# still catch.
+# Each defects/<id>.patch reverts one fix; its .meta names the catcher that must fail while the patch
+# is applied - a pgTAP file (test=) or, for a defect no pgTAP file can see, a command (command=)
+# whose non-zero exit is the verdict, run with the scratch database as PGDATABASE. A command cell may
+# name could_not_run_exit_codes=, codes that mean it did not run, so a setup failure reads as
+# could-not-run and never as a catch. This reports the regression rate: of the defects the suite once
+# caught, how many does it still catch.
 #
 # pg_lock_tree does not install an extension: ci/job.sh loads the release script straight into a
 # server with @extschema@ rewritten to public. So a cell is the pristine script and the patched one,
@@ -84,25 +87,41 @@ drop_scratch() {
     SCRATCH=""
 }
 
-# run_with <script> <test>: a fresh state with the script loaded, the test run. OUT holds the output,
-# the return status is the test's. 3 means the server or the load failed, not the test.
+# run_with <script> <catcher>: a fresh state with the script loaded, then the cell's catcher run -
+# a pgTAP file via pg_prove, or a command, per KIND. OUT holds the output, the return status is the
+# catcher's. 3 means it could not run: the server or the load failed, or a command exited with a
+# code the cell declared as "did not run".
 run_with() {
-    local script=$1 test=$2 rc
+    local script=$1 catcher=$2 rc
     if [ "$mode" = container ]; then
         ./ci/server.sh up "$v" "$port" >/dev/null 2>&1 || return 3
         if ! load_into "$script"; then ./ci/server.sh down >/dev/null 2>&1; return 3; fi
-        OUT=$(pg_prove --dbname postgres "$test" 2>&1); rc=$?
+        if [ "$KIND" = command ]; then
+            OUT=$(PGDATABASE=postgres bash -c "$catcher" 2>&1); rc=$?
+        else
+            OUT=$(pg_prove --dbname postgres "$catcher" 2>&1); rc=$?
+        fi
         ./ci/server.sh down >/dev/null 2>&1
-        return $rc
     else
         RUNN=$((RUNN + 1))
         SCRATCH="lt_defect_$(date +%s)_$$_$RUNN"
         psql -X -q -d postgres -c "CREATE DATABASE \"$SCRATCH\"" >/dev/null 2>&1 || { SCRATCH=""; return 3; }
         if ! load_into "$script" "$SCRATCH"; then drop_scratch; return 3; fi
-        OUT=$(pg_prove --dbname "$SCRATCH" "$test" 2>&1); rc=$?
+        if [ "$KIND" = command ]; then
+            OUT=$(PGDATABASE="$SCRATCH" bash -c "$catcher" 2>&1); rc=$?
+        else
+            OUT=$(pg_prove --dbname "$SCRATCH" "$catcher" 2>&1); rc=$?
+        fi
         drop_scratch
-        return $rc
     fi
+    # A command cell may name exit codes that mean it did not run - a setup failure, say - so a
+    # catch is never credited to one. The same guard the patch-defect schema uses, in the shell:
+    # only a catcher that ran to completion and reported a real failure is a catch.
+    if [ "$KIND" = command ] && [ "$rc" -ne 0 ]; then
+        local c
+        for c in $NOT_RUN; do [ "$rc" -eq "$c" ] && return 3; done
+    fi
+    return $rc
 }
 
 # A failure anywhere drops the scratch database; a killed job is covered by the unique name.
@@ -114,15 +133,27 @@ for patch in defects/*.patch; do
     id=$(basename "$patch" .patch)
     meta="defects/$id.meta"
     test=$(sed -n 's/^test=//p' "$meta" 2>/dev/null | head -1)
-    if [ -z "$test" ]; then
-        echo "  $id: COULD-NOT-RUN (no test= in $meta)"
-        total=$((total+1)); norun=$((norun+1)); continue
-    fi
+    command=$(sed -n 's/^command=//p' "$meta" 2>/dev/null | head -1)
+    NOT_RUN=$(sed -n 's/^could_not_run_exit_codes=//p' "$meta" 2>/dev/null | head -1)
     total=$((total+1))
 
-    # Control: the pristine script must pass the test, or "caught" means nothing.
-    if ! run_with "$rel" "$test"; then
-        echo "  $id: COULD-NOT-RUN (the control failed: $test does not pass on the clean script)"
+    # A cell names its catcher one of two ways: test=, a pgTAP file, or command=, a program whose
+    # exit status is the verdict. Both are run against a fresh state with the script loaded.
+    if [ -n "$test" ] && [ -n "$command" ]; then
+        echo "  $id: COULD-NOT-RUN ($meta names both test= and command=)"
+        norun=$((norun+1)); continue
+    elif [ -n "$command" ]; then
+        KIND=command; catcher=$command; subject="the command"
+    elif [ -n "$test" ]; then
+        KIND=test; catcher=$test; subject="$test"
+    else
+        echo "  $id: COULD-NOT-RUN (no test= or command= in $meta)"
+        norun=$((norun+1)); continue
+    fi
+
+    # Control: the catcher must pass on the pristine script, or "caught" means nothing.
+    if ! run_with "$rel" "$catcher"; then
+        echo "  $id: COULD-NOT-RUN ($subject does not pass on the clean script)"
         printf '%s\n' "$OUT" | grep -vE '^ok ' | sed 's/^/        /' | tail -3
         norun=$((norun+1)); continue
     fi
@@ -133,9 +164,20 @@ for patch in defects/*.patch; do
         echo "  $id: COULD-NOT-RUN (the patch does not apply)"
         norun=$((norun+1)); rm -rf "$tmp"; continue
     fi
-    if run_with "$tmp/$rel" "$test"; then
-        echo "  $id: MISSED (the defect does not make $test fail)"
+    run_with "$tmp/$rel" "$catcher"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  $id: MISSED (the defect does not make $subject fail)"
         missed=$((missed+1)); regressed="$regressed $id"
+    elif [ "$rc" -eq 3 ]; then
+        # The catcher declared this code as "did not run", or the server or the load failed. Either
+        # way nothing was measured, so it is not a catch.
+        echo "  $id: COULD-NOT-RUN ($subject could not run on the patched script)"
+        printf '%s\n' "$OUT" | grep -vE '^ok ' | sed 's/^/        /' | tail -3
+        norun=$((norun+1))
+    elif [ "$KIND" = command ]; then
+        # Non-zero, and not a code the cell declared as "did not run": the command ran and failed.
+        echo "  $id: caught (the defect makes $subject fail)"
+        caught=$((caught+1))
     elif printf '%s' "$OUT" | grep -qE 'Failed [0-9]+/[0-9]+'; then
         echo "  $id: caught (the defect makes $test fail)"
         caught=$((caught+1))
