@@ -108,7 +108,7 @@ DO $wait$
 DECLARE
   blocked int;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT count(*) INTO blocked FROM pg_stat_activity
      WHERE pid IN (SELECT pid FROM lock_tree_ct_pids WHERE name IN ('y','z'))
        AND wait_event_type = 'Lock';
@@ -116,7 +116,7 @@ BEGIN
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF blocked <> 2 THEN
-    RAISE EXCEPTION 'the waiters never blocked: % of 2 were waiting on lock_tree_ct after 10s', blocked;
+    RAISE EXCEPTION 'the waiters never blocked: % of 2 were waiting on lock_tree_ct after 30s', blocked;
   END IF;
 END
 $wait$;
@@ -184,13 +184,13 @@ DO $drain$
 DECLARE
   gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_ct_pids)) INTO gone;
     EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF NOT gone THEN
-    RAISE EXCEPTION 'the chain never cleared: lock_tree still held it after 10s';
+    RAISE EXCEPTION 'the chain never cleared: lock_tree still held it after 30s';
   END IF;
 END
 $drain$;

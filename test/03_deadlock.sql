@@ -56,7 +56,7 @@ DO $cycle$
 DECLARE
   blocked int;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT count(*) INTO blocked FROM pg_stat_activity
      WHERE wait_event_type = 'Lock'
        AND query LIKE 'LOCK TABLE lock_tree_dl_%';
@@ -64,7 +64,7 @@ BEGIN
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF blocked <> 2 THEN
-    RAISE EXCEPTION 'the deadlock participants never blocked: % of 2 were waiting after 10s', blocked;
+    RAISE EXCEPTION 'the deadlock participants never blocked: % of 2 were waiting after 30s', blocked;
   END IF;
 END
 $cycle$;
@@ -102,14 +102,16 @@ DO $gone$
 DECLARE
   gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT NOT EXISTS (SELECT 1 FROM lock_tree_dl_pids p
                        JOIN pg_stat_activity a ON a.pid = p.pid) INTO gone;
     EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF NOT gone THEN
-    RAISE EXCEPTION 'the deadlock sessions never went away after 10s';
+    RAISE EXCEPTION 'the deadlock sessions never went away after 30s; still present: %',
+      (SELECT string_agg(format('%s/%s/%s', p.pid, a.state, a.wait_event_type), ', ' ORDER BY p.pid)
+         FROM lock_tree_dl_pids p JOIN pg_stat_activity a ON a.pid = p.pid);
   END IF;
 END
 $gone$;

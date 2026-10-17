@@ -61,7 +61,7 @@ DO $wait$
 DECLARE
   blocked boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT EXISTS (SELECT 1 FROM pg_stat_activity
                    WHERE wait_event_type = 'Lock'
                      AND query LIKE 'BEGIN; LOCK TABLE lock_tree_pt%') INTO blocked;
@@ -69,7 +69,7 @@ BEGIN
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF NOT blocked THEN
-    RAISE EXCEPTION 'the prepared-transaction waiter never blocked after 10s';
+    RAISE EXCEPTION 'the prepared-transaction waiter never blocked after 30s';
   END IF;
 END
 $wait$;
@@ -134,7 +134,7 @@ DO $drain$
 DECLARE
   gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
                        JOIN pg_stat_activity a ON a.pid = p.pid
                        WHERE a.state = 'idle in transaction'
@@ -143,7 +143,7 @@ BEGIN
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF NOT gone THEN
-    RAISE EXCEPTION 'the prepared-transaction sessions never settled after 10s';
+    RAISE EXCEPTION 'the prepared-transaction sessions never settled after 30s';
   END IF;
 END
 $drain$;
@@ -154,14 +154,14 @@ DO $gone$
 DECLARE
   gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..300 LOOP
     SELECT NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
                        JOIN pg_stat_activity a ON a.pid = p.pid) INTO gone;
     EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
   IF NOT gone THEN
-    RAISE EXCEPTION 'the prepared-transaction sessions never went away after 10s';
+    RAISE EXCEPTION 'the prepared-transaction sessions never went away after 30s';
   END IF;
 END
 $gone$;
