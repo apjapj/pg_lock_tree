@@ -115,7 +115,7 @@ BEGIN
   IF NOT gone THEN
     -- A teardown wait, not a precondition: the four assertions above have already passed, and
     -- the DROP TABLEs below are the real check that no lock is still held. So this warns
-    -- rather than fails. Measured on 18: the sessions were still visible past 30s in 4 of 30
+    -- rather than fails. Measured on 18: the sessions were still visible past 30s in 12 of 100
     -- runs, and under the old fall-through the DROP ran and passed in every one.
     RAISE WARNING 'the deadlock sessions were still visible after 30s: %',
       (SELECT coalesce(string_agg(format('%s/%s', application_name, state), ', '), '(none)')
