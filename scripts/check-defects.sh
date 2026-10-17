@@ -132,6 +132,11 @@ run_with() {
 trap 'drop_scratch' EXIT INT TERM
 
 total=0; caught=0; missed=0; norun=0; regressed=""
+
+# The reason each cell could not run, kept so the summary can repeat it. A failure in the middle of
+# the loop is easy to lose to a filtered log; the next occurrence then explains itself at the end.
+NORUN_DETAIL=""
+note_norun() { NORUN_DETAIL="${NORUN_DETAIL}${id}: $*"$'\n'; }
 for patch in defects/*.patch; do
     [ -e "$patch" ] || continue
     id=$(basename "$patch" .patch)
@@ -145,6 +150,7 @@ for patch in defects/*.patch; do
     # exit status is the verdict. Both are run against a fresh state with the script loaded.
     if [ -n "$test" ] && [ -n "$command" ]; then
         echo "  $id: COULD-NOT-RUN ($meta names both test= and command=)"
+        note_norun "$meta names both test= and command="
         norun=$((norun+1)); continue
     elif [ -n "$command" ]; then
         KIND=command; catcher=$command; subject="the command"
@@ -152,6 +158,7 @@ for patch in defects/*.patch; do
         KIND=test; catcher=$test; subject="$test"
     else
         echo "  $id: COULD-NOT-RUN (no test= or command= in $meta)"
+        note_norun "no test= or command= in $meta"
         norun=$((norun+1)); continue
     fi
 
@@ -164,6 +171,7 @@ for patch in defects/*.patch; do
             case " $EXIT_COULD_NOT_RUN_CODES " in
                 *" $c "*) ;;
                 *) echo "  $id: COULD-NOT-RUN ($meta declares could_not_run_exit_codes=$c, which scripts/exit-codes.sh does not)"
+                   note_norun "$meta declares could_not_run_exit_codes=$c, which scripts/exit-codes.sh does not"
                    norun=$((norun+1)); continue 2 ;;
             esac
         done
@@ -173,6 +181,7 @@ for patch in defects/*.patch; do
     if ! run_with "$rel" "$catcher"; then
         echo "  $id: COULD-NOT-RUN ($subject does not pass on the clean script)"
         printf '%s\n' "$OUT" | grep -vE '^ok ' | sed 's/^/        /' | tail -3
+        note_norun "$subject does not pass on the clean script"
         norun=$((norun+1)); continue
     fi
 
@@ -180,6 +189,7 @@ for patch in defects/*.patch; do
     cp "$rel" "$tmp/$rel"
     if ! patch -s -p1 -d "$tmp" < "$patch"; then
         echo "  $id: COULD-NOT-RUN (the patch does not apply)"
+        note_norun "the patch does not apply"
         norun=$((norun+1)); rm -rf "$tmp"; continue
     fi
     run_with "$tmp/$rel" "$catcher"; rc=$?
@@ -191,6 +201,7 @@ for patch in defects/*.patch; do
         # way nothing was measured, so it is not a catch.
         echo "  $id: COULD-NOT-RUN ($subject could not run on the patched script)"
         printf '%s\n' "$OUT" | grep -vE '^ok ' | sed 's/^/        /' | tail -3
+        note_norun "$subject could not run on the patched script"
         norun=$((norun+1))
     elif [ "$KIND" = command ]; then
         # Non-zero, and not a code the cell declared as "did not run": the command ran and failed.
@@ -202,6 +213,7 @@ for patch in defects/*.patch; do
     else
         echo "  $id: COULD-NOT-RUN ($test did not report a failing assertion)"
         printf '%s\n' "$OUT" | grep -vE '^ok ' | sed 's/^/        /' | tail -3
+        note_norun "$test did not report a failing assertion"
         norun=$((norun+1))
     fi
     rm -rf "$tmp"
@@ -209,6 +221,11 @@ done
 
 den=$((caught+missed))
 echo
+if [ -n "$NORUN_DETAIL" ]; then
+    echo
+    echo "could not run, and why:"
+    printf '%s' "$NORUN_DETAIL" | sed 's/^/  /'
+fi
 echo "defects ($mode): $total cell(s), $den ran: $caught caught, $missed missed; $norun could not run"
 [ "$missed" -eq 0 ] || { echo "regression:$regressed" >&2; exit 1; }
 exit 0

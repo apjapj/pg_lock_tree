@@ -56,9 +56,18 @@ the `postgres` service. The scratch database has a unique name, a trap drops it,
 `WITH (FORCE)`; the catching test creates no cluster-wide object, which is what makes the drop
 complete.
 
-The summary is `caught/(caught + missed)`; a `could-not-run` cell (the control failed, the patch did
-not apply, or the check did not report a failure) is reported and is never counted as caught. Exit
-status is 1 when any defect is missed, so it can be a CI step.
+The summary names the whole run: `<total> cell(s), <ran> ran: <caught> caught, <missed> missed;
+<could-not-run> could not run`. Every cell that could not run is repeated with its reason under
+"could not run, and why", so a failure in the middle of a long run explains itself at the end. A
+`could-not-run` cell is never counted as caught. Exit status is 1 when any defect is missed, so it
+can be a CI step.
+
+One unexplained `could-not-run`: on 2026-10-17 a back-to-back run of all five versions reported two
+cells could-not-run on PostgreSQL 17 and one on 18, with no reason captured; five isolated runs
+(each version alone) then caught all six every time, and it has not recurred. It is recorded rather
+than dismissed, because a harness that intermittently cannot run a cell will make a CI step that
+fails on could-not-run flaky. If it recurs, the next step is a per-run container name and port,
+instead of the one fixed name every run shares.
 
 ## Adding one
 
