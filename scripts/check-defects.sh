@@ -209,6 +209,6 @@ done
 
 den=$((caught+missed))
 echo
-echo "defects ($mode): $caught of $den caught, $missed missed, $norun could-not-run"
+echo "defects ($mode): $total cell(s), $den ran: $caught caught, $missed missed; $norun could not run"
 [ "$missed" -eq 0 ] || { echo "regression:$regressed" >&2; exit 1; }
 exit 0
