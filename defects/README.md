@@ -32,7 +32,10 @@ so out loud when one stops being caught.
   `could_not_run_exit_codes` is the guard, in the shell the same idea the patch-defect schema calls
   by that name: a command that exits one of those codes has not run, so it is could-not-run and never
   a catch, and a setup failure cannot be credited as a defect detected. `scripts/check-alert.sh`
-  exits 3, its "could not run", for exactly this.
+  exits 3, its "could not run", for exactly this. The codes live in one place,
+  `scripts/exit-codes.sh`: `check-alert.sh` reads the numbers it exits with from it, and
+  `check-defects.sh` checks each cell's declaration against it, so the script and the cell cannot
+  drift apart.
 
 ## Running it
 

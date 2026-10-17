@@ -42,6 +42,10 @@ esac
 v=${1:-}
 cd "$(dirname "$0")/.."
 
+# The one table of exit codes. check-defects.sh reads it to check that a command cell's
+# could_not_run_exit_codes names a code the script it runs actually uses (scripts/exit-codes.sh).
+. scripts/exit-codes.sh
+
 if [ "$mode" = auto ]; then
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then mode=container; else mode=local; fi
 fi
@@ -149,6 +153,20 @@ for patch in defects/*.patch; do
     else
         echo "  $id: COULD-NOT-RUN (no test= or command= in $meta)"
         norun=$((norun+1)); continue
+    fi
+
+    # A command cell's could_not_run_exit_codes must name codes the one table declares
+    # (scripts/exit-codes.sh). A number that means nothing would simply never match, and a setup
+    # failure would then read as a real failure and be credited as a catch - the exact hole the
+    # codes exist to close - so a code outside the table is a malformed cell, reported, not run.
+    if [ "$KIND" = command ] && [ -n "$NOT_RUN" ]; then
+        for c in $NOT_RUN; do
+            case " $EXIT_COULD_NOT_RUN_CODES " in
+                *" $c "*) ;;
+                *) echo "  $id: COULD-NOT-RUN ($meta declares could_not_run_exit_codes=$c, which scripts/exit-codes.sh does not)"
+                   norun=$((norun+1)); continue 2 ;;
+            esac
+        done
     fi
 
     # Control: the catcher must pass on the pristine script, or "caught" means nothing.

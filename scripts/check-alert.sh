@@ -18,6 +18,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# The exit codes, from the one table the defect cell that runs this script also reads
+# (scripts/exit-codes.sh): 0 pass, 1 failed, 3 could not run.
+. scripts/exit-codes.sh
+
 : "${PGHOST:=127.0.0.1}"
 : "${PGUSER:=postgres}"
 export PGHOST PGUSER
@@ -227,15 +231,16 @@ if [ "$mode" = "--explain" ]; then
     # No payload supplied: build an incident below and explain what arrives.
 fi
 
-# 3, not 1: a script that cannot reach a server or find the extension has not run, and a caller
-# recording this as a defect check must be able to tell that from a real failure. The defect
-# harness records a cell with this script as its command, and reads 3 as could-not-run. Either the
-# extension is installed, or the release script was loaded straight into the schema, which is how
-# the harness and the pgTAP matrix use it, so a loaded script counts as present.
+# 3, not 1 (EXIT_COULD_NOT_RUN, the number in scripts/exit-codes.sh): a script that cannot reach a
+# server or find the extension has not run, and a caller recording this as a defect check must be
+# able to tell that from a real failure. The defect harness records a cell with this script as its
+# command, and reads this code as could-not-run. Either the extension is installed, or the release
+# script was loaded straight into the schema, which is how the harness and the pgTAP matrix use it,
+# so a loaded script counts as present.
 if ! psql -X -tAc "SELECT 1 WHERE to_regclass('lock_tree') IS NOT NULL
                       OR EXISTS (SELECT 1 FROM pg_extension WHERE extname='pg_lock_tree')" 2>/dev/null | grep -q 1; then
     echo "  pg_lock_tree is not available in this database, or the server cannot be reached" >&2
-    exit 3
+    exit "$EXIT_COULD_NOT_RUN"
 fi
 
 # ---------------------------------------------------------------- the notification stream
@@ -628,8 +633,8 @@ SQL
 
 if [ "$fail" -eq 0 ]; then
     printf '\n  \033[32mall checks passed\033[0m\n\n'
-    exit 0
+    exit "$EXIT_PASS"
 else
     printf '\n  \033[31msome checks failed\033[0m\n\n'
-    exit 1
+    exit "$EXIT_FAILED"
 fi
