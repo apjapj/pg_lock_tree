@@ -53,13 +53,19 @@ SELECT pg_sleep(0.3);
 SELECT dblink_send_query('g', 'LOCK TABLE lock_tree_dl_a IN ACCESS EXCLUSIVE MODE');
 
 DO $cycle$
+DECLARE
+  blocked int;
 BEGIN
   FOR i IN 1..100 LOOP
-    EXIT WHEN (SELECT count(*) FROM pg_stat_activity
-               WHERE wait_event_type = 'Lock'
-                 AND query LIKE 'LOCK TABLE lock_tree_dl_%') = 2;
+    SELECT count(*) INTO blocked FROM pg_stat_activity
+     WHERE wait_event_type = 'Lock'
+       AND query LIKE 'LOCK TABLE lock_tree_dl_%';
+    EXIT WHEN blocked = 2;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF blocked <> 2 THEN
+    RAISE EXCEPTION 'the deadlock participants never blocked: % of 2 were waiting after 10s', blocked;
+  END IF;
 END
 $cycle$;
 
@@ -93,12 +99,18 @@ SELECT ok((SELECT blocked_by @> ARRAY[(SELECT pid FROM cycle WHERE name = 'g')]
 SELECT pg_terminate_backend(pid) FROM lock_tree_dl_pids ORDER BY pid;
 
 DO $gone$
+DECLARE
+  gone boolean := false;
 BEGIN
   FOR i IN 1..100 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree_dl_pids p
-                          JOIN pg_stat_activity a ON a.pid = p.pid);
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree_dl_pids p
+                       JOIN pg_stat_activity a ON a.pid = p.pid) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE EXCEPTION 'the deadlock sessions never went away after 10s';
+  END IF;
 END
 $gone$;
 
