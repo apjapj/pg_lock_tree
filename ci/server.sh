@@ -26,7 +26,7 @@ cmd=${1:?usage: ci/server.sh up <major> <port> | down}
 name=pg-lock-tree-ci
 
 if [ "$cmd" = down ]; then
-    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker rm -f -v "$name" >/dev/null 2>&1 || true
     exit 0
 fi
 
@@ -34,7 +34,7 @@ v=${2:?usage: ci/server.sh up <major> <port>}
 port=${3:?usage: ci/server.sh up <major> <port>}
 image="pg-lock-tree-ci:$v"
 
-docker rm -f "$name" >/dev/null 2>&1 || true
+docker rm -f -v "$name" >/dev/null 2>&1 || true
 
 printf '== build %s\n' "$image"
 # 19beta4 is the image tag; the apt package inside it is postgresql-19. Passing the tag through as the
