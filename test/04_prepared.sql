@@ -58,13 +58,19 @@ SELECT dblink_exec('h', 'PREPARE TRANSACTION ''lock_tree_pt''');
 SELECT dblink_send_query('i', 'BEGIN; LOCK TABLE lock_tree_pt IN SHARE MODE; COMMIT');
 
 DO $wait$
+DECLARE
+  blocked boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN EXISTS (SELECT 1 FROM pg_stat_activity
-                      WHERE wait_event_type = 'Lock'
-                        AND query LIKE 'BEGIN; LOCK TABLE lock_tree_pt%');
+  FOR i IN 1..300 LOOP
+    SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                   WHERE wait_event_type = 'Lock'
+                     AND query LIKE 'BEGIN; LOCK TABLE lock_tree_pt%') INTO blocked;
+    EXIT WHEN blocked;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT blocked THEN
+    RAISE EXCEPTION 'the prepared-transaction waiter never blocked after 30s';
+  END IF;
 END
 $wait$;
 
@@ -125,26 +131,38 @@ SELECT is((SELECT count(*) FROM ptx_cmds)::int, 0,
 ROLLBACK PREPARED 'lock_tree_pt';
 
 DO $drain$
+DECLARE
+  gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
-                          JOIN pg_stat_activity a ON a.pid = p.pid
-                          WHERE a.state = 'idle in transaction'
-                             OR (a.state = 'active' AND a.wait_event_type = 'Lock'));
+  FOR i IN 1..300 LOOP
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
+                       JOIN pg_stat_activity a ON a.pid = p.pid
+                       WHERE a.state = 'idle in transaction'
+                          OR (a.state = 'active' AND a.wait_event_type = 'Lock')) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE WARNING 'the prepared-transaction sessions were still settling after 30s; the drop below is the real check';
+  END IF;
 END
 $drain$;
 
 SELECT pg_terminate_backend(pid) FROM lock_tree_pt_pids ORDER BY pid;
 
 DO $gone$
+DECLARE
+  gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
-                          JOIN pg_stat_activity a ON a.pid = p.pid);
+  FOR i IN 1..300 LOOP
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree_pt_pids p
+                       JOIN pg_stat_activity a ON a.pid = p.pid) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE WARNING 'the prepared-transaction sessions were still visible after 30s; the drop below is the real check';
+  END IF;
 END
 $gone$;
 

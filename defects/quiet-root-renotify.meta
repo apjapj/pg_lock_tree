@@ -1,0 +1,14 @@
+id=quiet-root-renotify
+class=alerting
+found=the review behind 1.1.15, 2026-10-11
+fixed=1.1.15
+command=./scripts/check-alert.sh
+could_not_run_exit_codes=3
+detail=lock_tree_notify() reset its per-root "already notified" flag only in the branch for roots
+       below every threshold. Once one root fired in a call, every later notable-but-unchanged root
+       inherited true and was notified again with the payload it had already received, while the
+       return value counted neither. Measured with two roots, one escalating: the call returned 1
+       and the listener received 2. The flag is now reset at the top of the loop. No pgTAP file can
+       see a NOTIFY - test/11 asserts return values only - so the catcher is scripts/check-alert.sh,
+       a real client that counts what arrives. Its exit 3 means it could not run, so a setup failure
+       is could-not-run rather than a catch.

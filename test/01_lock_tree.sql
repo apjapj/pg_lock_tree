@@ -46,13 +46,19 @@ SELECT dblink_send_query('c', 'SELECT count(*) FROM lock_tree_t');
 SELECT dblink_send_query('d', 'SELECT count(*) FROM lock_tree_t');
 
 DO $wait$
+DECLARE
+  blocked int;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN (SELECT count(*) FROM pg_stat_activity
-               WHERE pid IN (SELECT pid FROM lock_tree_pids WHERE name IN ('b','c','d','e'))
-                 AND wait_event_type = 'Lock') = 4;
+  FOR i IN 1..300 LOOP
+    SELECT count(*) INTO blocked FROM pg_stat_activity
+     WHERE pid IN (SELECT pid FROM lock_tree_pids WHERE name IN ('b','c','d','e'))
+       AND wait_event_type = 'Lock';
+    EXIT WHEN blocked = 4;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF blocked <> 4 THEN
+    RAISE EXCEPTION 'the waiters never blocked: % of 4 were waiting on lock_tree_t after 30s', blocked;
+  END IF;
 END
 $wait$;
 
@@ -179,11 +185,17 @@ SELECT ok((SELECT n FROM acts_back) > 0,
 \o /dev/null
 SELECT dblink_exec('a', 'ROLLBACK');
 DO $drain$
+DECLARE
+  gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_pids));
+  FOR i IN 1..300 LOOP
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_pids)) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE WARNING 'the chain was still visible in lock_tree after 30s; the drop below is the real check';
+  END IF;
 END
 $drain$;
 \o

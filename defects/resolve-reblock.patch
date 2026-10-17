@@ -1,0 +1,61 @@
+--- a/pg_lock_tree--1.1.16.sql
++++ b/pg_lock_tree--1.1.16.sql
+@@ -3014,20 +3014,23 @@
+ BEGIN
+   -- The same policy key construction as lock_tree_notify(), so the two read and write the same
+   -- rows. If they disagreed, this would report resolutions for alerts that were never sent.
+-  -- One statement decides and forgets, and its RETURNING is what is reported. Until 1.1.16 a SELECT
+-  -- chose what to report and a separate DELETE chose what to forget, each reading the live tree, so a
+-  -- root that came back between the two was reported cleared and kept: the next lock_tree_notify()
+-  -- found its row, treated it as already alerted, and sent nothing for an incident still under way.
+-  -- Measured by slowing pg_notify while a session that was already connected started waiting on the
+-  -- same root. Now a root is reported cleared exactly when its row is deleted, and never otherwise.
+   FOR gone IN
+-    DELETE FROM @extschema@.lock_tree_alert a
+-     WHERE a.channel = lock_tree_notify_resolved.channel
+-       AND a.policy  = @extschema@.lock_tree_policy_key(min_blocked, min_depth, min_wait)
+-       AND NOT EXISTS (SELECT 1 FROM @extschema@.lock_tree t
+-                        WHERE t.root_pid = a.root_pid
+-                          AND coalesce(t.root_object, '') = a.root_object)
+-    RETURNING a.root_pid, a.root_object, a.application_name, a.max_blocked_at, a.notify_count
++    SELECT a.root_pid, a.root_object, a.application_name, a.max_blocked_at, a.notify_count
++    FROM @extschema@.lock_tree_alert a
++    LEFT JOIN @extschema@.lock_tree t
++      ON t.root_pid = a.root_pid
++     AND coalesce(t.root_object, '') = a.root_object
++    WHERE a.channel = lock_tree_notify_resolved.channel
++      AND a.policy  = format('blocked>=%s depth>=%s wait>=%s',
++                             coalesce(CASE WHEN min_blocked IS NULL OR min_blocked < 1 THEN NULL
++                                          ELSE min_blocked END::text, 'off'),
++                             coalesce(CASE WHEN min_depth   IS NULL OR min_depth   < 1 THEN NULL
++                                          ELSE min_depth   END::text, 'off'),
++                             coalesce(CASE WHEN min_wait IS NULL OR min_wait < interval '0' THEN NULL
++                                          ELSE min_wait END::text, 'off'))
++      -- Not in the tree any more. The LEFT JOIN plus the NULL test rather than NOT EXISTS, so one
++      -- root cannot be reported twice by two different trees.
++      AND t.root_pid IS NULL
+   LOOP
+     PERFORM pg_notify(lock_tree_notify_resolved.channel, json_build_object(
+       -- The same three contract keys as lock_tree_notify(), and for the same reasons.
+@@ -3050,6 +3053,21 @@
+     )::text);
+     n := n + 1;
+   END LOOP;
++
++  -- Then forget it, exactly as lock_tree_notify() would have. Leaving the row would mean the next
++  -- incident starts already alerted, and the onset notification would never be sent.
++  DELETE FROM @extschema@.lock_tree_alert a
++   WHERE a.channel = lock_tree_notify_resolved.channel
++     AND a.policy  = format('blocked>=%s depth>=%s wait>=%s',
++                            coalesce(CASE WHEN min_blocked IS NULL OR min_blocked < 1 THEN NULL
++                                         ELSE min_blocked END::text, 'off'),
++                            coalesce(CASE WHEN min_depth   IS NULL OR min_depth   < 1 THEN NULL
++                                         ELSE min_depth   END::text, 'off'),
++                            coalesce(CASE WHEN min_wait IS NULL OR min_wait < interval '0' THEN NULL
++                                         ELSE min_wait END::text, 'off'))
++     AND NOT EXISTS (SELECT 1 FROM @extschema@.lock_tree t
++                      WHERE t.root_pid = a.root_pid
++                        AND coalesce(t.root_object, '') = a.root_object);
+ 
+   RETURN n;
+ END

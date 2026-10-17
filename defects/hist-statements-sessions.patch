@@ -1,0 +1,86 @@
+--- a/pg_lock_tree--1.1.16.sql
++++ b/pg_lock_tree--1.1.16.sql
+@@ -3486,67 +3486,23 @@
+   -- with a guarded dynamic query. This one does not need that machinery: the history carries
+   -- query_id, and the totals are pure aggregation over a table this extension owns. Joining the
+   -- text back in is one line for whoever has the module loaded, shown in the comment below.
+-  --
+-  -- Fixed in 1.1.15: the root-to-waiter join lock_tree_duration() gained in 0.13. Until then this
+-  -- aggregated over the rows carrying a query_id, which are exactly the ROOT rows, so blocked_sessions
+-  -- was the number of samples, deepest_chain was 0, and longest_wait was the root's own wait_age,
+-  -- NULL in a real sample since a root is not waiting. test/12 asserted those values as correct.
+-  WITH roots AS (
+-    SELECT h.query_id, h.sampled_at, h.root_pid, coalesce(h.root_object, '') AS root_object,
+-           h.application_name
+-    FROM @extschema@.lock_tree_history h
+-    WHERE h.depth = 0
+-      AND h.query_id IS NOT NULL
+-      AND h.sampled_at >= statement_timestamp() - since
+-  ),
+-  -- The waiters of each root at the same sample, matched on root_pid AND root_object for the reason
+-  -- lock_tree_duration() gives: pid 0 is every prepared transaction at once. Bounded on sampled_at
+-  -- explicitly, as 1.1.5 did there, so the bound does not depend on the plan.
+-  waiters AS (
+-    SELECT r.query_id, w.sampled_at, w.depth, w.wait_age
+-    FROM roots r
+-    JOIN @extschema@.lock_tree_history w
+-      ON w.sampled_at = r.sampled_at
+-     AND w.root_pid = r.root_pid
+-     AND coalesce(w.root_object, '') = r.root_object
+-     AND w.depth > 0
+-     AND w.sampled_at >= statement_timestamp() - since
+-  ),
+-  per_root AS (
+-    SELECT query_id,
+-           count(DISTINCT sampled_at) AS samples,
+-           min(sampled_at)            AS first_at,
+-           max(sampled_at)            AS last_at,
+-           -- The blockers' applications, NULLs excluded as lock_tree_duration() excludes them.
+-           array_agg(DISTINCT application_name ORDER BY application_name)
+-             FILTER (WHERE application_name IS NOT NULL) AS apps
+-    FROM roots
+-    GROUP BY query_id
+-  ),
+-  per_wait AS (
+-    SELECT query_id,
+-           count(*)       AS sessions,
+-           max(depth)     AS deepest,
+-           max(wait_age)  AS longest,
+-           -- When the worst wait was observed, which is what turns "3m12s" into "at 09:14, during
+-           -- the month-end run". The wait age alone says how bad, not when to go looking.
+-           (array_agg(sampled_at ORDER BY wait_age DESC NULLS LAST))[1] AS longest_at
+-    FROM waiters
+-    GROUP BY query_id
+-  )
+-  SELECT r.query_id,
+-         coalesce(w.sessions, 0),
+-         r.samples,
+-         r.first_at,
+-         r.last_at,
+-         w.deepest,
+-         w.longest,
+-         w.longest_at,
+-         r.apps
+-  FROM per_root r
+-  LEFT JOIN per_wait w ON w.query_id = r.query_id
++  SELECT h.query_id,
++         count(*) FILTER (WHERE h.depth = 0)     AS blocked_sessions,
++         count(DISTINCT h.sampled_at)              AS samples,
++         min(h.sampled_at) FILTER (WHERE h.depth = 0),
++         max(h.sampled_at) FILTER (WHERE h.depth = 0),
++         max(h.depth),
++         max(h.wait_age),
++         -- When the worst wait was observed, which is what turns "3m12s" into "at 09:14, during
++         -- the month-end run". The wait age alone says how bad, not when to go looking.
++         (array_agg(h.sampled_at ORDER BY h.wait_age DESC NULLS LAST))[1],
++         array_agg(DISTINCT h.application_name ORDER BY h.application_name)
++  FROM @extschema@.lock_tree_history h
++  WHERE h.query_id IS NOT NULL
++    AND h.sampled_at >= statement_timestamp() - since
++  GROUP BY h.query_id
+   -- Worst first: the statement to fix is at the top, which is the only ordering anyone wants.
+-  ORDER BY coalesce(w.sessions, 0) DESC, w.longest DESC NULLS LAST
++  ORDER BY count(*) FILTER (WHERE h.depth = 0) DESC, max(h.wait_age) DESC NULLS LAST
+ $$;
+ 
+ COMMENT ON FUNCTION @extschema@.lock_tree_history_statements(interval) IS

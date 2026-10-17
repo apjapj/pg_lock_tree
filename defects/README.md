@@ -1,8 +1,8 @@
-# defects: the defects this extension has had, and the test that must still catch each one
+# defects: the defects this extension has had, and the check that must still catch each one
 
 A bug fixed today can be reintroduced tomorrow by a refactor, and nothing notices unless something
 puts it back. This directory records the extension's real defects, one pair of files each, and
-`scripts/check-defects.sh` re-injects every one and requires the test that first caught it to fail
+`scripts/check-defects.sh` re-injects every one and requires the check that first caught it to fail
 again. The number it prints is a regression rate, not a one-time red-first step: of the defects the
 suite once caught, how many does it still catch.
 
@@ -22,8 +22,20 @@ so out loud when one stops being caught.
   | `class` | what kind of defect it was |
   | `found` | when and where it was found |
   | `fixed` | the release that fixed it |
-  | `test` | the test file that must fail while the defect is present |
+  | `test` | a pgTAP file that must fail while the defect is present |
+  | `command` | a program run against the fresh state, whose non-zero status means the defect is present |
+  | `could_not_run_exit_codes` | command cells only: exit codes that mean the command did not run |
   | `detail` | one sentence on the defect |
+
+  A cell names exactly one of `test` and `command`. `command` is for a defect no pgTAP file can see -
+  a notification a listener receives, say - and is run with the scratch database as `PGDATABASE`.
+  `could_not_run_exit_codes` is the guard, in the shell the same idea the patch-defect schema calls
+  by that name: a command that exits one of those codes has not run, so it is could-not-run and never
+  a catch, and a setup failure cannot be credited as a defect detected. `scripts/check-alert.sh`
+  exits 3, its "could not run", for exactly this. The codes live in one place,
+  `scripts/exit-codes.sh`: `check-alert.sh` reads the numbers it exits with from it, and
+  `check-defects.sh` checks each cell's declaration against it, so the script and the cell cannot
+  drift apart.
 
 ## Running it
 
@@ -33,8 +45,8 @@ make defects PG=18        # or ./scripts/check-defects.sh 18
 
 There is no extension to install: `ci/job.sh` loads the release script straight into a server, so a
 cell is the pristine script and the patched one, each in a **fresh state**, because the release script
-uses plain `CREATE` and cannot be loaded twice. The pristine load must **pass** the test (the control);
-the patched load must **fail**.
+uses plain `CREATE` and cannot be loaded twice. The pristine load must **pass** the cell's check (the
+control); the patched load must **fail**.
 
 Two modes, one command: `make defects PG=18` picks by whether the docker CLI and daemon are there.
 **container** starts a throwaway server per load (`ci/server.sh`); the GitHub job uses it. **local**
@@ -44,12 +56,23 @@ the `postgres` service. The scratch database has a unique name, a trap drops it,
 `WITH (FORCE)`; the catching test creates no cluster-wide object, which is what makes the drop
 complete.
 
-The summary is `caught/(caught + missed)`; a `could-not-run` cell (the control failed, the patch did
-not apply, or the test did not report a failing assertion) is reported and is never counted as
-caught. Exit status is 1 when any defect is missed, so it can be a CI step.
+The summary names the whole run: `<total> cell(s), <ran> ran: <caught> caught, <missed> missed;
+<could-not-run> could not run`. Every cell that could not run is repeated with its reason under
+"could not run, and why", so a failure in the middle of a long run explains itself at the end. A
+`could-not-run` cell is never counted as caught. Exit status is 1 when any defect is missed, so it
+can be a CI step.
+
+One unexplained `could-not-run`: on 2026-10-17 a back-to-back run of all five versions reported two
+cells could-not-run on PostgreSQL 17 and one on 18, with no reason captured; five isolated runs
+(each version alone) then caught all six every time, and it has not recurred. It is recorded rather
+than dismissed, because a harness that intermittently cannot run a cell will make a CI step that
+fails on could-not-run flaky. If it recurs, the next step is a per-run container name and port,
+instead of the one fixed name every run shares.
 
 ## Adding one
 
-Fix the bug and keep the test that caught it. Then save the reverse of the fix as `<id>.patch`
-(`git diff -R` over the fix, or revert the change and diff), and record the metadata. If the test
-passes while the patch is applied, the defect is not caught and the run is red.
+Fix the bug and keep the check that caught it. Then save the reverse of the fix as `<id>.patch`
+(`git diff -R` over the fix, or revert the change and diff), and record the metadata. If the check
+passes while the patch is applied, the defect is not caught and the run is red. A defect no pgTAP
+file can see names its `command` instead, and gives it a distinct "could not run" exit code so a
+setup failure is never read as a catch.

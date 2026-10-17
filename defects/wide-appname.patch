@@ -1,0 +1,16 @@
+--- a/pg_lock_tree--1.1.16.sql
++++ b/pg_lock_tree--1.1.16.sql
+@@ -1133,12 +1133,7 @@
+   -- first time someone edits this.
+   SELECT t.root_pid,
+          t.root_object,
+-         -- The ROOT's, as state below is. Until 1.1.15 this was max() over the whole tree, so a
+-         -- waiter whose application_name sorted after the root's was reported as the root's, in
+-         -- the NOTIFY payload that alerting.md tells a listener to key on. test/08 passed because
+-         -- its waiters' names happened to sort first.
+-         max(coalesce(nullif(t.application_name, ''), t.usename)) FILTER (WHERE t.depth = 0)
+-                                                                    AS application_name,
++         max(coalesce(nullif(t.application_name, ''), t.usename)) AS application_name,
+          -- Every row of a chain carries the same root, so the root's own state is what the
+          -- depth-0 row says. Taking max() over all of them would report a waiter's state, so
+          -- read it from the depth-0 row instead.

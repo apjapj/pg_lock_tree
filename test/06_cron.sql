@@ -105,13 +105,19 @@ SELECT pg_sleep(0.3);   -- Y must be queued before Z arrives
 SELECT dblink_send_query('z', 'SELECT count(*) FROM lock_tree_ct');
 
 DO $wait$
+DECLARE
+  blocked int;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN (SELECT count(*) FROM pg_stat_activity
-               WHERE pid IN (SELECT pid FROM lock_tree_ct_pids WHERE name IN ('y','z'))
-                 AND wait_event_type = 'Lock') = 2;
+  FOR i IN 1..300 LOOP
+    SELECT count(*) INTO blocked FROM pg_stat_activity
+     WHERE pid IN (SELECT pid FROM lock_tree_ct_pids WHERE name IN ('y','z'))
+       AND wait_event_type = 'Lock';
+    EXIT WHEN blocked = 2;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF blocked <> 2 THEN
+    RAISE EXCEPTION 'the waiters never blocked: % of 2 were waiting on lock_tree_ct after 30s', blocked;
+  END IF;
 END
 $wait$;
 
@@ -125,11 +131,17 @@ $$);
 -- Wait for a sample. The schedule is 10 seconds, so the first run is at most that far away, but
 -- allow more in one case: the cron launcher wakes once a second and this is a loaded CI box.
 DO $poll$
+DECLARE
+  seen boolean := false;
 BEGIN
   FOR i IN 1..120 LOOP
-    EXIT WHEN EXISTS (SELECT 1 FROM lock_tree_cron_snap);
+    SELECT EXISTS (SELECT 1 FROM lock_tree_cron_snap) INTO seen;
+    EXIT WHEN seen;
     PERFORM pg_sleep(0.5);
   END LOOP;
+  IF NOT seen THEN
+    RAISE EXCEPTION 'the cron job never wrote a sample: lock_tree_cron_snap stayed empty for 60s';
+  END IF;
 END
 $poll$;
 
@@ -169,11 +181,17 @@ SELECT is((SELECT count(*) FROM sample WHERE root_pid
 \o /dev/null
 SELECT dblink_exec('x', 'ROLLBACK');
 DO $drain$
+DECLARE
+  gone boolean := false;
 BEGIN
-  FOR i IN 1..100 LOOP
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_ct_pids));
+  FOR i IN 1..300 LOOP
+    SELECT NOT EXISTS (SELECT 1 FROM lock_tree WHERE pid IN (SELECT pid FROM lock_tree_ct_pids)) INTO gone;
+    EXIT WHEN gone;
     PERFORM pg_sleep(0.1);
   END LOOP;
+  IF NOT gone THEN
+    RAISE WARNING 'the chain was still visible in lock_tree after 30s; the drop below is the real check';
+  END IF;
 END
 $drain$;
 \o
