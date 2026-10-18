@@ -1,8 +1,8 @@
+#!/usr/bin/env bash
 # vendored from pg-dev-infra harness/docker-guard.sh; do not edit here.
 # Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
 # vendored-from: pg-dev-infra@be60e58
-# vendored-sha256: 19b284c1e88e28ee4870d5b69bc8cc918ee303543091aa2ac1a9b00a65e05f23
-#!/usr/bin/env bash
+# vendored-sha256: 23ac5b8c89a2866e3fd52c030fa91f64adf631c063f893c913cc292132710a27
 # docker-guard.sh: keep a host's Docker footprint from growing without bound.
 #
 # Two modes, deliberately separate, so a CI job never deletes and a housekeeping run never fails a
