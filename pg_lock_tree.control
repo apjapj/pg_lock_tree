@@ -1,6 +1,11 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '1.1.16'
+default_version = '1.2.0'
+# 1.2.0 adds the two escalation keys of the shared pg_incident_watch alert contract, `level` and
+# `previous_level`, to both NOTIFY payloads: the alerting payload carries both, and the cleared
+# payload carries `level` with `previous_level` absent. Both functions change with CREATE OR REPLACE
+# so grants survive the update. No signature, returned column or table changes. See
+# pg_lock_tree--1.1.16--1.2.0.sql.
 # 1.1.16 adds lock_tree_policy_key() and changes four function bodies with CREATE OR REPLACE and
 # three helpers with ALTER FUNCTION, so grants survive the update; notably lock_tree_notify_resolved()
 # now decides and forgets in one statement. See pg_lock_tree--1.1.15--1.1.16.sql.

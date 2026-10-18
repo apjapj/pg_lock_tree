@@ -160,13 +160,15 @@ rather than a slightly later one.
 
 ```json
 {"tool":"pg_lock_tree","subject":"pid 179","sampled_at":"2026-10-09T14:22:31+01:00",
- "channel":"lock_tree","event":"alerting","root_pid":179,
+ "channel":"lock_tree","event":"alerting","level":1,"previous_level":null,"root_pid":179,
  "application_name":"nightly_reconciliation",
  "blocked_sessions":40,"max_depth":2,"longest_wait":"3m12s",
  "waiting_for":"AccessShareLock on ledger"}
 ```
 
-Every key is always present, `null` excepted where there is genuinely nothing to say.
+Every key in an `alerting` payload is always present, `null` where there is genuinely nothing to say.
+A `cleared` payload is the one exception: it omits `previous_level` rather than sending it null, as
+the section below explains.
 
 **There is no size check in this extension.** An earlier version of this paragraph said the server
 enforces an 8000-byte payload limit, which was true of the server and false of this code: there is no
@@ -180,10 +182,11 @@ wrong.) Past it the statement raises `payload string too long`, and because the 
 a PL/pgSQL sweep over `lock_tree_alert`, that exception aborts the sweep and returns an error to the
 caller rather than dropping one message quietly.
 
-The payload as shipped is 334 bytes, and 4,624 in a deliberately absurd worst case with 4,000-character
-names, so there is a wide margin. The margin is arithmetic, not a guarantee, and it is the reason a
-future key should be argued for on its own merits rather than added because the payload is small
-enough to absorb it.
+The payload as shipped is 366 bytes, and 4,656 in a deliberately absurd worst case with 4,000-character
+names, so there is a wide margin. The two keys 1.2.0 adds account for the 32-byte increase, and the
+worst case grows by the same arithmetic. The margin is arithmetic, not a guarantee, and it is the
+reason a future key should be argued for on its own merits rather than added because the payload is
+small enough to absorb it.
 
 `tool`, `subject` and `sampled_at` are **new in 1.1.11**, and they come from a shared contract
 across the [pg_incident_watch](https://github.com/apjapj/pg_incident_watch) family of extensions,
@@ -204,10 +207,20 @@ there is no session to name and the pid alone cannot tell two of them apart.
 `sampled_at` is when the payload was formed. There is no sampled instant behind it. An alert is about
 the live tree, not about a history row, so this is the statement's own timestamp and nothing more.
 
+`level` and `previous_level` are **new in 1.2.0**, and they carry the escalation that the `escalated`
+event never did. `level` is this incident's count of notifications, read **after** incrementing it
+for this one: `1` at onset, `2` at the first escalation, `3` at the second, and so on.
+`previous_level` is that number minus one, so it is `null` at onset and the previous level at each
+escalation. A listener tells an onset from an escalation on the same `alerting` event by reading
+`previous_level`: `null` means this is the onset, a number means the incident has climbed again. The
+family contract pins that meaning in ALERTS.md, so every tool that sends the keys counts the same way.
+Both keys are additive: a consumer written against 1.1.16 that ignores fields it does not recognise
+is unaffected.
+
 **This extension does not send an `escalated` event.** The contract defines one and lets a tool omit
-it, which this one does: it sends `alerting` for both an onset and an escalation, and says so here
-rather than claiming a distinction it does not make. Sending `escalated` is a behaviour change and is
-not in 1.1.11.
+it, which this one does: it sends `alerting` for both an onset and an escalation, and carries the
+distinction in `previous_level` instead, as described above. Sending `escalated` would be a second
+way to say something the payload already says, and it is not here.
 
 `event` itself is **new in 0.12**, and was the only change to this payload until 1.1.11. It exists
 because 0.12 adds a second kind of notification on the same channel, and a consumer needs one field
@@ -237,13 +250,19 @@ that never alerted produces nothing, because a resolution notice with no matchin
 
 ```json
 {"tool":"pg_lock_tree","subject":"pid 179","sampled_at":"2026-10-09T14:33:02+01:00",
- "event":"cleared","channel":"lock_tree","root_pid":179,"root_object":null,
+ "event":"cleared","level":2,"channel":"lock_tree","root_pid":179,"root_object":null,
  "application_name":"nightly_reconciliation","blocked_at_most":40,"notified_count":2}
 ```
 
 `blocked_at_most` and `notified_count` are there so a reader can judge what it was: a cleared root
 that had blocked forty sessions and escalated twice is a different thing from one that briefly
 blocked two.
+
+`level` is **new in 1.2.0** and carries the last level the incident reached, so a listener sees how
+far it got before it cleared. `previous_level` is deliberately **absent** from a cleared payload
+rather than present and null: a resolution has no escalation, and the contract says the key is
+omitted. `notified_count` carries the same value under its older name, because keys are only ever
+added and never removed.
 
 It is a separate function rather than a parameter on `lock_tree_notify()` on purpose. An
 `alerting`/`cleared` pair on the same channel is what a consumer wants, but whether an incident

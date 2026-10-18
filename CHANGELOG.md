@@ -1,3 +1,30 @@
+## 1.2.0 (2026-10-18)
+
+Two additive payload keys on both `NOTIFY` payloads, the `level` and `previous_level` the
+pg_incident_watch family contract reserves for escalation. No signature, returned column or table
+changes. Both functions change with `CREATE OR REPLACE`, never a `DROP`, so grants and `COMMENT`s
+survive; `scripts/check-upgrade.sh` compares every starting version to a fresh install and confirms
+it.
+
+### Escalation is carried by a payload field, not a third event
+
+The family contract carries an onset and an escalation on the same `alerting` event. A consumer tells
+them apart by `previous_level`: null at onset, the previous level at each escalation. `level` is the
+count of notifications for the subject read AFTER the increment, so it is 1 at onset, 2 at the first
+escalation, 3 at the second. The `cleared` payload carries the last level reached at `level`, with
+`previous_level` absent rather than present-and-null, so a listener sees how far the incident got.
+
+`lock_tree_notify()` computes both in the branch that sends the payload: the onset sets level 1 and a
+null previous, and the escalation reads `prior.notify_count + 1` from the row it is updating, which
+is the level after the increment. `lock_tree_notify_resolved()` sets `level` from the swept row's
+`notify_count`. `notified_count` stays on the cleared payload; keys are added, never removed, and the
+two carry the same value.
+
+`test/11_alert.sql` asserts the exact levels: onset 1 with a null previous, first escalation 2 with
+previous 1, a sample at the same level silent, and `cleared` at the last level with no
+`previous_level`. The meaning of the keys is pinned in ALERTS.md in the umbrella repository, not
+here, and this release is the first tool to send them.
+
 ## 1.1.16 (2026-10-11)
 
 The smaller half of the review behind 1.1.15, and one defect that review led to. One helper function
