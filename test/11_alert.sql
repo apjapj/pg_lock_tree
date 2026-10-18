@@ -98,7 +98,7 @@ ORDER BY w.blocked_sessions DESC LIMIT 1;
 \o
 \unset QUIET
 
-SELECT plan(57);
+SELECT plan(73);
 
 SELECT has_table('lock_tree_alert', 'lock_tree_alert table exists');
 SELECT has_function('lock_tree_notify',
@@ -559,6 +559,177 @@ SELECT is(lock_tree_policy_key(1, NULL, NULL), 'blocked>=1 depth>=off wait>=off'
           'lock_tree_policy_key() renders the thresholds, with off for one switched off');
 SELECT is(lock_tree_policy_key(0, -1, interval '-1 second'), 'blocked>=off depth>=off wait>=off',
           'and a threshold below its minimum is off as well, as both alert functions treat it');
+
+-- ------------------------------------------------------------------ phase 7: the level contract
+
+-- 1.2.0 adds `level` and `previous_level`, the two escalation keys the shared pg_incident_watch
+-- alert contract reserves for getting worse. pgTAP cannot read a NOTIFY off the wire, so the two
+-- functions are called from a dblink session whose search_path puts a recording pg_notify ahead of
+-- pg_catalog's, the same trick test/26 uses. The levels are then read straight out of the JSON.
+--
+-- The fixture escalates by WIDTH, adding one waiter at a time, so the high-water mark moves on its
+-- own and each of the three levels is reached deliberately rather than by a timing race.
+\set QUIET 1
+\o /dev/null
+TRUNCATE lock_tree_alert;
+DROP SCHEMA IF EXISTS lock_tree_al_shadow CASCADE;
+CREATE SCHEMA lock_tree_al_shadow;
+CREATE TABLE lock_tree_al_shadow.notifications (
+  seq     bigserial PRIMARY KEY,
+  channel text,
+  payload text
+);
+CREATE FUNCTION lock_tree_al_shadow.pg_notify(channel text, payload text)
+RETURNS void
+LANGUAGE plpgsql
+AS $shadow$
+BEGIN
+  INSERT INTO lock_tree_al_shadow.notifications(channel, payload) VALUES (channel, payload);
+END
+$shadow$;
+DROP TABLE IF EXISTS lock_tree_al_level;
+CREATE TABLE lock_tree_al_level (id int);
+
+SELECT dblink_connect(n, format('dbname=%s user=%s', current_database(), current_user))
+FROM unnest(ARRAY['lv_h', 'lv_w1', 'lv_w2', 'lv_w3', 'lv_cap']) AS n;
+SELECT dblink_exec('lv_h', 'BEGIN');
+SELECT dblink_exec('lv_h', 'SET application_name = ''level_holder''');
+SELECT dblink_exec('lv_h', 'LOCK TABLE lock_tree_al_level IN ACCESS EXCLUSIVE MODE');
+-- The capture session. lock_tree_notify() calls pg_notify unqualified, so with this search_path the
+-- recording function is the one it reaches.
+SELECT dblink_exec('lv_cap', 'SET search_path = lock_tree_al_shadow, public, pg_catalog');
+
+-- Level 1: one waiter, the onset.
+SELECT dblink_send_query('lv_w1',
+  'SET application_name = ''level_w1''; SELECT count(*) FROM lock_tree_al_level');
+DO $lv1$ BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks
+                WHERE relation = 'lock_tree_al_level'::regclass AND NOT granted) = 1;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $lv1$;
+SELECT n AS lv_onset FROM dblink('lv_cap',
+  'SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL)') AS t(n bigint)
+\gset
+
+-- Level 2: a second waiter, so the blocked count moves past the onset high-water mark.
+SELECT dblink_send_query('lv_w2',
+  'SET application_name = ''level_w2''; SELECT count(*) FROM lock_tree_al_level');
+DO $lv2$ BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks
+                WHERE relation = 'lock_tree_al_level'::regclass AND NOT granted) = 2;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $lv2$;
+SELECT n AS lv_esc1 FROM dblink('lv_cap',
+  'SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL)') AS t(n bigint)
+\gset
+
+-- Level 3: a third waiter.
+SELECT dblink_send_query('lv_w3',
+  'SET application_name = ''level_w3''; SELECT count(*) FROM lock_tree_al_level');
+DO $lv3$ BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN (SELECT count(*) FROM pg_locks
+                WHERE relation = 'lock_tree_al_level'::regclass AND NOT granted) = 3;
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $lv3$;
+SELECT n AS lv_esc2 FROM dblink('lv_cap',
+  'SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL)') AS t(n bigint)
+\gset
+
+-- A sample at the same level sends nothing.
+SELECT n AS lv_same FROM dblink('lv_cap',
+  'SELECT lock_tree_notify(min_blocked => 1, min_depth => NULL, min_wait => NULL)') AS t(n bigint)
+\gset
+
+-- And clearing, which carries the last level reached.
+SELECT dblink_exec('lv_h', 'ROLLBACK');
+DO $lvdrain$ BEGIN
+  FOR i IN 1..200 LOOP
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM pg_locks
+                           WHERE relation = 'lock_tree_al_level'::regclass AND NOT granted);
+    PERFORM pg_sleep(0.1);
+  END LOOP;
+END $lvdrain$;
+SELECT n AS lv_cleared FROM dblink('lv_cap',
+  'SELECT lock_tree_notify_resolved(min_blocked => 1, min_depth => NULL, min_wait => NULL)')
+  AS t(n bigint) \gset
+
+DO $lvdisc$ DECLARE c text; BEGIN
+  FOR c IN SELECT unnest(ARRAY['lv_h', 'lv_w1', 'lv_w2', 'lv_w3', 'lv_cap']) LOOP
+    BEGIN PERFORM dblink_disconnect(c); EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+END $lvdisc$;
+\o
+\unset QUIET
+
+SELECT is(:lv_onset::int, 1, 'the onset notifies once on this policy');
+
+SELECT is(:lv_esc1::int, 1, 'the first escalation notifies once');
+
+SELECT is(:lv_esc2::int, 1, 'the second escalation notifies once');
+
+SELECT is(:lv_same::int, 0, 'a sample at the same level returns 0');
+
+SELECT is(:lv_cleared::int, 1, 'the resolver reports the root cleared once');
+
+-- The setup above ran to completion before any assertion, so each payload is identified by the order
+-- it was sent in: seq 1 is the onset, 2 the first escalation, 3 the second, and 4 the cleared one.
+SELECT is((SELECT count(*)::int FROM lock_tree_al_shadow.notifications), 4,
+          'the whole fixture sent four payloads, which is three alerting and one cleared');
+
+SELECT is((SELECT count(*)::int FROM lock_tree_al_shadow.notifications
+           WHERE payload::jsonb ->> 'event' = 'alerting'), 3,
+          'three of them are alerting, one per level, so the same-level sample sent no duplicate');
+
+SELECT is((SELECT (payload::jsonb ->> 'level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 1), 1,
+          'the onset carries level 1, the count read AFTER the increment');
+
+SELECT ok((SELECT (payload::jsonb ? 'previous_level')
+              AND (payload::jsonb ->> 'previous_level') IS NULL
+           FROM lock_tree_al_shadow.notifications WHERE seq = 1),
+          'with previous_level present and null: there is no level before the onset');
+
+SELECT is((SELECT (payload::jsonb ->> 'level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 2), 2,
+          'the first escalation carries level 2');
+
+SELECT is((SELECT (payload::jsonb ->> 'previous_level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 2), 1,
+          'with previous_level 1, the level before it');
+
+SELECT is((SELECT (payload::jsonb ->> 'level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 3), 3,
+          'the second escalation carries level 3');
+
+SELECT is((SELECT (payload::jsonb ->> 'previous_level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 3), 2,
+          'with previous_level 2');
+
+SELECT is((SELECT (payload::jsonb ->> 'event')
+           FROM lock_tree_al_shadow.notifications WHERE seq = 4), 'cleared',
+          'the fourth payload is the cleared event');
+
+SELECT is((SELECT (payload::jsonb ->> 'level')::int
+           FROM lock_tree_al_shadow.notifications WHERE seq = 4), 3,
+          'carrying level 3, the last level the incident reached');
+
+SELECT ok((SELECT payload::jsonb ? 'previous_level'
+           FROM lock_tree_al_shadow.notifications WHERE seq = 4) = false,
+          'and previous_level absent, not present-and-null: a cleared payload has no escalation');
+
+\set QUIET 1
+\o /dev/null
+TRUNCATE lock_tree_alert;
+DROP TABLE IF EXISTS lock_tree_al_level;
+DROP SCHEMA IF EXISTS lock_tree_al_shadow CASCADE;
+\o
+\unset QUIET
 
 SELECT * FROM finish();
 

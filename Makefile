@@ -1,6 +1,6 @@
 # pg_lock_tree Makefile
 EXTENSION = pg_lock_tree
-DATA      = pg_lock_tree--1.0.0.sql pg_lock_tree--1.0.1.sql pg_lock_tree--1.0.2.sql pg_lock_tree--1.1.0.sql pg_lock_tree--1.1.1.sql pg_lock_tree--1.1.2.sql pg_lock_tree--1.1.3.sql pg_lock_tree--1.1.4.sql pg_lock_tree--1.1.5.sql pg_lock_tree--1.1.6.sql pg_lock_tree--1.1.7.sql pg_lock_tree--1.1.8.sql pg_lock_tree--1.1.9.sql pg_lock_tree--1.1.10.sql pg_lock_tree--1.1.11.sql pg_lock_tree--1.1.12.sql pg_lock_tree--1.1.13.sql pg_lock_tree--1.1.14.sql pg_lock_tree--1.1.15.sql pg_lock_tree--1.1.16.sql
+DATA      = pg_lock_tree--1.0.0.sql pg_lock_tree--1.0.1.sql pg_lock_tree--1.0.2.sql pg_lock_tree--1.1.0.sql pg_lock_tree--1.1.1.sql pg_lock_tree--1.1.2.sql pg_lock_tree--1.1.3.sql pg_lock_tree--1.1.4.sql pg_lock_tree--1.1.5.sql pg_lock_tree--1.1.6.sql pg_lock_tree--1.1.7.sql pg_lock_tree--1.1.8.sql pg_lock_tree--1.1.9.sql pg_lock_tree--1.1.10.sql pg_lock_tree--1.1.11.sql pg_lock_tree--1.1.12.sql pg_lock_tree--1.1.13.sql pg_lock_tree--1.1.14.sql pg_lock_tree--1.1.15.sql pg_lock_tree--1.1.16.sql pg_lock_tree--1.2.0.sql
 PGFILEDESC = "pg_lock_tree - readable lock-wait trees"
 
 PG_CONFIG = pg_config
