@@ -88,7 +88,7 @@ jobs:
       PGPASSWORD: test # pragma: allowlist-secret  # throwaway, same as POSTGRES_PASSWORD above
       PGDATABASE: postgres
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # No apt step, and that is the point of the pool's runner image: it carries
         # postgresql-client-18, pg_prove and libtap-parser-sourcehandler-pgtap-perl, so the matrix
         # used to pay an apt-get per job to install what was already present. Verified in
@@ -158,7 +158,7 @@ jobs:
       PGUSER: postgres
       PGDATABASE: postgres
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Start Postgres and install extension
         run: |
@@ -225,7 +225,7 @@ jobs:
       PGPASSWORD: test # pragma: allowlist-secret
       PGDATABASE: postgres
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Wait for Postgres
         run: until pg_isready -q; do sleep 1; done
       - run: make defects PG=18
