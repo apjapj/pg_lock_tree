@@ -161,7 +161,7 @@ rather than a slightly later one.
 ```json
 {"tool":"pg_lock_tree","subject":"pid 179","sampled_at":"2026-10-09T14:22:31+01:00",
  "channel":"lock_tree","event":"alerting","level":1,"previous_level":null,"root_pid":179,
- "application_name":"nightly_reconciliation",
+ "root_object":null,"application_name":"nightly_reconciliation",
  "blocked_sessions":40,"max_depth":2,"longest_wait":"3m12s",
  "waiting_for":"AccessShareLock on ledger"}
 ```
@@ -169,6 +169,12 @@ rather than a slightly later one.
 Every key in an `alerting` payload is always present, `null` where there is genuinely nothing to say.
 A `cleared` payload is the one exception: it omits `previous_level` rather than sending it null, as
 the section below explains.
+
+`waiting_for` is the lock mode and what it is on, `AccessShareLock on ledger` in the example. The
+relation is rendered with `regclass`, so it is schema-qualified only when it is not on the reading
+session's `search_path`: the same lock can read `on ledger` or `on public.ledger`, and neither form is
+a stable key. The history reads it back schema-qualified in every row, as
+[after-the-incident.md](after-the-incident.md) notes.
 
 **There is no size check in this extension.** An earlier version of this paragraph said the server
 enforces an 8000-byte payload limit, which was true of the server and false of this code: there is no
