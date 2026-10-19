@@ -150,20 +150,29 @@ if [ -f CHANGELOG.md ]; then
       || bad "CHANGELOG's top entry is $top, but the extension is $ver"
 fi
 
-# README states a current release. Catch the case where it is stale, which is
-# how 0.2 sat tagged for a day while the README still called it unreleased.
-if [ -f README.md ]; then
-    claimed=$(sed -n 's/.*Current release.*\*\*v\([0-9][0-9.]*\)\*\*.*/\1/p' README.md | head -1)
+# The documents that name a current release. README used to be the only one checked, and only
+# in its bold "**vX**" form, so INSTALL.md's "The tag to check out is the current release,
+# v1.1.16" sat stale while the README and the control file both said 1.2.0. The claim line is
+# the first line in each file that carries the phrase, and its first version is taken to be the
+# claim: today that is README's table row, INSTALL.md's sentence and SECURITY.md's row, and no
+# other line in the three files carries the phrase.
+for f in README.md INSTALL.md SECURITY.md; do
+    [ -f "$f" ] || continue
+    lineno=$(grep -inE 'current release' "$f" | cut -d: -f1 | head -1)
+    # No claim in this file is not an error. Say nothing rather than inventing a failure.
+    [ -n "$lineno" ] || continue
+    claimline=$(sed -n "${lineno}p" "$f")
+    claimed=$(grep -oE '[0-9]+(\.[0-9]+)+' <<<"$claimline" | head -1)
     if [ -z "$claimed" ]; then
-        # Different wording, or no claim at all. Not an error, so say nothing
-        # rather than inventing a failure.
+        # The phrase with no version beside it, e.g. "not yet tagged". The release-state step
+        # below reads that wording; leaving it to that step keeps one failure for one fact.
         :
     elif [ "$claimed" = "$ver" ]; then
-        ok "README names v$ver as the current release"
+        ok "$f:$lineno names v$claimed as the current release"
     else
-        bad "README says v$claimed is current, but the extension is $ver"
+        bad "$f:$lineno says v$claimed is the current release, but the extension is $ver"
     fi
-fi
+done
 
 step "the release state the documents claim"
 
@@ -187,6 +196,27 @@ else
     else
         bad "these say the release is untagged or does not exist, but $tagcount tag(s) do:$stale"
     fi
+fi
+
+step "the control version has a release tag"
+
+# The control file's version is what README, INSTALL.md and SECURITY.md tell a reader to check
+# out or update to, and a tag is what pins that version for anyone who does not know the hash.
+# 1.2.0 was named the current release in all four of those places and tagged nowhere, which took
+# a person reading them side by side to notice. A shallow clone carries no tags, so when none is
+# present the check says so rather than failing; and the gap between bumping the version and
+# cutting the tag is real, so it is waived for that window with LINT_ALLOW_UNTAGGED_RELEASE=1.
+# The tag is read once into a variable and matched with a here-string, because piping git tag
+# into grep -q hits the SIGPIPE this file's header warns about.
+taglist=$(git tag 2>/dev/null)
+if [ "${tagcount:-0}" -eq 0 ]; then
+    ok "no release tags in this checkout, so the control version's tag cannot be checked"
+elif grep -qx "v$ver" <<<"$taglist"; then
+    ok "the control version $ver has its tag, v$ver"
+elif [ "${LINT_ALLOW_UNTAGGED_RELEASE:-0}" = "1" ]; then
+    ok "control version $ver has no tag, which LINT_ALLOW_UNTAGGED_RELEASE=1 allows"
+else
+    bad "control version is $ver but there is no v$ver tag: tag it, or set LINT_ALLOW_UNTAGGED_RELEASE=1 while the bump awaits its tag"
 fi
 
 # Every release script must be installed. DATA covers the release scripts; the

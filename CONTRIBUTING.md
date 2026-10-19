@@ -231,7 +231,9 @@ installation therefore never has to reinstall to get a fix.
 1. **Bump the version.** The control file, the new full-version script, and the changelog heading.
    `scripts/lint-docs.sh` reads the control file and the README and fails if they disagree, and also
    fails if the control file names a version with no script for it, so a missed bump is caught
-   rather than shipped.
+   rather than shipped. It also fails when the control version has no tag, which is correct between
+   this step and the tag at step 8: run it with `LINT_ALLOW_UNTAGGED_RELEASE=1` while a bump is
+   waiting for its tag, and stop setting the variable once the tag exists.
 2. **Write the update script**, and read it against the previous release's file. Most of the work in
    an update is arriving at the same catalog state a fresh install would.
 3. **`make check-upgrade`.** Every path from every earlier version has to converge on the same
