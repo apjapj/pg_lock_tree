@@ -88,7 +88,10 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    `--tags`, each read green on both platforms before the next. The intermediate `v1.1.13` and
    `v1.1.14` never went to GitHub: they were superseded before the flip. Forgejo keeps every tag,
    including the `v0.*` ones: Forgejo is the archive, GitHub is the public release line. Someone
-   wanting an old version from a GitHub clone uses the hash or fetches from Forgejo.
+   wanting an old version from a GitHub clone uses the hash or fetches from Forgejo. **`v1.1.14` was
+   never tagged anywhere, Forgejo and the local clone included**; its CHANGELOG section and its
+   scripts are the only record of it. `v1.1.13` does exist on Forgejo and in the local clone, even
+   though it never went to GitHub.
 10. **[done 2026-10-12, by Piotr] The GitHub Release for each public tag**, from item 8's notes:
     v1.1.15 and v1.1.16 are both published; v1.1.16 is marked latest.
 11. **[done 2026-10-11, by Piotr, in all four repositories] Description and topics**, for example "Lock trees, blocking history and alerts for
