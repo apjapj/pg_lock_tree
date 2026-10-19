@@ -152,26 +152,34 @@ fi
 
 # The documents that name a current release. README used to be the only one checked, and only
 # in its bold "**vX**" form, so INSTALL.md's "The tag to check out is the current release,
-# v1.1.16" sat stale while the README and the control file both said 1.2.0. The claim line is
-# the first line in each file that carries the phrase, and its first version is taken to be the
-# claim: today that is README's table row, INSTALL.md's sentence and SECURITY.md's row, and no
-# other line in the three files carries the phrase.
+# v1.1.16" sat stale while the README and the control file both said 1.2.0.
+#
+# EVERY line that carries the phrase is read, not just the first. A document that names the
+# current release twice can disagree with itself, and reading only the first line checked one of
+# the two claims and passed the other. The claim on a line is its first version token, which is
+# what the line is about: README's row leads with the version, INSTALL.md's sentence names it
+# right after the phrase, and SECURITY.md's row leads with it. A later version on the same line is
+# not a claim, so only the first is read: INSTALL.md names the upgrade floor v1.1.15 in the same
+# sentence, and treating every token as a claim would fail it.
 for f in README.md INSTALL.md SECURITY.md; do
     [ -f "$f" ] || continue
-    lineno=$(grep -inE 'current release' "$f" | cut -d: -f1 | head -1)
-    # No claim in this file is not an error. Say nothing rather than inventing a failure.
-    [ -n "$lineno" ] || continue
-    claimline=$(sed -n "${lineno}p" "$f")
-    claimed=$(grep -oE '[0-9]+(\.[0-9]+)+' <<<"$claimline" | head -1)
-    if [ -z "$claimed" ]; then
-        # The phrase with no version beside it, e.g. "not yet tagged". The release-state step
-        # below reads that wording; leaving it to that step keeps one failure for one fact.
-        :
-    elif [ "$claimed" = "$ver" ]; then
-        ok "$f:$lineno names v$claimed as the current release"
-    else
-        bad "$f:$lineno says v$claimed is the current release, but the extension is $ver"
-    fi
+    # One iteration per line that carries the phrase, so a file with two claims fails on whichever
+    # line is wrong rather than passing on the first. The line number comes from grep -in and the
+    # line is then re-read on its own; the loop runs in this shell, so ok and bad keep counting.
+    while IFS=: read -r lineno _claimtext; do
+        [ -n "$lineno" ] || continue
+        claimline=$(sed -n "${lineno}p" "$f")
+        claimed=$(grep -oE '[0-9]+(\.[0-9]+)+' <<<"$claimline" | head -1)
+        if [ -z "$claimed" ]; then
+            # The phrase with no version beside it, e.g. "not yet tagged". The release-state step
+            # below reads that wording; leaving it to that step keeps one failure for one fact.
+            :
+        elif [ "$claimed" = "$ver" ]; then
+            ok "$f:$lineno names v$claimed as the current release"
+        else
+            bad "$f:$lineno says v$claimed is the current release, but the extension is $ver"
+        fi
+    done < <(grep -inE 'current release' "$f" || true)
 done
 
 step "the release state the documents claim"
