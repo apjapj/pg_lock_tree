@@ -112,20 +112,28 @@ SELECT is(:dur_rows::int, 2, 'one row per root query id, so two');
 SELECT ok(:top_seconds::numeric > :bottom_seconds::numeric,
           'and the one that held longer is ranked first, which is the whole point of a duration');
 
--- The arithmetic, checked against the samples rather than against a hardcoded number. Four
--- instants of the slow root are consecutive, so its time is the sum of the three gaps between them.
+-- The arithmetic, checked against the samples rather than against a hardcoded number. The slow
+-- root's instants are consecutive, so its time is the sum of the gaps between them. That sum is
+-- computed here from the history and compared with what the function reports. A fixture built from
+-- sleeps runs longer when the machine is busy, so comparing against a literal target is a race:
+-- this assertion once failed on a loaded CI runner while the function was right and nothing about
+-- the function had changed. Comparing against the recorded instants removes the race.
 \set QUIET 1
 \o /dev/null
 WITH instants AS (SELECT DISTINCT sampled_at FROM lock_tree_history),
 spans AS (SELECT sampled_at AS f, lead(sampled_at) OVER (ORDER BY sampled_at) AS t FROM instants),
 slow_instants AS (
-  SELECT DISTINCT sampled_at FROM lock_tree_history WHERE application_name = 'slow_batch' AND depth = 0
+  -- query_id IS NOT NULL matches how lock_tree_duration() defines a root, so the sum below spans
+  -- exactly the gaps the function is entitled to count and no others.
+  SELECT DISTINCT sampled_at FROM lock_tree_history
+   WHERE application_name = 'slow_batch' AND depth = 0 AND query_id IS NOT NULL
 )
-SELECT coalesce(sum(t - f), interval '0') AS expected_slow
+SELECT coalesce(extract(epoch FROM sum(t - f)), 0) AS expected_slow
 FROM spans s
 WHERE s.t IS NOT NULL
   AND s.f IN (SELECT sampled_at FROM slow_instants)
-  AND s.t IN (SELECT sampled_at FROM slow_instants);
+  AND s.t IN (SELECT sampled_at FROM slow_instants)
+\gset
 \o
 \set QUIET 0
 
@@ -138,10 +146,16 @@ SELECT count(*) AS dropped_for_slow FROM lock_tree_duration()
 \o
 \set QUIET 0
 
-SELECT ok(abs(:slow_seconds::numeric - 3) < 1.5,
-          'the slow root holds for about 3 seconds of observed samples, and the function reports '
-          || 'close to that. It is a lower bound, not an estimate: the interval after the last '
-          || 'sample is never counted because nobody observed it');
+-- One assertion, so the plan does not move. The first half is the arithmetic: the function must
+-- report the gaps the slow root actually spans, to within half a second. The second half is a
+-- fixture-sanity bound, loose on purpose. A fixture that never ran has expected_slow near zero, and
+-- then the first half would compare 0 with 0 and pass, so the bound is what fails on a broken run.
+SELECT ok(abs(:slow_seconds::numeric - :expected_slow::numeric) < 0.5
+          AND :expected_slow::numeric BETWEEN 1.5 AND 6,
+          'the slow root holds across the observed samples, and the function reports a duration '
+          || 'within half a second of the gaps those samples actually span. It is a lower bound, '
+          || 'not an estimate: the interval after the last sample is never counted because nobody '
+          || 'observed it');
 
 SELECT is(:dropped_for_slow::int, 1,
           'and one gap was DISCARDED rather than apportioned, because the quick root had already '
