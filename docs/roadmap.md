@@ -15,6 +15,10 @@ GitHub's `main`, so pushing one uploads no history that is not already there.
 parts of it have since stopped being true. Each item below says what actually happened to it; where the
 snapshot and an item disagree, the item wins.
 
+**Checked 2026-10-19: all four repositories are public**, so the steps below that were gated on going
+public are done. The one outward step still outstanding for this repository is the `v1.2.0` tag and its
+GitHub Release; pg_bloat_cause has the same step outstanding as `v0.4.0`.
+
 Marked **[Piotr]** where the step is outward-facing or cannot be taken back, and so needs his explicit
 go; **[can do now]** where it is local, reversible, and can be reviewed before anything is pushed.
 
@@ -39,18 +43,18 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
 3. **[done, on main in all four repositories; GitHub now reports `PostgreSQL`] The licence GitHub cannot read.** `LICENSE` is the PostgreSQL License, but its text
    differs from the SPDX template enough that GitHub reports NOASSERTION. Match the template so it is
    detected as `PostgreSQL`; check after the push that the sidebar says so.
-4. **[done: SECURITY.md, an e-mail alias per repository plus GitHub's private vulnerability reporting, which Piotr enables when the repository is public] A security policy** at the repository root: how to report a vulnerability privately, and
+4. **[done, and confirmed 2026-10-19: SECURITY.md, an e-mail alias per repository plus GitHub's private vulnerability reporting, which is enabled on all four repositories] A security policy** at the repository root: how to report a vulnerability privately, and
    which versions are supported (1.1.13; 1.1.11 is not installable). The contact is Piotr's choice.
 5. **[done in 1.1.14] README trim and badges.** The trim Piotr mentioned; a CI badge for the GitHub
-   workflow (it renders only once the repository is public); the `make install` needs a superuser
+   workflow (which renders now that the repositories are public); the `make install` needs a superuser
    shell and server headers, and the "managed instances (RDS, Aurora) are untested" caveat
    (INSTALL.md section C), both stated in the README rather than only in INSTALL.md.
 
    What the trim turned out to be: the README already routed by audience in "Where to go", and then
    listed all eleven documents flat underneath it, so a reader was routed and immediately shown
    everything anyway. The list is now grouped into read this first, read this when the situation
-   arrives, and reference. Nothing was deleted. The badge was added now and shows as a broken image
-   until the repository is public, which was the accepted trade against a second commit later.
+   arrives, and reference. Nothing was deleted. The badge was added and showed a broken image until the
+   repositories went public, which was the accepted trade against a second commit later.
 6. **[done in 1.1.14] Issue and pull request templates**, short: version, PostgreSQL version, output of
    `SELECT * FROM lock_tree_text()`; and CONTRIBUTING.md's md5 copy rule linked from the PR template.
 
@@ -100,14 +104,16 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
     **Unblocked 2026-10-12:** the token gained the permissions it was missing, descriptions and
     topics are set on all four and read back, and repository-settings `PATCH` now answers 200.
     This also unblocks item 13 and, once the repository is public, private vulnerability reporting.
-12. **Visibility.** Flipping to public is Piotr's, in the GitHub settings. It is the step that cannot
-    be taken back in practice: a public repository is cloned, forked and cached within hours.
-13. **Branch protection and required checks** on `main`, the lint, pgtap matrix and install-path jobs.
-    The token used here is refused the protection API (403), and branch protection on a free private
-    repository is not available, so this is done in the settings once the repository is public.
-14. **The umbrella and its siblings.** pg_incident_watch's README links all three tools; while they
-    are private those links are 404s to a public reader. Either make pg_incident_watch public at the
-    same time with its status table current, or keep it private until the siblings are tagged.
+12. **[done: all four repositories are public] Visibility.** Flipping to public was Piotr's, in the
+    GitHub settings. It is the step that cannot be taken back in practice: a public repository is
+    cloned, forked and cached within hours.
+13. **[done: a ruleset "protect main" carries the lint, the pgtap matrix and the install-path jobs as
+    required checks, with one approving review] Branch protection and required checks** on `main`. The
+    token used here was refused the protection API (403) while the repository was private, so this was
+    done in the settings once it went public.
+14. **[done: all four repositories are public, so the sibling links resolve] The umbrella and its
+    siblings.** pg_incident_watch's README links all three tools; while they were private those links
+    were 404s to a public reader.
 
 ## Immediate, and in this order
 
