@@ -30,6 +30,21 @@ On **RDS, Aurora or another managed instance the install path is untested.** You
 `pg_tle` loads SQL extensions without filesystem access. Plausible is not tested, and
 [INSTALL.md section C](INSTALL.md#c-on-rds-aurora-or-another-managed-instance) says so in full.
 
+## The incident, end to end
+
+This tool answers one question; the family covers the rest, and the three install independently.
+They share the alert contract and the reference listener in
+[pg_incident_watch](https://github.com/apjapj/pg_incident_watch).
+
+| Tool | Question it answers |
+|---|---|
+| [pg_lock_tree](https://github.com/apjapj/pg_lock_tree) | what is stuck now |
+| [pg_bloat_cause](https://github.com/apjapj/pg_bloat_cause) | what is slowing down |
+| [pg_limit_runway](https://github.com/apjapj/pg_limit_runway) | what will break next |
+
+The umbrella also tests all three in one database, so installing more than one is a supported
+combination rather than an accident.
+
 ## Where to go
 
 Split by when you arrive, not by feature. Four moments, and the case that comes up first in each:
