@@ -1,7 +1,7 @@
---- a/pg_lock_tree--1.1.16.sql
-+++ b/pg_lock_tree--1.1.16.sql
+--- a/pg_lock_tree--1.2.0.sql
++++ b/pg_lock_tree--1.2.0.sql
 @@ -1153,8 +1153,7 @@
-          -- What the longest-waiting session wants, which is what "first" promises. Until 1.1.16 this
+          -- What the longest-waiting session wants, which is what "first" promises. Until 1.2.0 this
           -- was min(), the alphabetically least lock description, which agreed only when every
           -- waiter in the tree wanted the same lock.
 -         left((array_agg(t.waiting_for ORDER BY t.wait_age DESC NULLS LAST, t.pid)
