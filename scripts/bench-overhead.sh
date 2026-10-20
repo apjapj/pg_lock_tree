@@ -9,7 +9,10 @@
 # What is measured. `SELECT count(*) FROM lock_tree_text()` and `... lock_tree_roots()`, run from
 # psql with `\timing on`. That is parse, plan, execute and the round trip: a SQL function has no plan
 # cache across separate statements, so this is what a person running the command in psql pays. The
-# count(*) keeps the number of rows the client transfers constant as the queue grows.
+# count(*) keeps the number of rows the client transfers constant as the queue grows. The median is
+# the warm steady state: the FIRST call in a fresh backend pays for cold catalog caches and is several
+# times slower (19 to 28 ms for lock_tree_roots() on PG 18.6 against 5 to 8 ms warm), and a median over
+# 30 samples deliberately does not report it.
 #
 # The baseline is `pg_blocking_pids()`, the built-in an operator reaches for when they do not have
 # this extension: one row per blocked session, and one per (blocked, blocker) pair for the roots. It
@@ -140,10 +143,24 @@ median_ms() {
 # reader did not ask for, and \timing rather than EXPLAIN ANALYZE because the tile's number is the
 # one a person sees at the prompt.
 time_sql() {
-    sql=$1
-    { echo '\timing on'; for _ in $(seq 1 "$repeat"); do echo "$sql"; done; } \
+    sql=${1%;}
+    tmp=$(mktemp)
+    { echo '\timing on'; for _ in $(seq 1 "$repeat"); do printf '%s;\n' "$sql"; done; } \
         | psql -X -A -t 2>/dev/null \
-        | grep '^Time:' | sed 's/^Time: //; s/ ms$//' | median_ms
+        | grep '^Time:' | sed 's/^Time: //; s/ ms$//' > "$tmp"
+    # The first version echoed the SQL without a semicolon. psql then read all N lines as one
+    # statement, printed one "Time:", and the "median of 30" was the median of one sample: 0.43 ms
+    # for a call that costs 5 to 8 ms. A sample count that is not the requested count is a broken
+    # measurement, and this script refuses to print it rather than average it.
+    n=$(wc -l < "$tmp")
+    if [ "$n" -ne "$repeat" ]; then
+        printf '  expected %s timings, got %s; refusing to report a median from them\n' \
+               "$repeat" "$n" >&2
+        rm -f "$tmp"
+        return 1
+    fi
+    median_ms < "$tmp"
+    rm -f "$tmp"
 }
 
 printf '  %-8s %-22s %-24s %-22s %s\n' \
@@ -172,10 +189,13 @@ for n in ${waiters_list//,/ }; do
             continue
         fi
     fi
-    text=$(time_sql "SELECT count(*) FROM lock_tree_text()")
-    btext=$(time_sql "SELECT count(*) FROM (SELECT pid FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0) q")
-    roots=$(time_sql "SELECT count(*) FROM lock_tree_roots()")
-    broots=$(time_sql "SELECT count(*) FROM (SELECT b FROM pg_stat_activity a, LATERAL unnest(pg_blocking_pids(a.pid)) b) q")
+    if ! text=$(time_sql "SELECT count(*) FROM lock_tree_text()") \
+       || ! btext=$(time_sql "SELECT count(*) FROM (SELECT pid FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0) q") \
+       || ! roots=$(time_sql "SELECT count(*) FROM lock_tree_roots()") \
+       || ! broots=$(time_sql "SELECT count(*) FROM (SELECT b FROM pg_stat_activity a, LATERAL unnest(pg_blocking_pids(a.pid)) b) q"); then
+        stop_fixture
+        exit 1
+    fi
     stop_fixture
     printf '  %-8s %-22s %-24s %-22s %s\n' "$n" "$text" "$btext" "$roots" "$broots"
 done
