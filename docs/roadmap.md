@@ -506,26 +506,32 @@ fail on its first line.
   nobody needs. **One archive table per host, with the host in the table or schema name**, answers the
   scenario with no column and no migration. Storage for a dozen hosts is 0.33 TiB a year at
   production-shaped query text and 0.15 TiB at the fixture's, with BRIN costing 384 kB in total.
-- **The `tool` key, and the shared alert contract.** Raised by the pg_incident_watch umbrella, which
-  groups this extension with `pg_bloat_cause` and `pg_limit_runway` and promises that all three emit
-  the same JSON payload shape so one listener can route all of them. The umbrella lists this as its
-  own step 5, to be done "in that project, not here", and says to raise it on this roadmap. Raised,
-  and not implemented, because the shared contract it depends on does not exist yet. That contract is
-  to be written in the umbrella's own directory rather than in this repository, and inventing a
-  payload shape here would produce exactly the local version the umbrella says not to invent.
+- **The `tool` key, and the shared alert contract. Closed, in 1.1.11 and 1.2.0.** Raised by the
+  pg_incident_watch umbrella, which groups this extension with `pg_bloat_cause` and
+  `pg_limit_runway` and promises that all three emit the same JSON payload shape so one listener can
+  route all of them. The umbrella said the contract would be written in its own directory and not
+  here, and that is what happened: [its ALERTS.md](https://github.com/apjapj/pg_incident_watch/blob/main/ALERTS.md)
+  is the contract, and this extension sends `tool`, `subject` and `sampled_at` under it since 1.1.11.
+  What it had to add for the contract was `level` and `previous_level`, in 1.2.0.
 
-  What is already compatible: this extension's stability rule is "NOTIFY payload keys: additive only",
-  so adding `tool` is a minor release and not a break. Its `event` values are `alerting` and `cleared`
-  today, and the umbrella wants `alerting`, `escalated`, `cleared`, with the open question of whether
-  `escalated` is added here or the umbrella adopts these two. `escalated` is the only thing this
-  extension would actually need to add, and its `lock_tree_alert` table already stores the value at
-  the last notification, which is what an escalation edge has to compare against. **Blocked on the
-  contract, not on anything here.**
+  The `escalated` question was answered the other way round from what this entry expected, and the
+  contract records the reasoning: escalation is not a third event. All three tools send `alerting`
+  for an onset and for an escalation, and `previous_level` is null at the onset and set when the
+  incident climbs. `escalated` stays in the vocabulary because the contract forbids removing a
+  value, and no tool sends it; its absence is not a fault. That is one fewer branch for every
+  consumer, and it is what this extension already did before the contract existed.
 
-  Two other umbrella notes worth recording rather than acting on. It flags that PG 14 reaches end of
-  life on 2026-11-12 and recommends the umbrella floor at 15 while this extension keeps 14; and it
-  asks for a job that installs all three extensions into one database, which is the only real test of
-  "works alongside" and cannot exist until the other two do.
+  The one-database job exists too. The umbrella's
+  [coexistence runner](https://github.com/apjapj/pg_incident_watch/blob/main/scripts/coexist.sh)
+  installs all three extensions at the refs its `stacks/family.toml` pins, into one database, runs
+  every suite and checks the contract. It could not exist until the other two did, which is why this
+  note said it could not, and now it does.
+
+  Two umbrella notes are recorded here rather than acted on. It flags that PostgreSQL 14 reaches end
+  of life on 2026-11-12 and recommends the umbrella floor at 15 while this extension keeps 14; that
+  is decided in [INSTALL.md](../INSTALL.md), which keeps 14 tested until 19 is stable. And the
+  payload rules that made all of this additive are the ones [docs/alerting.md](alerting.md) states:
+  keys are added and never renamed, values are added within a key and never removed.
 - **A recurrence report, and the fingerprint question it needed.** Asked for as "has this happened
   before, and is it getting worse", on the reasoning that a review instance is where it would run and
   speed does not matter there. Speed is not the obstacle: counting **every** incident in a 216,072-row
