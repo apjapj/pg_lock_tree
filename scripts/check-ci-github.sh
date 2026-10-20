@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# scripts/check-ci-github.sh: scripts/check-ci.sh for GitHub Actions. A DRAFT for the move to GitHub:
-# it has been run only against a local mock of the Actions API (see the commit that added it), never
-# against github.com, and nothing uses it for a tag until it has been.
+# scripts/check-ci-github.sh: scripts/check-ci.sh for GitHub Actions. The GitHub counterpart of the
+# gate, not a draft: it has been run against github.com and read run 38068022236 correctly on
+# 2026-10-10, a green `test` push on 5063538a. It stays a contributor script in this repository
+# rather than moving to the umbrella, because it derives the owner and the repository from the
+# checkout's own remote, and so works in the lone clone a release is made from.
 #
 # Same rules, same configuration shape, same exit codes as check-ci.sh. What differs is the API:
 #   base        https://api.github.com, Bearer token, Accept: application/vnd.github+json

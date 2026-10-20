@@ -71,9 +71,16 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    front matter GitHub needs before it registers a file as a template at all: without it
    the chooser offered nothing but a blank issue, on every repository, and nothing in CI
    could see it.
-7. **[open, a small decision] `scripts/check-ci-github.sh`**: it is in `main` (7a80420), read run
-   38068022236 correctly, and defaults to api.github.com with no host of its own; decide whether it
-   stays a contributor script or moves to the umbrella.
+7. **[decided 2026-10-20: it stays a contributor script here] `scripts/check-ci-github.sh`.** It is
+   in `main` (7a80420), defaults to api.github.com with no host of its own, and has read a real run
+   correctly: 38068022236, a green `test` push on `5063538a`. The question was whether it stays here
+   or moves to the umbrella. It stays, because it derives the owner and the repository from the
+   checkout's own remote and therefore works in the lone clone a release is made from; moving it
+   would make a check about *this* commit depend on a second checkout sitting beside it, in a
+   repository the tag does not name. The price is a copy per repository that wants the GitHub side of
+   the gate. bloat and runway run the Forgejo gate only today, which is a decision for those
+   repositories rather than a reason to move this one. Its header said it had never run against
+   github.com; that line is gone.
 8. **[done 2026-10-12, by Piotr] Release notes**, drafted from CHANGELOG.md's entry and published as
    GitHub Releases for v1.1.15 and v1.1.16. The v1.1.15 notes say plainly that v1.1.11 cannot be
    `make install`ed and is kept as a tag for the record.
