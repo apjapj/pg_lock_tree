@@ -53,7 +53,8 @@ case "$mode" in
     container) [ -n "$v" ] || { echo "usage: check-defects.sh [--local|--container] <postgres major version>" >&2; exit 2; } ;;
 esac
 
-rel="pg_lock_tree--$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" pg_lock_tree.control).sql"
+default_version=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" pg_lock_tree.control)
+rel="pg_lock_tree--$default_version.sql"
 [ -f "$rel" ] || { echo "no release script $rel; the control file names a version with no file" >&2; exit 1; }
 
 num=${v//[^0-9]/}; port=55$num; container=pg-lock-tree-ci
@@ -131,7 +132,7 @@ run_with() {
 # A failure anywhere drops the scratch database; a killed job is covered by the unique name.
 trap 'drop_scratch' EXIT INT TERM
 
-total=0; caught=0; missed=0; norun=0; regressed=""
+total=0; caught=0; missed=0; norun=0; hard_fail=0; regressed=""
 
 # The reason each cell could not run, kept so the summary can repeat it. A failure in the middle of
 # the loop is easy to lose to a filtered log; the next occurrence then explains itself at the end.
@@ -145,6 +146,28 @@ for patch in defects/*.patch; do
     command=$(sed -n 's/^command=//p' "$meta" 2>/dev/null | head -1)
     NOT_RUN=$(sed -n 's/^could_not_run_exit_codes=//p' "$meta" 2>/dev/null | head -1)
     total=$((total+1))
+
+    # A patch that targets a full release script other than the current default version cannot be
+    # exercised by CREATE EXTENSION, which installs the default. That is a stale defect and must
+    # fail the gate, not disappear into a green "could not run".
+    touched=$(grep -E '^\+\+\+ ' "$patch" | sed -E 's#^\+\+\+ (b/)?##')
+    stale=""
+    for f in $touched; do
+        case "$f" in
+            pg_lock_tree--[0-9]*.sql)
+                pv=${f#pg_lock_tree--}; pv=${pv%.sql}
+                case "$pv" in
+                    *--*) ;;
+                    *) [ "$pv" = "$default_version" ] || stale="$f" ;;
+                esac
+                ;;
+        esac
+    done
+    if [ -n "$stale" ]; then
+        echo "  $id: COULD-NOT-RUN (patch targets $stale, current default is $default_version)"
+        note_norun "patch targets $stale, current default is $default_version"
+        norun=$((norun+1)); hard_fail=$((hard_fail+1)); continue
+    fi
 
     # A cell names its catcher one of two ways: test=, a pgTAP file, or command=, a program whose
     # exit status is the verdict. Both are run against a fresh state with the script loaded.
@@ -190,7 +213,7 @@ for patch in defects/*.patch; do
     if ! patch -s -p1 -d "$tmp" < "$patch"; then
         echo "  $id: COULD-NOT-RUN (the patch does not apply)"
         note_norun "the patch does not apply"
-        norun=$((norun+1)); rm -rf "$tmp"; continue
+        norun=$((norun+1)); hard_fail=$((hard_fail+1)); rm -rf "$tmp"; continue
     fi
     run_with "$tmp/$rel" "$catcher"; rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -227,5 +250,5 @@ if [ -n "$NORUN_DETAIL" ]; then
     printf '%s' "$NORUN_DETAIL" | sed 's/^/  /'
 fi
 echo "defects ($mode): $total cell(s), $den ran: $caught caught, $missed missed; $norun could not run"
-[ "$missed" -eq 0 ] || { echo "regression:$regressed" >&2; exit 1; }
+[ "$missed" -eq 0 ] && [ "$hard_fail" -eq 0 ] || { echo "regression:$regressed" >&2; exit 1; }
 exit 0
