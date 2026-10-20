@@ -4,10 +4,10 @@
 
 | Version | Supported | Why |
 |---|---|---|
-| 1.2.0 | **yes** | the current release |
-| 1.1.12 to 1.1.16 | yes, by updating | `ALTER EXTENSION pg_lock_tree UPDATE`; 1.1.15 and 1.1.16 fix defects in alerting, including the wrong application name in payloads and a cleared incident that never alerted again, and 1.2.0 adds the `level` and `previous_level` payload keys |
+| 1.2.1 | **yes** | the current release; 1.2.1 changes only the `lock_tree_roots()` body and returns the same rows and columns as 1.2.0 |
+| 1.1.12 to 1.2.0 | yes, by updating | `ALTER EXTENSION pg_lock_tree UPDATE`; 1.1.15 and 1.1.16 fix defects in alerting, including the wrong application name in payloads and a cleared incident that never alerted again, and 1.2.0 adds the `level` and `previous_level` payload keys |
 | 1.1.11 | **no** | cannot be installed with `make install`; updating *through* it removes `EXECUTE` grants on two functions (INSTALL.md says how to restore them) |
-| 1.1.10 and earlier | no | update to 1.2.0 |
+| 1.1.10 and earlier | no | update to 1.2.1 |
 
 Fixes are made on `main` and released as a new version. Released tags are not edited.
 
