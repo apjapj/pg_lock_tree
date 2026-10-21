@@ -70,9 +70,13 @@ SELECT * FROM lock_tree_text();
 -- 2. Who is blocking the most sessions?
 SELECT * FROM lock_tree_roots();
 
--- 3. I have decided who to terminate. Show me the command, do not run it for me.
-SELECT command FROM lock_tree_command() \gexec
+-- 3. I have decided who to terminate. Show me the commands; I will run the one I choose.
+SELECT command FROM lock_tree_command();
 ```
+
+That third query returns statements and runs none of them. Read the rows, then run one. Do **not**
+add `\gexec` to it: `\gexec` runs every row it is given, so it would cancel or terminate every root
+the extension offered, including the ones you have not looked at yet.
 
 If the queue is wider than fits on a screen, `lock_tree_wide()` and `lock_tree_summary()` summarise
 it instead: [docs/incident.md](docs/incident.md).
@@ -103,6 +107,11 @@ Then, in the database, when something is slow:
 ```sql
 SELECT * FROM lock_tree_text();
 ```
+
+If that fails with `permission denied for view lock_tree`, the role is a monitoring role with only
+one of the two grants it needs. `pg_read_all_stats` on its own is not enough, and neither is
+`SELECT` on its own; both are required. `pg_monitor` alone is denied too. The matrix, and the third
+grant the history readers need, is in [INSTALL.md#grants](INSTALL.md#grants).
 
 ## What it looks like
 
