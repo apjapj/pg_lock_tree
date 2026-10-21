@@ -4,7 +4,8 @@
 
 | Version | Supported | Why |
 |---|---|---|
-| 1.4.0 | **yes** | the current release; adds `lock_tree_deadlock_cycle()`, a new read function only |
+| 1.5.0 | **yes** | the current release; adds `lock_tree_backend(pid)`, a new read function only |
+| 1.4.0 | yes, by updating | adds `lock_tree_deadlock_cycle()`, a new read function only |
 | 1.3.0 | yes, by updating | adds `lock_tree_root_holds()`, a new read function only |
 | 1.2.1 to 1.1.12 | yes, by updating | `ALTER EXTENSION pg_lock_tree UPDATE`; 1.2.1 changes only the `lock_tree_roots()` body and returns the same rows and columns as 1.2.0 |
 | 1.1.11 | **no** | cannot be installed with `make install`; updating *through* it removes `EXECUTE` grants on two functions (INSTALL.md says how to restore them) |

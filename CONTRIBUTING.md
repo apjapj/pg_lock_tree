@@ -11,7 +11,7 @@ what catches a rename that half the documentation has not caught up with.
 ```bash
 make lint               # the checks that need no server: the documentation lint, and a note
 make lint-docs          # documentation, objects, paths, links and anchors, and the test table
-make prove              # 505 pgTAP tests against the server your libpq env vars point at
+make prove              # 513 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured
@@ -61,6 +61,7 @@ terminate backends rather than mocking anything:
 | `test/24_archive_find.sql` | searching the archive: that a NULL window is **refused**, that the guard `PERFORM` comes before the query rather than merely being in the body, that the result is one row per sample rather than per session, that each filter narrows the answer, and the three 1.1.9 corrections: `samples` is absent from the OUT columns, `%` and `_` in `waiting_like` are literals so a name that does not exist returns nothing, and a `since` wider than the archive is accepted rather than refused |
 | `test/25_first_waiting_for.sql` | that `lock_tree_wide().first_waiting_for` is what the longest waiter wants: one root, two waiters on two tables, the older one on the table that sorts last, so `min()` and "first" disagree and the test can tell which it got |
 | `test/26_resolve_reblock.sql` | a root that comes back while it is being resolved: that `lock_tree_notify_resolved()` reports it cleared **and** forgets it in one statement, so the next `lock_tree_notify()` alerts again rather than treating a live incident as already alerted and going quiet. The window is opened with a `search_path` that puts a `pg_notify` re-establishing the incident ahead of `pg_catalog`'s, and a trap assertion checks the root really is blocking again, so the file cannot pass by not reproducing |
+| `test/28_backend.sql` | `lock_tree_backend(pid)` for one backend: its type, its held locks by mode and object, an idle session with no blockers, and a dblink waiter that names its blocker, its waiting lock and its wait age. Also pins that a pid which is not a backend returns no row rather than a fabricated one |
 | `test/27_grants.sql` | the grant matrix INSTALL.md describes: one superuser blocker and waiter through dblink, then the four roles (no grants, `pg_monitor` only, `SELECT` on the view only, both). Pins that `pg_monitor` is still denied, that `SELECT` alone shows no other session, and that `lock_tree_sample()` needs its own `EXECUTE` |
 There is no `test/20`. Nothing was ever written at that number, and renumbering to close the gap
 would change three filenames in the history for no benefit.

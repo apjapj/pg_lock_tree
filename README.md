@@ -13,7 +13,7 @@ Pure SQL. No C, no background worker, no `shared_preload_libraries`, no restart.
 
 | | |
 |---|---|
-| Current release | **v1.4.0** (green on the PG 14 to 19beta4 matrix) |
+| Current release | **v1.5.0** (green on the PG 14 to 19beta4 matrix) |
 | Requires | PostgreSQL 14+, a superuser for `CREATE EXTENSION` |
 | Licence | PostgreSQL |
 

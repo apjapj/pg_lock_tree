@@ -50,10 +50,10 @@ ahead of the last tag:
 
 ```bash
 git tag --sort=v:refname    # every release, oldest first; CHANGELOG.md has what each one did
-git checkout v1.4.0         # or: git checkout main for whatever is newest
+git checkout v1.5.0         # or: git checkout main for whatever is newest
 ```
 
-The tag to check out is the current release, v1.4.0. Every release tag from v1.1.15 onward
+The tag to check out is the current release, v1.5.0. Every release tag from v1.1.15 onward
 exists on GitHub, which is where a public clone comes from; the v0.* and early v1.1.x tags
 exist only on the author's Forgejo, so `git checkout` for one of those will not resolve on a
 public clone. `main` always works and is at or ahead of the newest tag.
@@ -90,8 +90,8 @@ Check what it landed on before continuing:
 
 ```bash
 ls "$(pg_config --sharedir)"/extension/pg_lock_tree*
-# pg_lock_tree--1.0.0.sql ... pg_lock_tree--1.4.0.sql      one full script per release from 1.0.0
-# pg_lock_tree--1.0.0--1.0.1.sql ... --1.3.0--1.4.0.sql   the update path from each release to the next
+# pg_lock_tree--1.0.0.sql ... pg_lock_tree--1.5.0.sql      one full script per release from 1.0.0
+# pg_lock_tree--1.0.0--1.0.1.sql ... --1.4.0--1.5.0.sql   the update path from each release to the next
 # pg_lock_tree--1.1.8--1.1.10.sql                          a direct path past 1.1.9's faulty check
 # pg_lock_tree--1.1.10--1.1.12.sql                         a direct path past 1.1.11's lost grants
 # pg_lock_tree.control
@@ -427,7 +427,7 @@ git pull && sudo make install
 
 ```sql
 ALTER EXTENSION pg_lock_tree UPDATE;              -- to the default version
-ALTER EXTENSION pg_lock_tree UPDATE TO '1.4.0';  -- or name it explicitly
+ALTER EXTENSION pg_lock_tree UPDATE TO '1.5.0';  -- or name it explicitly
 ```
 
 Repeat per database.
