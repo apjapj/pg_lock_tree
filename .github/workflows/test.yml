@@ -216,11 +216,16 @@ jobs:
 
           exit $fail
 
-  # Build the PGXN package from the release tag, record its sha256 and validate META.json with
-  # PGXN's own validator. Tags only: a package is made from a tag, never a branch. The structural
-  # check runs in both lint jobs; this job adds the real validator and the archive.
+  # Build the PGXN package and validate META.json with PGXN's own validator.
+  #
+  # On a tag push it uses that tag, which is the release check. On a PR it uses the latest existing
+  # tag, so a broken generator or pgxn.toml fails on the PR rather than at the next release. A
+  # release PR that bumps the control version without its tag yet will fail here by design: the
+  # package can only be made from a tag, and the tag is cut after the merge.
+  #
+  # The structural check (shape, private hosts) also runs in both lint jobs. The maintainer
+  # placeholder is a warning, not a failure: only a publish refuses it.
   pgxn:
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -229,7 +234,12 @@ jobs:
       - name: Build the package and validate META.json
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*')"
+            echo "PR run: validating against the latest tag, $tag"
+          fi
           version="${tag#v}"
           mkdir -p build/pgxn
           ./scripts/pgxn-meta.py --tag "$tag" --output build/pgxn/META.json

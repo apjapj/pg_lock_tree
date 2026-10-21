@@ -82,6 +82,10 @@ def metadata(tag: str | None) -> dict:
     if tag is not None and tag != f"v{version}":
         fail(f"tag {tag} does not match the control version {version} (expected v{version})")
 
+    if "CHANGE-ME" in conf["maintainer"]:
+        print("pgxn-meta: warning: maintainer is still the placeholder; "
+              "a real publish must refuse until the slonik.vip alias is set", file=sys.stderr)
+
     resources = conf["resources"]
     for key in ("homepage", "bugtracker", "repository", "web"):
         if not resources.get(key):
