@@ -159,9 +159,17 @@ CREATE EXTENSION pg_tle;
 SELECT pg_tle.create_extension('pg_lock_tree', 'pg_tle');
 ```
 
-That is the shape of it. **Treat it as unverified** until someone has run it, and check
-particularly whether `pg_blocking_pids()` is reachable under `pg_tle`, which is the one
-dependency that might not be.
+That is the shape of it. **Treat it as unverified** until someone has run it. Before relying on
+it, check these on a scratch instance, in this order:
+
+1. That `pg_tle` loads a pure-SQL extension at all, and that `CREATE EXTENSION pg_lock_tree`
+   succeeds after `pg_tle.create_extension()`.
+2. That `pg_blocking_pids()` and `pg_locks.waitstart` are both available to the extension. The
+   first is the one dependency that might not be; the second exists from PostgreSQL 14, which this
+   extension refuses to install without.
+3. That the objects `make check-install` looks for are present, and that `SELECT * FROM
+   lock_tree_text()` returns on a quiet database without error. A managed instance has no
+   `make check-install`; the query is the part that matters.
 
 ## Grants
 
