@@ -15,6 +15,7 @@ creates, the stability statement, and the NOTIFY payload keys.
 | Object | Use |
 |---|---|
 | `lock_tree` (view) | Every session in a blocking chain: `root_pid`, `root_object`, `depth` (0 is the root), `path`, `blocked_by`, `state`, `waiting_for`, `wait_age`, `xact_age`, `state_age`, `query`, `query_id`, plus user, database, application and client. Ordered root first. `root_object` is what a prepared-transaction root holds, since `root_pid` is 0 for all of them. `query_id` was added in 0.16 so the live tree can be joined to `lock_tree_history` on it; it is `NULL` on waiters, because a blocked query has none until it completes. |
+| `lock_tree_root_holds()` | The hold side of the tree: one row per granted lock a root holds that at least one session in its tree is waiting for, with `held_mode`, `waiting_mode` and `waiting_sessions`. Groups by requested mode, because two waiters can ask for different modes on the same held lock. New in 1.3.0 |
 | `lock_tree_roots()` | One row per root blocker, most sessions blocked first, with `blocked_sessions`, `max_depth`, `longest_wait` and a `suggested_action`. |
 | `lock_tree_text(query_width int DEFAULT 60)` | The tree as indented text, for reading in psql during an incident. Full unabbreviated names. |
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
@@ -72,7 +73,7 @@ order**, of:
 
 | Group | Objects |
 |---|---|
-| Incident | `lock_tree` (view), `lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_lines()`, `lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_actions()`, `lock_tree_command()` |
+| Incident | `lock_tree` (view), `lock_tree_roots()`, `lock_tree_text()`, `lock_tree_text_short()`, `lock_tree_lines()`, `lock_tree_root_holds()`, `lock_tree_wide()`, `lock_tree_summary()`, `lock_tree_actions()`, `lock_tree_command()` |
 | History | `lock_tree_history` (table), `lock_tree_sample()`, `lock_tree_prune()`, `lock_tree_prune_batched()` (procedure), `lock_tree_history_size()`, `lock_tree_incidents()`, `lock_tree_statements()`, `lock_tree_history_statements()`, `lock_tree_sampling_advice()` |
 | Analysis | `lock_tree_duration()`, `lock_tree_duration_by_application()`, `lock_tree_replay()`, `lock_tree_replay_text()`, `lock_tree_replay_samples` (view), `lock_tree_replay(as_of)`, `lock_tree_deadlocks()` |
 | Alerting | `lock_tree_notify()`, `lock_tree_notify_resolved()`, `lock_tree_alert` (table), `lock_tree_prune_alerts()` |
