@@ -70,3 +70,9 @@ $$;
 COMMENT ON FUNCTION @extschema@.lock_tree_root_holds() IS
   'The granted locks a root holds that at least one session in its tree is waiting for, with the '
   'held mode, the requested mode and the number of waiting sessions. The hold side of lock_tree.';
+
+-- 1.3.0 also gives the sampler the same lock_timeout as the other two tools. It is SECURITY
+-- DEFINER and writes the history table, so a DDL lock on that table must not park the scheduled
+-- job behind it. ALTER rather than a second copy of the function body: the function is unchanged
+-- apart from the setting.
+ALTER FUNCTION @extschema@.lock_tree_sample() SET lock_timeout = '1s';

@@ -69,7 +69,7 @@ $wait$;
 \o
 \set QUIET 0
 
-SELECT plan(12);
+SELECT plan(13);
 
 SELECT is((SELECT count(*)::int FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
             WHERE r.rolname = 'pg_monitor'
@@ -111,6 +111,10 @@ GRANT EXECUTE ON FUNCTION lock_tree_sample() TO lt_grants_both;
 SET ROLE lt_grants_both;
 SELECT lives_ok($$ SELECT lock_tree_sample() $$, 'with EXECUTE the sample runs as the role');
 RESET ROLE;
+
+SELECT is((SELECT proconfig FROM pg_proc WHERE oid = 'lock_tree_sample()'::regprocedure)
+            @> ARRAY['lock_timeout=1s'],
+          true, 'the sampler cannot park behind a lock on the history table');
 
 SELECT is((SELECT count(*)::int FROM lock_tree_roots() WHERE root_pid <> pg_backend_pid()), 1,
           'superuser: the same fixture shows one root that is not this session');
