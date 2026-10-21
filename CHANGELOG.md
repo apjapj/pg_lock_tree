@@ -1,3 +1,13 @@
+## 1.5.0 (2026-10-21)
+
+`lock_tree_backend(pid)` reports one backend by pid: database, backend type, application, the lock
+it waits for and how long, its immediate blockers, and every granted lock it holds as "mode on
+object". It starts from `pg_stat_activity`, so it answers for a session that is not in the wait tree
+as well; a pid that has gone returns no row.
+
+Additive: one function and its `COMMENT`; no existing object, column, signature or grant changes.
+The update path from 1.4.0 is one `CREATE FUNCTION`.
+
 ## 1.4.0 (2026-10-21)
 
 `lock_tree_deadlock_cycle()` names a live wait-for cycle: one row per participant, with
