@@ -95,7 +95,7 @@ SELECT ok((SELECT blocked_by @> ARRAY[(SELECT pid FROM cycle WHERE name = 'g')]
 SELECT is((SELECT count(*)::int FROM lock_tree_deadlock_cycle()), 2,
           'a live wait-for cycle is two participants');
 SELECT is((SELECT count(*)::int FROM lock_tree_deadlock_cycle() WHERE cardinality(blocked_by) = 1), 2,
-          'and each participant names the other side in blocked_by');
+          'and each participant names its immediate blocker in blocked_by');
 
 -- tear down: terminating the two backends is simpler and more reliable than unwinding the
 -- deadlock by hand. Both hold AccessExclusiveLocks on dl_a/dl_b, so they have to go before

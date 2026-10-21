@@ -1,7 +1,8 @@
 ## 1.4.0 (2026-10-21)
 
 `lock_tree_deadlock_cycle()` names a live wait-for cycle: one row per participant, with
-`blocked_by` naming the other side, the lock each is waiting for and the query. PostgreSQL resolves
+`blocked_by` naming the immediate blocker (the other participant in a two-party cycle; the next one
+in a longer cycle), the lock each is waiting for and the query. PostgreSQL resolves
 a deadlock after `deadlock_timeout` and the history only catches a cycle a sample landed inside;
 while the cycle still exists, this reports it directly.
 

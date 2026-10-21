@@ -1,7 +1,7 @@
 -- pg_lock_tree 1.3.0 -> 1.4.0
 --
 -- Adds lock_tree_deadlock_cycle(): names each participant in a live wait-for cycle, with blocked_by
--- naming the other side. Additive; no existing object changes.
+-- naming the immediate blocker. Additive; no existing object changes.
 
 \echo Use "ALTER EXTENSION pg_lock_tree UPDATE TO '1.4.0'" to load this file. \quit
 
@@ -25,5 +25,5 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION @extschema@.lock_tree_deadlock_cycle() IS
-  'The live wait-for cycle: one row per participant, with blocked_by naming the other side. Empty '
+  'The live wait-for cycle: one row per participant, with blocked_by naming the immediate blocker. Empty '
   'once PostgreSQL has resolved the cycle; the server log is the after-the-fact record.';

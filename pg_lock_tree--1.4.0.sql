@@ -1,8 +1,8 @@
 /* pg_lock_tree--1.4.0.sql
  *
- * 1.4.0 adds lock_tree_deadlock_cycle(): the live wait-for cycle, one row per participant with the
- * sessions it is blocked by. The counter and history can miss a cycle; while one exists, this names
- * both sides. Additive; no existing object changes.
+ * 1.4.0 adds lock_tree_deadlock_cycle(): the live wait-for cycle, one row per participant with
+ * blocked_by naming the immediate blocker. The counter and history can miss a cycle; while one
+ * exists, this names every participant. Additive; no existing object changes.
  *
  *
  * 1.3.0 adds lock_tree_root_holds(): the granted locks a root holds that at least one waiter in its
@@ -881,7 +881,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION @extschema@.lock_tree_deadlock_cycle() IS
-  'The live wait-for cycle: one row per participant, with blocked_by naming the other side. Empty '
+  'The live wait-for cycle: one row per participant, with blocked_by naming the immediate blocker. Empty '
   'once PostgreSQL has resolved the cycle; the server log is the after-the-fact record.';
 
 --------------------------------------------------------------------------------
