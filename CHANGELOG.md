@@ -1,3 +1,12 @@
+## 1.5.1 (2026-10-21)
+
+`lock_tree_history_size()` counts samples with one `GROUP BY` pass instead of `count(DISTINCT
+sampled_at)`. On the 63M-row fixture the old form measured 5.0 s of a 6.3 s call; the `GROUP BY`
+form measured 2.95 s. The row count comes from the same pass as `sum(n)`, so the function still
+reads the history once.
+
+No row type, name, order or grant changes. The update path from 1.5.0 replaces one function.
+
 ## 1.5.0 (2026-10-21)
 
 `lock_tree_backend(pid)` reports one backend by pid: database, backend type, application, the lock
