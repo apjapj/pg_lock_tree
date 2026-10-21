@@ -2285,6 +2285,10 @@ CREATE FUNCTION @extschema@.lock_tree_sample()
 RETURNS bigint
 LANGUAGE sql SECURITY DEFINER
 SET search_path = pg_catalog
+-- A monitor never waits behind a lock. The history table can be held by a DDL change or a long
+-- transaction, and a scheduled sample that blocks behind it is worse than a sample that fails
+-- visibly: the scheduler sees the error and the next tick tries again.
+SET lock_timeout = '1s'
 AS $$
   -- The CTE is what makes the return type work. A bare INSERT cannot be the body of a
   -- function returning bigint: SQL requires INSERT ... RETURNING, and RETURNING on a

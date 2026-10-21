@@ -27,3 +27,7 @@ $$;
 COMMENT ON FUNCTION @extschema@.lock_tree_deadlock_cycle() IS
   'The live wait-for cycle: one row per participant, with blocked_by naming the immediate blocker. Empty '
   'once PostgreSQL has resolved the cycle; the server log is the after-the-fact record.';
+
+-- 1.3.0 already sets this on lock_tree_sample(); repeated here so a 1.4.0 upgrade made from an
+-- earlier 1.3.0 build still gets it. SET on an existing function is idempotent.
+ALTER FUNCTION @extschema@.lock_tree_sample() SET lock_timeout = '1s';
