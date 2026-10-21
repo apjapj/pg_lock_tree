@@ -193,6 +193,20 @@ second grant every query fails with:
 ERROR:  permission denied for view lock_tree
 ```
 
+**The matrix, in plain words.** `test/27_grants.sql` pins this; it was also measured by hand on
+PostgreSQL 14 and 18:
+
+| Role | `SELECT` on `lock_tree` | `pg_read_all_stats` | What it sees |
+|---|---|---|---|
+| No grants | no | no | nothing: `permission denied for view lock_tree` |
+| `pg_monitor` only | no | yes, through `pg_monitor` | still nothing: the view's own `SELECT` is checked before the row visibility |
+| Monitoring, `SELECT` only | yes | no | the call runs, but it shows no other session, so there is no tree to read |
+| Monitoring, both grants | yes | yes | the tree, the text and the command |
+| A scheduler running `lock_tree_sample()` | either | either | nothing without its own `EXECUTE`: the function is revoked from `PUBLIC` |
+
+A superuser needs none of this. The first two rows are the ones people get wrong: `pg_monitor`
+sounds like enough and is not.
+
   **Some of those also read the history, and need a third grant.** Everything above the view is
   `SECURITY INVOKER`, so a function runs as whoever called it, and the history is the caller's to read
   or not. Seven of them read `lock_tree_history` and fail without this:

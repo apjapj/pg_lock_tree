@@ -41,7 +41,7 @@ defects:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci pgxn-check pgxn-package
+.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history bench-overhead check-upgrade check-schema check-examples check-ci pgxn-check pgxn-package
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -110,6 +110,13 @@ check-deadlock:
 # passes --force itself rather than relying on you having read this comment. Needs a server.
 bench-history:
 	./scripts/bench-history.sh --force $(if $(DAYS),--days=$(DAYS),) $(if $(EVERY),--every=$(EVERY),) $(if $(SESSIONS),--sessions=$(SESSIONS),) $(if $(KEEP),--keep,)
+
+# The overhead benchmark: one call to lock_tree_text() and lock_tree_roots(), beside a hand-written
+# pg_blocking_pids() baseline, median of WAITERS' calls at each waiter count. It creates its own
+# fixture table and its own sessions and drops them, so it passes --force itself. Needs a server and
+# superuser. WAITERS is the comma-separated list, N is the number of repeats.
+bench-overhead:
+	./scripts/bench-overhead.sh --force $(if $(WAITERS),--waiters=$(WAITERS),) $(if $(N),--repeat=$(N),) $(if $(KEEP),--keep,)
 
 # Proves that every upgrade path ends in exactly the same objects as a fresh install. Creates and
 # drops databases, so it needs a server you are willing to have it create databases on. It is not in
