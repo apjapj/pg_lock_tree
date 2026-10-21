@@ -82,7 +82,7 @@ echo "  schema: $schema"
 # 0.11 and a change to them is a change worth a line here rather than a silent redefinition.
 # They are checked because an extension installed with CREATE EXTENSION and one loaded by
 # running the release SQL can differ in indexes without differing in tables.
-for f in lock_tree lock_tree_roots lock_tree_root_holds lock_tree_deadlock_cycle lock_tree_text lock_tree_text_short lock_tree_actions \
+for f in lock_tree lock_tree_roots lock_tree_root_holds lock_tree_deadlock_cycle lock_tree_backend lock_tree_text lock_tree_text_short lock_tree_actions \
          lock_tree_command lock_tree_lines lock_tree_age lock_tree_mode_short \
          lock_tree_state_short lock_tree_sample lock_tree_incidents lock_tree_prune \
          lock_tree_wide lock_tree_summary lock_tree_statements \
@@ -143,7 +143,7 @@ extra=$(psql -X -tAc "
       JOIN pg_proc p       ON p.oid = d.objid AND d.classid = 'pg_proc'::regclass
       JOIN pg_namespace n  ON n.oid = p.pronamespace
       WHERE e.extname = 'pg_lock_tree' AND n.nspname = '$schema'
-        AND p.proname NOT IN ('lock_tree_roots','lock_tree_root_holds','lock_tree_deadlock_cycle','lock_tree_text','lock_tree_text_short',
+        AND p.proname NOT IN ('lock_tree_roots','lock_tree_root_holds','lock_tree_deadlock_cycle','lock_tree_backend','lock_tree_text','lock_tree_text_short',
                               'lock_tree_actions','lock_tree_command','lock_tree_lines',
                               'lock_tree_age','lock_tree_mode_short','lock_tree_state_short',
                               'lock_tree_sample','lock_tree_incidents','lock_tree_prune',
@@ -180,6 +180,7 @@ for q in "SELECT count(*) FROM $schema.lock_tree" \
          "SELECT count(*) FROM $schema.lock_tree_roots()" \
          "SELECT count(*) FROM $schema.lock_tree_root_holds()" \
          "SELECT count(*) FROM $schema.lock_tree_deadlock_cycle()" \
+         "SELECT count(*) FROM $schema.lock_tree_backend(pg_backend_pid())" \
          "SELECT count(*) FROM $schema.lock_tree_text()" \
          "SELECT count(*) FROM $schema.lock_tree_text_short()" \
          "SELECT count(*) FROM $schema.lock_tree_actions()" \
