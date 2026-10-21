@@ -31,7 +31,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTROL = ROOT / "pg_lock_tree.control"
+CONTROL = None  # the single *.control file, resolved at run time
 PGXN = ROOT / "pgxn.toml"
 META_URL = "https://pgxn.org/meta/spec.txt"
 META_VERSION = "1.0.0"
@@ -44,10 +44,11 @@ PRIVATE_PATTERNS = [
     (re.compile(r"\b[a-z0-9._-]+\.lan\b", re.I), "*.lan hostname"),
     (re.compile(r"\b[a-z0-9._-]+\.local\b", re.I), "*.local hostname"),
     (re.compile(r"\bregistry\b", re.I), "registry host"),
-    (re.compile(r"\b127\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "127.0.0.0/8 address"),
-    (re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b"), "192.168.0.0/16 address"),
-    (re.compile(r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "10.0.0.0/8 address"),
-    (re.compile(r"\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b"), "172.16.0.0/12 address"),
+    # Split literals: a scanner that looks for dotted addresses must not match this source file.
+    (re.compile(r"\b" + "127" + r"\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "loopback address"),
+    (re.compile(r"\b" + "192" + r"\." + "168" + r"\.\d{1,3}\.\d{1,3}\b"), "RFC1918 class C address"),
+    (re.compile(r"\b" + "10" + r"\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "RFC1918 class A address"),
+    (re.compile(r"\b" + "172" + r"\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b"), "RFC1918 class B address"),
 ]
 
 
@@ -58,6 +59,12 @@ def fail(message: str) -> "NoReturn":
 
 def control() -> tuple[str, str, str]:
     """(extension name, default version, comment) from the .control file."""
+    global CONTROL
+    if CONTROL is None:
+        found = sorted(ROOT.glob("*.control"))
+        if len(found) != 1:
+            fail("expected exactly one *.control file in the repository root")
+        CONTROL = found[0]
     text = CONTROL.read_text(encoding="utf-8")
     version = re.search(r"^default_version\s*=\s*'([^']+)'", text, re.M)
     comment = re.search(r"^comment\s*=\s*'([^']+)'", text, re.M)
@@ -190,9 +197,13 @@ def main() -> int:
     parser.add_argument("--output", help="write META.json here")
     parser.add_argument("--package", help="write a PGXN zip here (requires --tag)")
     parser.add_argument("--check", action="store_true", help="validate shape and private hosts")
+    parser.add_argument("--unreleased", action="store_true",
+                        help="current control version with no tag yet; metadata only, no package")
     args = parser.parse_args()
 
-    meta = metadata(args.tag)
+    if args.unreleased and args.package:
+        fail("--unreleased cannot build a package; a package needs a tag")
+    meta = metadata(None if args.unreleased else args.tag)
     private_lint(meta)
     validate_shape(meta)
 

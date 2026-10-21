@@ -234,16 +234,22 @@ jobs:
       - name: Build the package and validate META.json
         run: |
           set -euo pipefail
+          mkdir -p build/pgxn
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag="$GITHUB_REF_NAME"
           else
-            tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*')"
-            echo "PR run: validating against the latest tag, $tag"
+            version=$(sed -n "s/^default_version[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" *.control)
+            tag="v${version}"
           fi
-          version="${tag#v}"
-          mkdir -p build/pgxn
-          ./scripts/pgxn-meta.py --tag "$tag" --output build/pgxn/META.json
-          ./scripts/pgxn-meta.py --tag "$tag" --package "build/pgxn/pg_lock_tree-${version}.zip"
+          if git rev-parse --verify --quiet "${tag}^{commit}" >/dev/null; then
+            version="${tag#v}"
+            echo "building from tag $tag"
+            ./scripts/pgxn-meta.py --tag "$tag" --output build/pgxn/META.json
+            ./scripts/pgxn-meta.py --tag "$tag" --package "build/pgxn/pg_lock_tree-${version}.zip"
+          else
+            echo "no tag $tag yet: validating unreleased metadata only"
+            ./scripts/pgxn-meta.py --check --unreleased --output build/pgxn/META.json
+          fi
           docker run --rm -v "$PWD/build/pgxn:/work" -w /work \
             pgxn/pgxn-tools@sha256:53e79ef1c8b9a0ee88b51e89b36fd30c46c9f2326aec0cde1d7f66e47ad719ff \
             validate_pgxn_meta META.json
