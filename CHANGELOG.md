@@ -1,3 +1,14 @@
+## 1.4.0 (2026-10-21)
+
+`lock_tree_deadlock_cycle()` names a live wait-for cycle: one row per participant, with
+`blocked_by` naming the other side, the lock each is waiting for and the query. PostgreSQL resolves
+a deadlock after `deadlock_timeout` and the history only catches a cycle a sample landed inside;
+while the cycle still exists, this reports it directly.
+
+Additive: one function and its `COMMENT`. No existing object, column, signature or grant changes.
+The after-the-fact record is still the server log and the sampled history; this function does not
+read the log and is empty once the server has resolved the deadlock.
+
 ## 1.3.0 (2026-10-21)
 
 `lock_tree_root_holds()` reports the hold side of the tree: one row per granted lock a root holds

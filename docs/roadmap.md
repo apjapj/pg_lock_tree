@@ -608,9 +608,12 @@ fail on its first line.
   demo to destroy data it does not own.
 - **What each root *holds* that its waiters want**, not only what the waiters ask for. **Done in
   1.3.0:** `lock_tree_root_holds()` reports the held lock, both modes and the waiting count.
-- **A `log_lock_waits`-style hook** naming both sides of a deadlock. The counter is recorded, and the
-  two statements are in the server log with no attribution. A bigger change than it looks: it has to
-  work on a server where nobody has installed anything.
+- **A `log_lock_waits`-style hook** naming both sides of a deadlock. **Partly done in 1.4.0:** a
+  live cycle is named by `lock_tree_deadlock_cycle()`, and the history still names one that a sample
+  caught. The remaining half is after-the-fact attribution from the counter alone. That is not
+  possible in pure SQL: the two statements exist only in the server log, which this extension cannot
+  read, so a reliable hook would need a C extension or log shipping. Declined here rather than
+  promised.
 - **`pg_tle` on RDS and Aurora**, where `make install` is not possible. Being pure SQL is what makes
   it plausible. The thing most likely to fail is whether `pg_blocking_pids()` is reachable under
   `pg_tle`, so that is what to check first.
