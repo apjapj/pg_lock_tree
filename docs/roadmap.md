@@ -492,6 +492,13 @@ fail on its first line.
 
 ## Open questions, not commitments
 
+- **A helper for a prepared transaction's gid.** A prepared-transaction root is identified by the
+  lock it holds (`root_object`), not by the gid `ROLLBACK PREPARED` needs, so `lock_tree_roots()` points the
+  operator at `pg_prepared_xacts` and `test/04` pins that text. A separate helper could return the
+  gid; unlike adding a column to `lock_tree_roots()`, it would change no row type and no stable
+  function's output, so it would not need a `DROP` or cost anyone a grant. Not planned now: the
+  catalog query is one line during an incident, and the helper would have to repeat the lock-object
+  match the view already does to decide which prepared transaction owns which object.
 - **A `source_host` column, so one archive can hold several hosts.** Asked for a review instance
   holding about a dozen production servers, and declined, on two measured grounds rather than taste.
   The value is the hard part: `inet_server_addr()` is the obvious candidate and returns **NULL over a
