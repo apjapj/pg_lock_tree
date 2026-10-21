@@ -6,7 +6,9 @@ number of waiting sessions. `lock_tree` already said what each waiter asked for;
 the root holds and how the two modes differ.
 
 New function only. No existing object, column, signature or grant changes, so the update path is one
-`CREATE FUNCTION` and its `COMMENT`, and the extension's default permissions are unchanged. The
+`CREATE FUNCTION` and its `COMMENT`, and the extension's default permissions are unchanged.
+`lock_tree_sample()` also gains `SET lock_timeout = '1s'`, matching the two sibling samplers: a
+scheduled sample now fails visibly rather than waiting behind a lock on the history table. The
 function groups by requested mode because two waiters can ask for different modes on one held lock;
 a prepared-transaction root is matched by the same lock identity the view already uses, since it has
 no pid.
