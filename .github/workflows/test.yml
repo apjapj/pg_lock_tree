@@ -216,6 +216,28 @@ jobs:
 
           exit $fail
 
+  # Build the PGXN package from the release tag, record its sha256 and validate META.json with
+  # PGXN's own validator. Tags only: a package is made from a tag, never a branch. The structural
+  # check runs in both lint jobs; this job adds the real validator and the archive.
+  pgxn:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Build the package and validate META.json
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          mkdir -p build/pgxn
+          ./scripts/pgxn-meta.py --tag "$tag" --output build/pgxn/META.json
+          ./scripts/pgxn-meta.py --tag "$tag" --package "build/pgxn/pg_lock_tree-${version}.zip"
+          docker run --rm -v "$PWD/build/pgxn:/work" -w /work \
+            pgxn/pgxn-tools@sha256:53e79ef1c8b9a0ee88b51e89b36fd30c46c9f2326aec0cde1d7f66e47ad719ff \
+            validate_pgxn_meta META.json
+
   lint:
     name: lint
     runs-on: ubuntu-latest

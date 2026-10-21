@@ -41,7 +41,7 @@ defects:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci
+.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history check-upgrade check-schema check-examples check-ci pgxn-check pgxn-package
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
@@ -138,5 +138,14 @@ check-schema:
 # It exists because `SELECT * FROM lock_tree_replay(42)` sat in docs/after-the-incident.md since
 # 0.14 and lock_tree_replay() has only ever taken a timestamptz. Nothing executed the examples, so
 # nothing noticed.
+
+# Generate PGXN metadata from the .control file and the tag, validate its shape and refuse private
+# hostnames. Package building is separate because it needs a release tag:
+#   make pgxn-package TAG=v1.2.1 OUT=build/pgxn/pg_lock_tree-1.2.1.zip
+pgxn-check:
+	./scripts/pgxn-meta.py --check
+
+pgxn-package:
+	./scripts/pgxn-meta.py --tag "$(TAG)" --package "$(OUT)"
 check-examples:
 	./scripts/check-examples.sh
