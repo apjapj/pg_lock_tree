@@ -1,3 +1,31 @@
+## 1.2.1 (2026-10-20)
+
+One function body changes: `lock_tree_roots()` now reads the `lock_tree` view **once**, through a
+`MATERIALIZED` CTE, instead of referencing it twice. It returns exactly the same columns and rows.
+The function changes with `CREATE OR REPLACE`, never a `DROP`, so grants and the `COMMENT` survive;
+`scripts/check-upgrade.sh` compares the 1.2.0 update path to a fresh install.
+
+### Why the two reads were a defect, not just a cost
+
+The function joins the tree to itself to pair each root with its waiters. Two direct references to
+the view made PostgreSQL inline it twice, so the view's whole CTE chain (`act`, `prep`, `prep_edge`,
+`edge`, `seed`, `walk`, `waiting`) was planned and executed twice per call. On PostgreSQL 18.6, idle:
+planning 5 to 8 ms warm (18 to 26 ms in a cold backend) and execution about 2.6 ms before, against
+about 4 ms planning and 1.5 ms execution after one materialized read. The median call went from about
+8 ms to about 6 ms warm, beside a 1 ms `pg_blocking_pids()` floor, which is what
+the read-overhead benchmark measures.
+
+The second reason matters more than the milliseconds: the view reads `pg_stat_activity` and
+`pg_locks` through volatile functions. Two independent evaluations are two snapshots, so the root
+side and the waiter side could disagree in the middle of a query and pair a root with a waiter from
+a different moment. One materialized read is one snapshot.
+
+### For the book
+
+This release changes no measured output. The release delta report's correct verdict is
+"re-measure only"; the book's pin stays at v1.2.0 until that report is reviewed, and the measured
+numbers in the existing entry remain valid.
+
 ## 1.2.0 (2026-10-18)
 
 Two additive payload keys on both `NOTIFY` payloads, the `level` and `previous_level` the

@@ -299,7 +299,9 @@ incident, so the comparison is measured rather than remembered.
   see at all, because a prepared transaction has no backend and no `pg_locks.pid`.
 - **Deadlocks.** A wait-for cycle has no head of the queue, so there is nothing to point at as
   "the root". Every session in the cycle is reported as its own depth-0 root, `blocked_by` shows
-  who each one is actually stuck behind, and `lock_tree_roots()` offers a cancel for each.
+  who each one is actually stuck behind, and `lock_tree_roots()` offers a cancel for each. Cancel
+  **one** member and re-run the tree: breaking one wait frees the cycle, and cancelling every member
+  rolls back transactions that did not have to be rolled back.
   PostgreSQL normally resolves a deadlock on its own after `deadlock_timeout` (1s by default), so
   the window is short unless that setting has been raised.
 - **Snapshot.** `pg_stat_activity` and `pg_locks` are read separately, so a chain that changes
