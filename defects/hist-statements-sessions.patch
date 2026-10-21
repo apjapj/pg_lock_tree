@@ -1,5 +1,5 @@
---- a/pg_lock_tree--1.3.0.sql
-+++ b/pg_lock_tree--1.3.0.sql
+--- a/pg_lock_tree--1.4.0.sql
++++ b/pg_lock_tree--1.4.0.sql
 @@ -3486,67 +3486,23 @@
    -- with a guarded dynamic query. This one does not need that machinery: the history carries
    -- query_id, and the totals are pure aggregation over a table this extension owns. Joining the

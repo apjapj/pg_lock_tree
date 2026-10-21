@@ -1,5 +1,5 @@
---- a/pg_lock_tree--1.3.0.sql
-+++ b/pg_lock_tree--1.3.0.sql
+--- a/pg_lock_tree--1.4.0.sql
++++ b/pg_lock_tree--1.4.0.sql
 @@ -1153,8 +1153,7 @@
           -- What the longest-waiting session wants, which is what "first" promises. Until 1.2.0 this
           -- was min(), the alphabetically least lock description, which agreed only when every

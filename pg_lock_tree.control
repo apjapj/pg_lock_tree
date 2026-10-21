@@ -1,6 +1,6 @@
 # pg_lock_tree extension
 comment = 'Readable lock-wait trees: who blocks whom, the root blocker, and how long everyone has waited'
-default_version = '1.3.0'
+default_version = '1.4.0'
 # 1.2.1 changes one function body, lock_tree_roots(), to read the lock_tree view once through a
 # MATERIALIZED CTE instead of twice, and outputs exactly the same rows and columns; the grant and
 # the COMMENT survive CREATE OR REPLACE. See pg_lock_tree--1.2.0--1.2.1.sql.

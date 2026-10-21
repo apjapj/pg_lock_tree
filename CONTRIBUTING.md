@@ -11,7 +11,7 @@ what catches a rename that half the documentation has not caught up with.
 ```bash
 make lint               # the checks that need no server: the documentation lint, and a note
 make lint-docs          # documentation, objects, paths, links and anchors, and the test table
-make prove              # 503 pgTAP tests against the server your libpq env vars point at
+make prove              # 505 pgTAP tests against the server your libpq env vars point at
 make check-install      # verify an installation
 make demo               # the scripted incident
 make scenarios          # all eight scenarios, both tools, output captured

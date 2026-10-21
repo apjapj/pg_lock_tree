@@ -76,7 +76,7 @@ FROM lock_tree t JOIN lock_tree_dl_pids p USING (pid);
 \o
 \unset QUIET
 
-SELECT plan(4);
+SELECT plan(6);
 
 SELECT is((SELECT count(*) FROM cycle)::int, 2,
           'both sessions in the deadlock appear in the tree');
@@ -90,6 +90,12 @@ SELECT ok((SELECT root_pid = pid FROM cycle WHERE name = 'f'),
 SELECT ok((SELECT blocked_by @> ARRAY[(SELECT pid FROM cycle WHERE name = 'g')]
            FROM cycle WHERE name = 'f'),
           'F still reports G as its blocker, so the cycle is visible in the data');
+
+-- The live cycle, named.
+SELECT is((SELECT count(*)::int FROM lock_tree_deadlock_cycle()), 2,
+          'a live wait-for cycle is two participants');
+SELECT is((SELECT count(*)::int FROM lock_tree_deadlock_cycle() WHERE cardinality(blocked_by) = 1), 2,
+          'and each participant names its immediate blocker in blocked_by');
 
 -- tear down: terminating the two backends is simpler and more reliable than unwinding the
 -- deadlock by hand. Both hold AccessExclusiveLocks on dl_a/dl_b, so they have to go before
