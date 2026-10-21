@@ -20,7 +20,7 @@ creates, the stability statement, and the NOTIFY payload keys.
 | `lock_tree_text_short(query_width int DEFAULT 100)` | The same tree with abbreviated modes and states, for when the queue is wide. Measured 17% narrower on a 61-session incident. |
 | `lock_tree_lines(query_width int, short boolean)` | The renderer behind `lock_tree_text()` and `lock_tree_text_short()`. Exposed so the width comparison in `scenarios/s4` can attribute the saving to each abbreviation separately, which is the only way to tell a shorter mode from a shorter column |
 | `lock_tree_actions()` | A written description of each root blocker and its blast radius, ordered by how many sessions each unblocks. Prose only, no runnable statements. `SET lock_tree.actions = off` suppresses it. |
-| `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting or for `SELECT command FROM lock_tree_command() \gexec`. Always the least destructive step that can work. |
+| `lock_tree_command()` | One complete, runnable statement per root blocker, for pasting. It returns SQL and runs nothing. `\gexec` on it runs **every** row, so read the rows first. Always the least destructive step that can work. |
 | `lock_tree_history` (table) | Sampled trees, one row per session per sample. Empty until you schedule a sample. `query_id` on root rows only, since a blocked query has none. |
 | `lock_tree_deadlock` (table) | `pg_stat_database.deadlocks` sampled on its own beat, whether or not anything is blocked. Naming no participants: the two statements are in the server log. Pruned by `lock_tree_prune()`. |
 | `lock_tree_sample()` | Take one snapshot into `lock_tree_history`. Returns rows written, 0 when nothing is blocked. Nothing calls it for you. |
