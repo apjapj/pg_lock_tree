@@ -92,7 +92,7 @@ SELECT count(*) AS n FROM lock_tree_actions();
 
 \o
 \unset QUIET
-SELECT plan(28);
+SELECT plan(30);
 
 SELECT has_view('lock_tree', 'lock_tree view exists');
 SELECT has_function('lock_tree_roots', 'lock_tree_roots() exists');
@@ -179,6 +179,14 @@ SELECT is((SELECT n FROM acts_off), 0::bigint,
           'SET lock_tree.actions = off suppresses lock_tree_actions() entirely');
 SELECT ok((SELECT n FROM acts_back) > 0,
           'and it comes straight back on RESET, so it is a display preference, not a state change');
+
+-- The hold side: one row per requested mode, with the held mode beside it.
+SELECT is((SELECT count(*)::int FROM lock_tree_root_holds()
+            WHERE object = 'lock_tree_t' AND held_mode = 'RowExclusiveLock'), 3,
+          'lock_tree_root_holds() groups the root-held lock by the mode each waiter asks for');
+SELECT is((SELECT sum(waiting_sessions)::int FROM lock_tree_root_holds()
+            WHERE object = 'lock_tree_t' AND held_mode = 'RowExclusiveLock'), 4,
+          'and the waiting sessions add up to the four in the tree');
 
 -- release the chain and confirm the tree empties
 \set QUIET 1

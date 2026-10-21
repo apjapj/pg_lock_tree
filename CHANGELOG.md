@@ -1,3 +1,16 @@
+## 1.3.0 (2026-10-21)
+
+`lock_tree_root_holds()` reports the hold side of the tree: one row per granted lock a root holds
+that at least one session in its tree is waiting for, with the held mode, the requested mode and the
+number of waiting sessions. `lock_tree` already said what each waiter asked for; this says which lock
+the root holds and how the two modes differ.
+
+New function only. No existing object, column, signature or grant changes, so the update path is one
+`CREATE FUNCTION` and its `COMMENT`, and the extension's default permissions are unchanged. The
+function groups by requested mode because two waiters can ask for different modes on one held lock;
+a prepared-transaction root is matched by the same lock identity the view already uses, since it has
+no pid.
+
 ## 1.2.1 (2026-10-20)
 
 One function body changes: `lock_tree_roots()` now reads the `lock_tree` view **once**, through a

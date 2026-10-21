@@ -606,9 +606,8 @@ fail on its first line.
   Its header says "Safe to re-run: everything it creates is terminated and dropped at the end", which
   is not quite true of that table, and the honest fix is for the header to say so rather than for the
   demo to destroy data it does not own.
-- **What each root *holds* that its waiters want**, not only what the waiters ask for. The wait side is
-  reported; the hold side is `pg_locks` and the lock tags, and the interesting version is a diff
-  against what the waiter is asking for.
+- **What each root *holds* that its waiters want**, not only what the waiters ask for. **Done in
+  1.3.0:** `lock_tree_root_holds()` reports the held lock, both modes and the waiting count.
 - **A `log_lock_waits`-style hook** naming both sides of a deadlock. The counter is recorded, and the
   two statements are in the server log with no attribution. A bigger change than it looks: it has to
   work on a server where nobody has installed anything.
