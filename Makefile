@@ -41,7 +41,7 @@ defects:
 # phony. Without this, `make scenarios` sees the scenarios/ directory, decides the target is already
 # up to date, and does nothing at all, which it did until this line existed. A target that silently
 # does nothing is worse than a broken one, because the documentation says it captures output.
-.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history bench-overhead check-upgrade check-schema check-examples check-ci pgxn-check pgxn-package
+.PHONY: install install-upgrades prove defects demo check-install scenarios lint-docs lint-matrix capture lint check-alert explain-alert check-deadlock bench-history bench-overhead check-upgrade check-schema check-examples check-ci pgxn-check pgxn-package check-uninstall
 
 # See the extension work on a real blocking chain: rebuilds the nightly-batch incident
 # with dblink, shows the tree, the roots and the actions, then cleans up after itself.
