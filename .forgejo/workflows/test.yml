@@ -177,13 +177,20 @@ jobs:
             echo "the loaded version is not this checkout" >&2; exit 1;
           }
 
+      - name: Install ProbeKit v0.1.0
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.1.0 \
+            http://forgejo.lan:3000/apjapj/ProbeKit.git /tmp/probekit
+          make -C /tmp/probekit install
+
       - name: Run all 8 checks
         run: |
           set -uo pipefail
           fail=0
           # All eight checks that gate on a pg_extension row
           for s in check-upgrade check-install check-schema check-examples \
-                   check-alert check-deadlock; do
+                   check-alert check-deadlock check-uninstall; do
             printf '=== %s ===\n' "$s"
             if ./scripts/$s.sh; then
               printf '    ok %s\n' "$s"

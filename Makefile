@@ -122,6 +122,9 @@ bench-overhead:
 # drops databases, so it needs a server you are willing to have it create databases on. It is not in
 # `make prove` because it is a release check, not a unit test: the tests run against whatever is already
 # installed and would pass on an update path that had never been executed.
+check-uninstall:
+	./scripts/check-uninstall.sh
+
 check-upgrade:
 	./scripts/check-upgrade.sh
 
