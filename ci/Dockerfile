@@ -27,13 +27,13 @@
 # Build with:  docker build --build-arg PG_MAJOR=18 -f ci/Dockerfile -t pg-lock-tree-ci:18 .
 # The image tag and the apt package version are NOT the same string, and assuming they are breaks the
 # one version this suite must test that nobody can skip. The Docker Hub tag for the current beta is
-# 19beta4; the Debian package inside it is postgresql-19. Asking apt for postgresql-19beta4-pgtap fails
+# 19rc1; the Debian package inside it is postgresql-19. Asking apt for postgresql-19rc1-pgtap fails
 # with "Unable to locate package", which stopped the matrix at its last version with an error that
 # reads like a network problem. Hence two arguments.
 #
 # Build with:
-#   docker build --build-arg PG_MAJOR=19beta4 --build-arg APT_MAJOR=19 \
-#     -f ci/Dockerfile -t pg-lock-tree-ci:19beta4 .
+#   docker build --build-arg PG_MAJOR=19rc1 --build-arg APT_MAJOR=19 \
+#     -f ci/Dockerfile -t pg-lock-tree-ci:19rc1 .
 ARG PG_MAJOR=18
 ARG APT_MAJOR=
 FROM postgres:${PG_MAJOR}

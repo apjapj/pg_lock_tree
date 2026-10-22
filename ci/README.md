@@ -9,7 +9,7 @@ it. `.github/workflows/test.yml` calls them.
 ```
 
 The version argument is the **Docker image tag**, not the apt version, and they are not the same
-string. `19beta4` is the tag; the Debian package inside that image is `postgresql-19`. Using the tag
+string. `19rc1` is the tag; the Debian package inside that image is `postgresql-19`. Using the tag
 for both stops the matrix at its last version with `Unable to locate package`. `server.sh` derives the
 apt version and passes it separately.
 

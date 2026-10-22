@@ -40,12 +40,12 @@ jobs:
       fail-fast: false
       matrix:
         # Ascending, and that is now cosmetic rather than load-bearing. A previous commit put
-        # 19beta4 first to test whether the job that failed was failing by position in the matrix
+        # 19rc1 first to test whether the job that failed was failing by position in the matrix
         # or by being the beta image. It was neither: Forgejo sorts permutations by value, so
-        # 19beta4 was always dispatched last, and being dispatched last is what put it on the
+        # 19rc1 was always dispatched last, and being dispatched last is what put it on the
         # other runner. With runs-on pinned to the pool label the order no longer decides anything, so
         # it goes back to the order pg-dev-infra builds the images in.
-        pg_version: ["14", "15", "16", "17", "18", "19beta4"]   # keep in step with pg-dev-infra
+        pg_version: ["14", "15", "16", "17", "18", "19rc1"]   # keep in step with pg-dev-infra
     services:
       postgres:
         # The private registry, from a repository variable rather than written here.

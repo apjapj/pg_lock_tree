@@ -180,7 +180,7 @@ a stable key. The history reads it back schema-qualified in every row, as
 enforces an 8000-byte payload limit, which was true of the server and false of this code: there is no
 `octet_length` or equivalent anywhere in `pg_lock_tree--1.1.12.sql`, so nothing here measures the
 payload before sending it. What is true is that PostgreSQL **refuses** an oversized `NOTIFY` rather
-than truncating it. Measured on PostgreSQL 14, 18.6 and 19beta4 with `pg_notify(channel, repeat('x',
+than truncating it. Measured on PostgreSQL 14, 18.6 and 19rc1 with `pg_notify(channel, repeat('x',
 n))`: a 7999-byte payload is sent, and 8000 bytes or more is refused. The channel name's length makes
 no difference, because the limit applies to the payload alone. So the real maximum is 7999 bytes, and
 it is a hard ceiling. (1.1.13 said 8000 was accepted and the limit included the channel; both were

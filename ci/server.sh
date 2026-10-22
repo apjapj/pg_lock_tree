@@ -37,7 +37,7 @@ image="pg-lock-tree-ci:$v"
 docker rm -f -v "$name" >/dev/null 2>&1 || true
 
 printf '== build %s\n' "$image"
-# 19beta4 is the image tag; the apt package inside it is postgresql-19. Passing the tag through as the
+# 19rc1 is the image tag; the apt package inside it is postgresql-19. Passing the tag through as the
 # apt version stops the matrix at its last version with "Unable to locate package", so strip any
 # beta/rc suffix here rather than in the Dockerfile, where the reason would be less obvious.
 apt=${v%%beta*}; apt=${apt%%rc*}
