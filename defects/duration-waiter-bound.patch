@@ -1,5 +1,5 @@
---- a/pg_lock_tree--1.5.0.sql
-+++ b/pg_lock_tree--1.5.0.sql
+--- a/pg_lock_tree--1.5.1.sql
++++ b/pg_lock_tree--1.5.1.sql
 @@ -3186,22 +3186,6 @@
       -- not an expectation. test/19's fixture is built from depth values directly and is what caught
       -- it.

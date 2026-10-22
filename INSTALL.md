@@ -20,7 +20,7 @@ Everything needed to get `pg_lock_tree` running, move it between versions, and u
 
 | | |
 |---|---|
-| PostgreSQL | **14 or later.** Every version needs `pg_locks.waitstart`, added in 14. Tested on 14, 15, 16, 17, 18 and 19beta4. On 13 and earlier the extension refuses to install, and says why in the error. |
+| PostgreSQL | **14 or later.** Every version needs `pg_locks.waitstart`, added in 14. Tested on 14, 15, 16, 17, 18 and 19rc1. On 13 and earlier the extension refuses to install, and says why in the error. |
 | Upcoming | PostgreSQL 14 reaches end of life on **12 November 2026**. The extension has nothing to change, and **14 stays in the tested matrix past that date**, until PostgreSQL 19 is stable. The honest part: no further fixes for 14 will come from PostgreSQL upstream, so anything 14-specific that breaks later is unfixable by upgrading PostgreSQL and is this extension's problem. Keeping it tested costs one matrix entry and buys anyone still on it a working tool. |
 | Language | SQL only. No C, no compiler, no `shared_preload_libraries`, no restart. |
 | Superuser | **Required to `CREATE EXTENSION`.** The control file sets `trusted = false`, so PostgreSQL will not let an ordinary role install it. |

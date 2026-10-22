@@ -6,7 +6,7 @@
 #
 # Three jobs, and the third is the one that matters:
 #
-#   pgtap                 the 23 pgTAP files, on PG 14 to 19beta4
+#   pgtap                 the 23 pgTAP files, on PG 14 to 19rc1
 #   install-path checks   make install, CREATE EXTENSION, the eight checks, the scenarios, demo.sql.
 #                         This is the job named in scripts/check-ci.sh's pg-lock-tree.ci-gates, and the
 #                         job that went red on v1.1.11 when make install was broken and nobody read it.
@@ -58,7 +58,7 @@ jobs:
             apt_version: "17"
           - pg_version: "18"
             apt_version: "18"
-          - pg_version: "19beta4"
+          - pg_version: "19rc1"
             apt_version: "19"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,7 +70,7 @@ jobs:
       # pg_prove have to be the SAME major as the server: pg_prove loads the pgTAP SQL into the
       # database, so a client of a different major tests against a pgTAP the suite never pinned.
       #
-      # The apt version is not the image tag: 19beta4 is the tag, postgresql-19 is the package. A step
+      # The apt version is not the image tag: 19rc1 is the tag, postgresql-19 is the package. A step
       # that used the matrix value in both places stopped the matrix at its last version with
       # "Unable to locate package". So the matrix carries both, and they are set in step's `with`.
       # PGDG's own apt instructions rather than a third-party action. The first attempt used
