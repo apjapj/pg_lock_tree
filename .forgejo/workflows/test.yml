@@ -177,11 +177,15 @@ jobs:
             echo "the loaded version is not this checkout" >&2; exit 1;
           }
 
-      - name: Install ProbeKit v0.1.0
+      - name: Install the internal snapshot kit
+        # The URL is a Forgejo repository variable, never committed. GitHub does not run this
+        # workflow, and a Forgejo instance without the variable skips the check.
+        if: ${{ vars.PROBEKIT_URL != '' }}
+        env:
+          PROBEKIT_URL: ${{ vars.PROBEKIT_URL }}
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch v0.1.0 \
-            http://forgejo.lan:3000/apjapj/ProbeKit.git /tmp/probekit
+          git clone --depth 1 --branch v0.1.0 "$PROBEKIT_URL" /tmp/probekit
           make -C /tmp/probekit install
 
       - name: Run all 8 checks
