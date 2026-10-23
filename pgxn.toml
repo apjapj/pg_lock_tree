@@ -2,7 +2,7 @@
 #
 # Release fields (name, version, abstract, provides) come from the .control file and the tag.
 # These are the stable identity fields, reviewed once and reused by every release.
-maintainer = "Piotr <CHANGE-ME@slonik.vip>"
+maintainer = "Piotr <maintainer@slonik.vip>"
 license = "postgresql"
 postgresql = "14.0.0"
 
