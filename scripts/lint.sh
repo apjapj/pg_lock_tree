@@ -26,7 +26,7 @@ step "the documentation's claims"
 step "the stated PostgreSQL range"
 ./scripts/check-pg-matrix-claims.sh
 # The two CI copies define the same jobs and run the same command for the ones they share. Vendored
-# from pg-dev-infra; run with bash, it has no shebang. Which files hold the jobs is in
+# from internal-tooling; run with bash, it has no shebang. Which files hold the jobs is in
 # scripts/ci-parity-paths, this repository splitting them across test.yml and lint.yml.
 step "the two CI copies agree"
 bash ./scripts/check-ci-parity.sh
@@ -38,7 +38,7 @@ step "the PGXN metadata"
 ./scripts/pgxn-meta.py --check >/dev/null
 
 # Every vendored harness copy still matches the sha256 in its own header. The canonical is private,
-# so this is the in-repo half of the sync. Vendored from pg-dev-infra; run with bash.
+# so this is the in-repo half of the sync. Vendored from internal-tooling; run with bash.
 step "the vendored harness matches its headers"
 bash ./scripts/check-vendored-hashes.sh
 

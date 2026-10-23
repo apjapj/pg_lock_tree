@@ -1033,7 +1033,7 @@ hold an older baked copy of the extension, but the image contains no `pg_lock_tr
 
 A job that started its own Postgres with the checkout mounted worked perfectly by hand and failed
 in 9 seconds in CI, because a job container has no `docker` binary. What works is a dedicated job
-image built in `pg-dev-infra` (`apjapj/pg-runner:18-20261007`) carrying PostgreSQL 18, pg_cron,
+image built in `internal-tooling` (`apjapj/pg-runner:18-20261007`) carrying PostgreSQL 18, pg_cron,
 pgTAP and the toolchain, with a dedicated runner label pointing at it and `docker` untouched.
 The job needs no apt, no docker and no socket: `pg-start`, `make install`, `CREATE EXTENSION`.
 
@@ -4451,4 +4451,4 @@ First release. Pure SQL, PostgreSQL 14+.
   only for sessions already waiting on a heavyweight lock. Sample every few seconds at most,
   never in a tight loop.
 - Behaviour that needs `max_prepared_transactions > 0` (the prepared-transaction path) is
-  covered by `test/04_prepared.sql`; the shared `pg-dev-infra` compose file sets it.
+  covered by `test/04_prepared.sql`; the shared `internal-tooling` compose file sets it.

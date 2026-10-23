@@ -1,11 +1,11 @@
-# vendored from pg-dev-infra harness/check-vendored-hashes.sh; do not edit here.
-# Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
-# vendored-from: pg-dev-infra@be60e58
-# vendored-sha256: 4173f3d412ceb8b9f6ad20137beee9066e07d7626ab808763cd38f33fc980fe7
+# vendored from internal-tooling harness/check-vendored-hashes.sh; do not edit here.
+# Edit the source there and re-vendor (internal-tooling/scripts/vendor-harness.sh).
+# vendored-from: internal-tooling@be60e58
+# vendored-sha256: da9f8bba5eac727d216ab058f68151a165012e1a9760165311042194f1caa266
 # check-vendored-hashes.sh: every vendored harness file in this repository must match the sha256 in
-# its own header. The canonical lives in the private pg-dev-infra, which this repository's public CI
+# its own header. The canonical lives in the private internal-tooling, which this repository's public CI
 # cannot reach, so this is the in-repo half of the sync: a hand edit to a vendored file turns this red
-# at once. pg-dev-infra's own check catches the other half, a canonical change a repo has not adopted.
+# at once. internal-tooling's own check catches the other half, a canonical change a repo has not adopted.
 # No shebang: this file is vendored and run with `bash`.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -25,6 +25,6 @@ if [ -z "$bad" ]; then
     echo "  ok    every vendored harness file matches its header hash"
 else
     echo "  FAIL  a vendored harness file does not match its header hash:$bad"
-    echo "        re-vendor from pg-dev-infra/scripts/vendor-harness.sh; do not edit the copy"
+    echo "        re-vendor from internal-tooling/scripts/vendor-harness.sh; do not edit the copy"
     exit 1
 fi

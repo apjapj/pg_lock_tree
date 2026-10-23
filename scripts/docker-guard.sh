@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# vendored from pg-dev-infra harness/docker-guard.sh; do not edit here.
-# Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
-# vendored-from: pg-dev-infra@4fe5694
-# vendored-sha256: c58a735bfa4dc43f53a01044ffe9abac2142ffa0e1afe0498e76712fd9d19228
+# vendored from internal-tooling harness/docker-guard.sh; do not edit here.
+# Edit the source there and re-vendor (internal-tooling/scripts/vendor-harness.sh).
+# vendored-from: internal-tooling@4fe5694
+# vendored-sha256: ec6caa8aa4658f9904dbf2c474ebad8caa690b33c7fcb874c625aa77ffae0bd1
 # docker-guard.sh: keep a host's Docker footprint from growing without bound.
 #
 # Two modes, deliberately separate, so a CI job never deletes and a housekeeping run never fails a
@@ -45,7 +45,7 @@
 #   DG_PROTECTED      see below  name prefixes that `cleanup` and `safe_rm` never remove
 #
 # DG_PROTECTED defaults to the objects other work on this host owns: `adguard` (adguardhome and
-# adguard_exporter), `forgejo-runner`, `pg-dev-infra-` and `book-` (book-forgejo-runner and
+# adguard_exporter), `forgejo-runner`, `internal-tooling-` and `book-` (book-forgejo-runner and
 # book-docker-proxy). A name that begins with any prefix is protected.
 #
 # Usage:
@@ -58,7 +58,7 @@ DG_DISK_PCT_MAX=${DG_DISK_PCT_MAX:-85}
 DG_UNUSED_VOL_MAX=${DG_UNUSED_VOL_MAX:-25}
 DG_AGE=${DG_AGE:-168h}
 DG_PATH=${DG_PATH:-/}
-DG_PROTECTED=${DG_PROTECTED:-"adguard forgejo-runner pg-dev-infra- book-"}
+DG_PROTECTED=${DG_PROTECTED:-"adguard forgejo-runner internal-tooling- book-"}
 
 # `cleanup` is a dry run unless --apply is given. The default is set here so a script that sources
 # this file and calls cleanup without parsing arguments still cannot remove anything by accident.

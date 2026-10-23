@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Ascending, in step with pg-dev-infra. On GitHub this is cosmetic: the order decides nothing,
+        # Ascending, in step with internal-tooling. On GitHub this is cosmetic: the order decides nothing,
         # because there is one runner pool and no placement to get wrong.
         include:
           - pg_version: "14"

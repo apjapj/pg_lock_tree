@@ -32,7 +32,7 @@ go; **[can do now]** where it is local, reversible, and can be reviewed before a
    names stay because they are functional in `.forgejo/workflows/test.yml`: the `runs-on` pool label,
    which must match the label the self-hosted runner registered, and the registry address the
    test image is pulled from. Removing them needs a generic runner label and a registry host name in
-   pg-dev-infra's runner configuration, an infrastructure change for **[Piotr]**. History still
+   internal-tooling's runner configuration, an infrastructure change for **[Piotr]**. History still
    holds the old names.
 2. **[done, on main since 0c70e76, and green on GitHub] Secret scanning on GitHub.** It was written
    when `.github/workflows/` held only `test.yml` and the gitleaks history scan and detect-secrets ran
@@ -356,7 +356,7 @@ jobs run in, has neither docker nor psql. That the error is literally `command n
 inference, not an observation, since `/actions/jobs/{id}/logs` 404s at `read:repository`; the
 9-second duration and the absent binary are consistent with it and with nothing else.
 
-**What works.** `pg-dev-infra` builds a dedicated job image, `apjapj/pg-runner:18-20261007`, from
+**What works.** `internal-tooling` builds a dedicated job image, `apjapj/pg-runner:18-20261007`, from
 `node:20-bookworm` with PostgreSQL 18, `pg_cron`, `pg_stat_statements`, pgTAP, the TAP parser,
 `make` and `gcc` baked in, plus a `pg-start` helper that brings up a preconfigured cluster on
 localhost. A dedicated runner label names it; `docker` is untouched, so `book-platform`,
@@ -369,7 +369,7 @@ psql -c "CREATE EXTENSION pg_lock_tree"
 ```
 
 This is the option I called "install PostgreSQL in the job", with the install moved to image build
-time and owned by `pg-dev-infra`, which is where it belongs. I should have reached for the image
+time and owned by `internal-tooling`, which is where it belongs. I should have reached for the image
 rather than the job.
 
 Verified end to end: all eight pass locally in the image, and in CI the `install-path checks` job
