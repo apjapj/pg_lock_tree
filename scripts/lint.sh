@@ -32,6 +32,8 @@ step "the two CI copies agree"
 bash ./scripts/check-ci-parity.sh
 # The PGXN metadata is generated from the control file and the stable fields, and it must not name a
 # private host or address: META.json is published and permanent.
+step "no internal addresses or private repositories"
+./scripts/check-internal-refs.sh
 step "the PGXN metadata"
 ./scripts/pgxn-meta.py --check >/dev/null
 
