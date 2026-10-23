@@ -5,7 +5,7 @@
 # keywords rather than as addresses.
 set -euo pipefail
 
-bad=$(git grep -nI -E '(forgejo\.lan|ProbeKit\.git|https?://[^[:space:]]*\.lan|192\.168\.|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.)' \
+bad=$(git grep -nI -E '(forgejo\.lan|[Pp]robe[.-]?[Kk]it|pg-dev[.]infra|https?://[^[:space:]]*\.lan|192\.168\.|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.)' \
         -- . ':!.gitleaks.toml' 2>/dev/null || true)
 if [ -n "$bad" ]; then
     printf '%s\n' "$bad" >&2

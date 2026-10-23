@@ -1,6 +1,6 @@
-# vendored from pg-dev-infra harness/check-ci-parity.sh; do not edit here.
-# Edit the source there and re-vendor (pg-dev-infra/scripts/vendor-harness.sh).
-# vendored-from: pg-dev-infra@b808add
+# vendored from internal-tooling harness/check-ci-parity.sh; do not edit here.
+# Edit the source there and re-vendor (internal-tooling/scripts/vendor-harness.sh).
+# vendored-from: internal-tooling@b808add
 # vendored-sha256: 6ec5d5649648a7d7d5d36f8a2e6309e6c27485db8fbdc633deedab9c264599ce
 # check-ci-parity.sh: the two CI copies must agree, so that "one definition" is enforced and not a
 # convention. It checks two things:

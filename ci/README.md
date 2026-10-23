@@ -59,7 +59,7 @@ export PGHOST=127.0.0.1 PGPORT=5518 PGUSER=postgres PGPASSWORD=test PGDATABASE=p
 ./ci/server.sh down
 ```
 
-Ports 5514 to 5519 are used by `ci/job.sh`. The `pg-dev-infra` test containers occupy 5414 to 5419, so
+Ports 5514 to 5519 are used by `ci/job.sh`. The `internal-tooling` test containers occupy 5414 to 5419, so
 the two ranges do not collide.
 
 ## The gate that reads these runs

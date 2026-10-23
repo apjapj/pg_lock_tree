@@ -1,6 +1,6 @@
 # scripts/ci-parity-paths: which workflow files hold the jobs check-ci-parity.sh compares, per
 # platform, and the ones deliberately out of scope. Every workflow file in either directory must
-# appear here, listed or ignored, or the check fails. See pg-dev-infra harness/check-ci-parity.sh.
+# appear here, listed or ignored, or the check fails. See internal-tooling harness/check-ci-parity.sh.
 github  .github/workflows/test.yml
 forgejo .forgejo/workflows/test.yml
 forgejo .forgejo/workflows/lint.yml

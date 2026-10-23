@@ -138,13 +138,8 @@ docker exec -u root pg-test-18 make -C /tmp/src install
 docker exec pg-test-18 psql -U postgres -c 'CREATE EXTENSION pg_lock_tree;'
 ```
 
-Or just use the suite, which does all of this for you:
-
-```bash
-cd ~/dev/pg-dev-infra && ./build-push-images.sh --push     # rebuild the images
-cd ~/software/pg_lock_tree
-EXT_SRC=$PWD COMPOSE_FILE=~/dev/pg-dev-infra/docker-compose.test.yml scripts/matrix.sh
-```
+Or run the suite against containers you provide; `scripts/matrix.sh` documents the compose file it
+expects. The repository's `ci/README.md` describes the local container route.
 
 ### C. On RDS, Aurora, or another managed instance
 

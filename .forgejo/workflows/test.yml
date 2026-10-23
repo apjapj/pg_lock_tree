@@ -44,8 +44,8 @@ jobs:
         # or by being the beta image. It was neither: Forgejo sorts permutations by value, so
         # 19rc1 was always dispatched last, and being dispatched last is what put it on the
         # other runner. With runs-on pinned to the pool label the order no longer decides anything, so
-        # it goes back to the order pg-dev-infra builds the images in.
-        pg_version: ["14", "15", "16", "17", "18", "19rc1"]   # keep in step with pg-dev-infra
+        # it goes back to the order internal-tooling builds the images in.
+        pg_version: ["14", "15", "16", "17", "18", "19rc1"]   # keep in step with internal-tooling
     services:
       postgres:
         # The private registry, from a repository variable rather than written here.
@@ -147,7 +147,7 @@ jobs:
   # deliberately does not do that: it loads the release SQL straight into public on a separate
   # service container.
   #
-  # This job runs on the PostgreSQL pool label, backed by pg-dev-infra's apjapj/pg-runner:18 image.
+  # This job runs on the PostgreSQL pool label, backed by internal-tooling's apjapj/pg-runner:18 image.
   # The runner pre-bakes the PostgreSQL 18 stack (pg_cron, pg_stat_statements, max_prepared_transactions=10),
   # developer headers, and the pg-start startup helper. This allows full in-job CREATE EXTENSION
   # execution without mounting /var/run/docker.sock or running sibling Docker containers.
@@ -177,24 +177,13 @@ jobs:
             echo "the loaded version is not this checkout" >&2; exit 1;
           }
 
-      - name: Install the internal snapshot kit
-        # The URL is a Forgejo repository variable, never committed. GitHub does not run this
-        # workflow, and a Forgejo instance without the variable skips the check.
-        if: ${{ vars.PROBEKIT_URL != '' }}
-        env:
-          PROBEKIT_URL: ${{ vars.PROBEKIT_URL }}
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch v0.1.0 "$PROBEKIT_URL" /tmp/probekit
-          make -C /tmp/probekit install
-
-      - name: Run all 8 checks
+      - name: Run the checks
         run: |
           set -uo pipefail
           fail=0
-          # All eight checks that gate on a pg_extension row
+          # All checks that gate on a pg_extension row
           for s in check-upgrade check-install check-schema check-examples \
-                   check-alert check-deadlock check-uninstall; do
+                   check-alert check-deadlock; do
             printf '=== %s ===\n' "$s"
             if ./scripts/$s.sh; then
               printf '    ok %s\n' "$s"

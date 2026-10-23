@@ -14,7 +14,7 @@
 #
 # Only the GitHub Actions ecosystem is listed. There are no other dependencies:
 # the repository ships SQL, shell and YAML, and the test images are built by
-# pg-dev-infra rather than pulled from here.
+# internal-tooling rather than pulled from here.
 #
 # Reviewed in the usual way, and a version bump is a release like any other: the
 # gates in CONTRIBUTING.md apply, because an action that pulls a container or runs
