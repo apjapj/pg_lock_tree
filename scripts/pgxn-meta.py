@@ -157,38 +157,48 @@ def write_meta(meta: dict, path: Path) -> None:
     path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
 
-def build_package(meta: dict, tag: str, out: Path) -> None:
-    if subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", f"{tag}^{{commit}}"],
+def build_package(meta: dict, ref: str, out: Path) -> None:
+    if subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--verify", f"{ref}^{{commit}}"],
                       capture_output=True).returncode != 0:
-        fail(f"tag {tag} does not exist")
-    name, version, _ = control()
+        fail(f"release ref {ref} does not exist")
+    name, control_version, _ = control()
+    version = meta["version"]
     prefix = f"{name}-{version}"
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        archive = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", f"--prefix={prefix}/", tag],
+        archive = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", f"--prefix={prefix}/", ref],
                                  check=True, capture_output=True).stdout
         with tarfile.open(fileobj=__import__("io").BytesIO(archive)) as tar:
             tar.extractall(tmpdir)
         write_meta(meta, tmpdir / prefix / "META.json")
-        # Reproducible zip: the same tag must give the same bytes, so every entry carries the
-        # tag's own commit time rather than the time this script ran.
-        stamp = int(subprocess.run(["git", "-C", str(ROOT), "show", "-s", "--format=%ct", f"{tag}^{{commit}}"],
+        changes = ROOT / "CHANGELOG.md"
+        if changes.is_file():
+            (tmpdir / prefix / "Changes").write_bytes(changes.read_bytes())
+        # Reproducible zip: the same ref must give the same bytes, so every entry carries the
+        # ref's own commit time rather than the time this script ran.
+        stamp = int(subprocess.run(["git", "-C", str(ROOT), "show", "-s", "--format=%ct", f"{ref}^{{commit}}"],
                                    check=True, capture_output=True, text=True).stdout.strip())
         stamp = max(stamp, 315532800)  # the zip format cannot represent before 1980
         date_time = time.gmtime(stamp)[:6]
+        excluded = (".github/", ".forgejo/", "ci/", "scripts/sql/",
+                    ".gitleaks.toml", ".secrets.baseline", ".gitignore")
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             for path in sorted((tmpdir / prefix).rglob("*")):
-                if path.is_file():
-                    rel = str(path.relative_to(tmpdir))
-                    info = zipfile.ZipInfo(rel, date_time=date_time)
-                    info.compress_type = zipfile.ZIP_DEFLATED
-                    info.external_attr = 0o644 << 16
-                    z.writestr(info, path.read_bytes())
+                if not path.is_file():
+                    continue
+                rel = str(path.relative_to(tmpdir / prefix))
+                if rel.startswith(excluded):
+                    continue
+                info = zipfile.ZipInfo(f"{prefix}/{rel}", date_time=date_time)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16
+                z.writestr(info, path.read_bytes())
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     print(f"package: {out}")
     print(f"sha256:  {digest}")
-    print(f"tag:     {tag}")
+    print(f"ref:     {ref}")
+    print(f"version: {version}")
 
 
 def main() -> int:
@@ -196,14 +206,17 @@ def main() -> int:
     parser.add_argument("--tag", help="release tag; required for --package and checked when given")
     parser.add_argument("--output", help="write META.json here")
     parser.add_argument("--package", help="write a PGXN zip here (requires --tag)")
+    parser.add_argument("--package-unreleased", help="write a PGXN zip from HEAD using the control version")
     parser.add_argument("--check", action="store_true", help="validate shape and private hosts")
     parser.add_argument("--unreleased", action="store_true",
                         help="current control version with no tag yet; metadata only, no package")
     args = parser.parse_args()
 
-    if args.unreleased and args.package:
+    if args.unreleased and (args.package or args.package_unreleased):
         fail("--unreleased cannot build a package; a package needs a tag")
-    meta = metadata(None if args.unreleased else args.tag)
+    if args.package and args.package_unreleased:
+        fail("use either --package or --package-unreleased, not both")
+    meta = metadata(None if (args.unreleased or args.package_unreleased) else args.tag)
     private_lint(meta)
     validate_shape(meta)
 
@@ -214,6 +227,8 @@ def main() -> int:
         if not args.tag:
             fail("--package needs --tag")
         build_package(meta, args.tag, Path(args.package))
+    if args.package_unreleased:
+        build_package(meta, "HEAD", Path(args.package_unreleased))
     if args.check or not (args.output or args.package):
         print(json.dumps(meta, indent=2))
     return 0

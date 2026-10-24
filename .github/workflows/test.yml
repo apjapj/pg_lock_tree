@@ -262,6 +262,21 @@ jobs:
       - name: Documentation, objects, paths, links, anchors, test table
         run: ./scripts/lint.sh
 
+      - name: PGXN package dry run
+        run: |
+          set -euo pipefail
+          version=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" *.control)
+          python3 scripts/pgxn-meta.py --unreleased --check --output build/pgxn/META.json
+          python3 scripts/pgxn-meta.py --package-unreleased "build/pgxn/pg_lock_tree-${version}.zip"
+          docker run --rm -v "$PWD/build/pgxn:/work" -w /work \
+            pgxn/pgxn-tools@sha256:53e79ef1c8b9a0ee88b51e89b36fd30c46c9f2326aec0cde1d7f66e47ad719ff \
+            validate_pgxn_meta META.json
+          unzip -l "build/pgxn/pg_lock_tree-${version}.zip" | grep -q 'Changes$'
+          if unzip -l "build/pgxn/pg_lock_tree-${version}.zip" | grep -Eq '/\.(github|forgejo)/|/ci/|/scripts/sql/'; then
+            echo "package contains CI or script-route files" >&2
+            exit 1
+          fi
+
   # One command, the same in the Forgejo copy: check-defects.sh picks container mode here (Docker is
   # on this runner) and local mode on the Forgejo copy (its job has no Docker socket, so it uses the
   # postgres service). scripts/check-ci-parity.sh holds the two to it.
