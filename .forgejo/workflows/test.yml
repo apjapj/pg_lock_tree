@@ -6,6 +6,12 @@ name: test matrix
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to package and validate'
+        required: true
+        default: 'v1.2.1'
 
 # Least privilege, stated rather than inherited. These jobs check the repository out and
 # read a database; none of them writes to the repository, creates a release, or needs a
@@ -229,3 +235,139 @@ jobs:
       - name: Wait for Postgres
         run: until pg_isready -q; do sleep 1; done
       - run: make defects PG=18
+
+  # A public-release dry run: generate the PGXN package from a tag, validate its META.json with
+  # PGXN's own validator, and make no network call that changes anything. No credential is read.
+  #
+  # Sources, read for this job:
+  #   PGXN Meta Spec 1.0.0, https://pgxn.org/meta/spec.txt: required keys are name, abstract,
+  #   version, maintainer, license, provides and meta-spec; prereqs and resources are optional.
+  #   PGXN Manager How To, https://manager.pgxn.org/howto: "You can also check it before uploading
+  #   by installing PGXN::Meta::Validator and running: validate_pgxn_meta META.json".
+  #   pgxn/pgxn-tools, https://github.com/pgxn/docker-pgxn-tools: pgxn-bundle calls
+  #   `pgxn validate-meta META.json` (the same PGXN::Meta::Validator).
+  #
+  # The babar-pg runner has no Docker socket, so the validator is installed from CPAN into the
+  # runner's home directory instead of using the pgxn/pgxn-tools image. The job reads a tag and the
+  # current stable pgxn.toml, builds from the tag with git archive, and checks the zip has exactly
+  # one top-level directory. The API check is GET-only.
+  pgxn:
+    name: PGXN package dry run
+    runs-on: babar-pg
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Build and validate the PGXN package
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${TAG_INPUT:-}" ]; then
+            tag="$TAG_INPUT"
+          elif [ "${GITHUB_REF_TYPE:-}" = tag ] || [ "${GITHUB_REF:-}" = refs/tags/* ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v1.2.1"
+          fi
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "release tag must look like v1.2.1, got '$tag'" >&2; exit 1 ;;
+          esac
+          version="${tag#v}"
+
+          test -f scripts/pgxn-meta.py
+          test -f pgxn.toml
+          git fetch --tags --force origin >/dev/null
+
+          # The tag predates pgxn.toml and scripts/pgxn-meta.py in this repository. The package
+          # comes from the tag; the generator and the stable identity fields come from main.
+          worktree=$(mktemp -d)
+          tmp=$(mktemp -d)
+          cleanup() {
+            git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+            rm -rf "$worktree" "$tmp"
+          }
+          trap cleanup EXIT
+          git worktree add --detach "$worktree" "$tag" >/dev/null
+          mkdir -p "$worktree/scripts"
+          cp scripts/pgxn-meta.py "$worktree/scripts/pgxn-meta.py"
+          cp pgxn.toml "$worktree/pgxn.toml"
+
+          control_version=$(git -C "$worktree" show "$tag:pg_lock_tree.control" \
+            | sed -n "s/^default_version *= *'\([^']*\)'/\1/p")
+          [ "$control_version" = "$version" ] || {
+            echo ".control at $tag says '$control_version', tag says '$version'" >&2
+            exit 1
+          }
+          git -C "$worktree" show "$tag:CHANGELOG.md" > "$tmp/CHANGELOG.md"
+          grep -qF "## ${version} " "$tmp/CHANGELOG.md" || {
+            echo "CHANGELOG.md at $tag has no '## ${version}' entry" >&2
+            exit 1
+          }
+
+          mkdir -p build/pgxn
+          python3 "$worktree/scripts/pgxn-meta.py" --tag "$tag" \
+            --output "build/pgxn/META.json"
+          python3 "$worktree/scripts/pgxn-meta.py" --tag "$tag" \
+            --package "build/pgxn/pg_lock_tree-${version}.zip"
+
+          # PGXN::Meta::Validator's CLI has an argument-parsing quirk: it reads META.json from
+          # the current directory. Install it without root, then validate from the package root.
+          if ! command -v validate_pgxn_meta >/dev/null 2>&1; then
+            if command -v cpanm >/dev/null 2>&1; then
+              cpanm_cmd=cpanm
+            else
+              cpanm_cmd=/tmp/cpanm
+              curl -fsSL https://cpanmin.us -o "$cpanm_cmd"
+              chmod +x "$cpanm_cmd"
+            fi
+            "$cpanm_cmd" --notest --local-lib "$HOME/.local" PGXN::Meta::Validator
+            export PATH="$HOME/.local/bin:$PATH"
+            export PERL5LIB="$HOME/.local/lib/perl5${PERL5LIB:+:$PERL5LIB}"
+          fi
+          command -v validate_pgxn_meta >/dev/null
+
+          prefix="pg_lock_tree-${version}/"
+          python3 - "$PWD/build/pgxn/pg_lock_tree-${version}.zip" "$prefix" "$tmp" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          zip_path, prefix, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+          with zipfile.ZipFile(zip_path) as z:
+              names = z.namelist()
+              tops = {name.split("/", 1)[0] for name in names if name}
+              if tops != {prefix.rstrip("/")}:
+                  raise SystemExit("package does not have exactly one top-level directory: %r" % sorted(tops))
+              if prefix + "META.json" not in names:
+                  raise SystemExit("META.json is not at the package root")
+              meta = json.loads(z.read(prefix + "META.json"))
+              for ext, info in meta["provides"].items():
+                  if prefix + info["file"] not in names:
+                      raise SystemExit("provides file for %s is missing: %s" % (ext, info["file"]))
+              z.extract(prefix + "META.json", dest)
+          print("package contains one top-level directory and every provides file")
+          PY
+
+          ( cd "$tmp/$prefix" && validate_pgxn_meta )
+          sha256sum "build/pgxn/pg_lock_tree-${version}.zip"
+
+          # Read-only PGXN API check. 404 means the name/version is free; 200 means taken; any other
+          # status is treated as a failure rather than as permission to continue.
+          for endpoint in \
+            "https://api.pgxn.org/dist/pg_lock_tree" \
+            "https://api.pgxn.org/dist/pg_lock_tree/${version}"; do
+            code=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$endpoint") || {
+              echo "cannot read $endpoint" >&2
+              exit 1
+            }
+            case "$code" in
+              404) echo "free: $endpoint" ;;
+              200) echo "already taken: $endpoint" >&2; exit 1 ;;
+              *) echo "unexpected HTTP $code from $endpoint" >&2; exit 1 ;;
+            esac
+          done
